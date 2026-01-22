@@ -1,6 +1,10 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, Symbol, String};
 
+// Database module requires std and specific dependencies
+#[cfg(feature = "database")]
+pub mod database;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
