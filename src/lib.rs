@@ -1,9 +1,7 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, testutils,
-    testutils::Ledger,
-    testutils::{MockAuth, MockAuthInvoke},
-    token, Address, Env, IntoVal, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype,
+    token, Address, Env, String, Symbol, Vec,
 };
 
 #[contracterror]
@@ -14,7 +12,7 @@ pub enum Error {
     NotInitialized = 2,
     Unauthorized = 3,
     InvalidFeeRate = 4,
-    ContractPaused = 5,
+    ContractPaused = 5, 
     OrderNotFound = 100,
     InvalidOrderStatus = 101,
     OrderExpired = 102,
@@ -26,7 +24,7 @@ pub enum Error {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OrderStatus {
     Open,
-    Locked,
+    Locked, 
     PaymentSent,
     Completed,
     Disputed,
@@ -40,7 +38,7 @@ pub struct Order {
     pub seller: Address,
     pub buyer: Option<Address>,
     pub token: Address,
-    pub amount: i128,
+    pub amount: i128, 
     pub fiat_currency: Symbol,
     pub fiat_amount: i128,
     pub rate: i128,
@@ -58,13 +56,13 @@ pub enum DataKey {
     Order(u64),
     UserOrders(Address),
     FeeRate,
-    FeeTreasury,
+    FeeTreasury, 
     IsPaused,
     DisputeResolver,
 }
 
 #[contract]
-pub struct EscrowContract;
+pub struct EscrowContract; 
 
 #[contractimpl]
 impl EscrowContract {
@@ -283,7 +281,7 @@ impl EscrowContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _ , Ledger};
     use soroban_sdk::{Address, Env};
 
     fn create_env() -> Env {
