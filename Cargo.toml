@@ -6,9 +6,22 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+database = ["sqlx", "tokio", "async-trait", "uuid", "chrono", "serde", "serde_json", "tracing", "tracing-subscriber"]
+
 [dependencies]
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json", "macros"], optional = true }
 soroban-sdk = "21.0.0"
+tokio = { version = "1.36", features = ["full"], optional = true }
+async-trait = { version = "0.1", optional = true }
+uuid = { version = "1.6", features = ["v4", "serde"], optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+tokio = { version = "1.36", features = ["full"] }
