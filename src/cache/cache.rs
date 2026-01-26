@@ -5,17 +5,23 @@
 //! - Configurable TTL management
 //! - Batch operations
 //! - Fault tolerance (graceful degradation)
+//!
 
 use super::{error::CacheResult, RedisPool};
+use crate::cache::CacheError;
 use async_trait::async_trait;
-use redis::{AsyncCommands, RedisError};
+use bb8::PooledConnection;
+use bb8_redis::RedisConnectionManager;
+use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
 
+type RedisConnection<'a> = PooledConnection<'a, RedisConnectionManager>;
+
 /// Generic cache trait supporting any serializable type
 #[async_trait]
-pub trait Cache<T: Serialize + DeserializeOwned + Send + Sync> {
+pub trait Cache<T: Serialize + DeserializeOwned + Send + Sync + 'static> {
     /// Get a value from cache by key
     async fn get(&self, key: &str) -> CacheResult<Option<T>>;
 
@@ -29,7 +35,8 @@ pub trait Cache<T: Serialize + DeserializeOwned + Send + Sync> {
     async fn exists(&self, key: &str) -> CacheResult<bool>;
 
     /// Set multiple key-value pairs with optional TTL
-    async fn set_multiple(&self, items: Vec<(String, T)>, ttl: Option<Duration>) -> CacheResult<()>;
+    async fn set_multiple(&self, items: Vec<(String, T)>, ttl: Option<Duration>)
+        -> CacheResult<()>;
 
     /// Get multiple values by keys
     async fn get_multiple(&self, keys: Vec<String>) -> CacheResult<Vec<Option<T>>>;
@@ -62,7 +69,7 @@ impl RedisCache {
     }
 
     /// Get a connection from the pool with error handling
-    async fn get_connection(&self) -> CacheResult<redis::aio::Connection> {
+    async fn get_connection(&self) -> CacheResult<RedisConnection<'_>> {
         self.pool.get().await.map_err(|e| {
             warn!("Failed to get Redis connection: {}", e);
             e.into()
@@ -71,7 +78,7 @@ impl RedisCache {
 }
 
 #[async_trait]
-impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
+impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Cache<T> for RedisCache {
     async fn get(&self, key: &str) -> CacheResult<Option<T>> {
         let mut conn = match self.get_connection().await {
             Ok(conn) => conn,
@@ -85,10 +92,12 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
 
         match result {
             Some(json_str) => {
-                let value: T = serde_json::from_str(&json_str).map_err(|e| {
-                    warn!("Failed to deserialize cache value for key '{}': {}", key, e);
-                    e.into()
-                })?;
+                let value: T = serde_json::from_str(&json_str)
+                    .map_err(|e| {
+                        warn!("Failed to deserialize cache value for key '{}': {}", key, e);
+                        <serde_json::Error as Into<CacheError>>::into(e)
+                    })
+                    .unwrap();
                 debug!("Cache hit for key: {}", key);
                 Ok(Some(value))
             }
@@ -113,10 +122,13 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
         match ttl {
             Some(ttl_duration) => {
                 let ttl_seconds = ttl_duration.as_secs() as usize;
-                let _: () = conn.set_ex(key, json_str, ttl_seconds).await.map_err(|e| {
-                    warn!("Redis SET_EX failed for key '{}': {}", key, e);
-                    e
-                })?;
+                let _: () = conn
+                    .set_ex(key, json_str, ttl_seconds as u64)
+                    .await
+                    .map_err(|e| {
+                        warn!("Redis SET_EX failed for key '{}': {}", key, e);
+                        e
+                    })?;
             }
             None => {
                 let _: () = conn.set(key, json_str).await.map_err(|e| {
@@ -162,10 +174,16 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
         Ok(result > 0)
     }
 
-    async fn set_multiple(&self, items: Vec<(String, T)>, ttl: Option<Duration>) -> CacheResult<()> {
+    async fn set_multiple(
+        &self,
+        items: Vec<(String, T)>,
+        ttl: Option<Duration>,
+    ) -> CacheResult<()> {
         if items.is_empty() {
             return Ok(());
         }
+
+        let item_count = items.len();
 
         let mut conn = match self.get_connection().await {
             Ok(conn) => conn,
@@ -181,19 +199,19 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
             })?;
 
             if let Some(ttl_duration) = ttl {
-                let ttl_seconds = ttl_duration.as_secs() as usize;
+                let ttl_seconds = ttl_duration.as_secs();
                 pipeline.set_ex(&key, json_str, ttl_seconds);
             } else {
                 pipeline.set(&key, json_str);
             }
         }
 
-        let _: () = pipeline.query_async(&mut conn).await.map_err(|e| {
+        let _: () = pipeline.query_async(&mut *conn).await.map_err(|e| {
             warn!("Redis MSET failed: {}", e);
             e
         })?;
 
-        debug!("Cache set_multiple with {} items", items.len());
+        debug!("Cache set_multiple with {} items", item_count);
         Ok(())
     }
 
@@ -204,7 +222,14 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
 
         let mut conn = match self.get_connection().await {
             Ok(conn) => conn,
-            Err(_) => return Ok(vec![None; keys.len()]), // Graceful degradation
+            Err(_) => {
+                // Graceful degradation - return empty Option<T> for all keys
+                let mut result = Vec::with_capacity(keys.len());
+                for _ in 0..keys.len() {
+                    result.push(None);
+                }
+                return Ok(result);
+            }
         };
 
         let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
@@ -216,15 +241,16 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
         let mut deserialized = Vec::with_capacity(results.len());
         for (i, result) in results.into_iter().enumerate() {
             match result {
-                Some(json_str) => {
-                    match serde_json::from_str(&json_str) {
-                        Ok(value) => deserialized.push(Some(value)),
-                        Err(e) => {
-                            warn!("Failed to deserialize cache value for key '{}': {}", keys[i], e);
-                            deserialized.push(None);
-                        }
+                Some(json_str) => match serde_json::from_str(&json_str) {
+                    Ok(value) => deserialized.push(Some(value)),
+                    Err(e) => {
+                        warn!(
+                            "Failed to deserialize cache value for key '{}': {}",
+                            keys[i], e
+                        );
+                        deserialized.push(None);
                     }
-                }
+                },
                 None => deserialized.push(None),
             }
         }
@@ -243,7 +269,8 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
             conn.incr(key, 1).await
         } else {
             conn.incr(key, amount).await
-        }.map_err(|e| {
+        }
+        .map_err(|e| {
             warn!("Redis INCR failed for key '{}': {}", key, e);
             e
         })?;
@@ -262,7 +289,8 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
             conn.decr(key, 1).await
         } else {
             conn.decr(key, amount).await
-        }.map_err(|e| {
+        }
+        .map_err(|e| {
             warn!("Redis DECR failed for key '{}': {}", key, e);
             e
         })?;
@@ -277,8 +305,12 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
             Err(_) => return Ok(false), // Graceful degradation
         };
 
-        let ttl_seconds = ttl.as_secs() as usize;
-        let result: i32 = conn.expire(key, ttl_seconds).await.map_err(|e| {
+        let ttl_seconds = ttl.as_secs();
+        // Redis expire expects i64 (seconds)
+        if ttl_seconds > i64::MAX as u64 {
+            return Err(CacheError::TtlError("TTL too large".to_string()));
+        }
+        let result: i32 = conn.expire(key, ttl_seconds as i64).await.map_err(|e| {
             warn!("Redis EXPIRE failed for key '{}': {}", key, e);
             e
         })?;
@@ -328,7 +360,10 @@ impl<T: Serialize + DeserializeOwned + Send + Sync> Cache<T> for RedisCache {
         })?;
 
         let deleted = result as u64;
-        debug!("Cache delete_pattern '{}' deleted {} keys", pattern, deleted);
+        debug!(
+            "Cache delete_pattern '{}' deleted {} keys",
+            pattern, deleted
+        );
         Ok(deleted)
     }
 }
@@ -385,8 +420,10 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires Redis
     async fn test_basic_cache_operations() {
-        let pool = super::super::init_cache_pool(super::super::CacheConfig::default()).await.unwrap();
-        let cache = RedisCache::new(pool);
+        let pool = super::super::init_cache_pool(super::super::CacheConfig::default())
+            .await
+            .unwrap();
+        let cache: RedisCache = RedisCache::new(pool);
 
         let test_data = TestData {
             id: 1,
@@ -394,41 +431,58 @@ mod tests {
         };
 
         // Test set and get
-        cache.set("test:key", &test_data, Some(Duration::from_secs(60))).await.unwrap();
+        cache
+            .set("test:key", &test_data, Some(Duration::from_secs(60)))
+            .await
+            .unwrap();
         let retrieved = cache.get("test:key").await.unwrap();
         assert_eq!(retrieved, Some(test_data));
 
         // Test exists
-        assert!(cache.exists("test:key").await.unwrap());
+        assert!(<RedisCache as Cache<TestData>>::exists(&cache, "test:key")
+            .await
+            .unwrap());
 
         // Test delete
-        assert!(cache.delete("test:key").await.unwrap());
-        assert!(!cache.exists("test:key").await.unwrap());
+        assert!(<RedisCache as Cache<TestData>>::delete(&cache, "test:key")
+            .await
+            .unwrap());
+        assert!(!<RedisCache as Cache<TestData>>::exists(&cache, "test:key")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
     #[ignore] // Requires Redis
     async fn test_increment_decrement() {
-        let pool = super::super::init_cache_pool(super::super::CacheConfig::default()).await.unwrap();
+        let pool = super::super::init_cache_pool(super::super::CacheConfig::default())
+            .await
+            .unwrap();
         let cache = RedisCache::new(pool);
 
         let key = "test:counter";
 
         // Clean up
-        let _ = cache.delete(key).await;
+        let _ = <RedisCache as Cache<String>>::delete(&cache, key).await;
 
         // Test increment
-        let result = cache.increment(key, 1).await.unwrap();
+        let result = <RedisCache as Cache<String>>::increment(&cache, key, 1)
+            .await
+            .unwrap();
         assert_eq!(result, 1);
 
-        let result = cache.increment(key, 5).await.unwrap();
+        let result = <RedisCache as Cache<String>>::increment(&cache, key, 5)
+            .await
+            .unwrap();
         assert_eq!(result, 6);
 
         // Test decrement
-        let result = cache.decrement(key, 2).await.unwrap();
+        let result = <RedisCache as Cache<String>>::decrement(&cache, key, 2)
+            .await
+            .unwrap();
         assert_eq!(result, 4);
 
         // Clean up
-        let _ = cache.delete(key).await;
+        let _ = <RedisCache as Cache<String>>::delete(&cache, key).await;
     }
 }

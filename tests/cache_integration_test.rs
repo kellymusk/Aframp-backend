@@ -5,24 +5,32 @@
 
 #[cfg(feature = "cache")]
 mod cache_tests {
-    use aframp_backend::cache::{cache::Cache, keys::*, CacheConfig, RedisCache};
-    use aframp_backend::database::{init_pool, PoolConfig, ExchangeRateRepository, WalletRepository, TrustlineRepository};
     use std::time::Duration;
+    use Bitmesh_backend::cache::{cache::Cache, keys::*, CacheConfig, RedisCache};
+    use Bitmesh_backend::database::{
+        exchange_rate_repository::ExchangeRateRepository, init_pool,
+        trustline_repository::TrustlineRepository, wallet_repository::WalletRepository, PoolConfig,
+    };
 
     async fn setup_cache() -> RedisCache {
         let config = CacheConfig {
-            redis_url: std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
+            redis_url: std::env::var("REDIS_URL")
+                .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
             ..Default::default()
         };
 
-        let pool = aframp_backend::cache::init_cache_pool(config).await.expect("Failed to init cache pool");
+        let pool = Bitmesh_backend::cache::init_cache_pool(config)
+            .await
+            .expect("Failed to init cache pool");
         RedisCache::new(pool)
     }
 
     async fn setup_db() -> sqlx::PgPool {
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let config = PoolConfig::default();
-        init_pool(&database_url, Some(config)).await.expect("Failed to init DB pool")
+        init_pool(&database_url, Some(config))
+            .await
+            .expect("Failed to init DB pool")
     }
 
     #[tokio::test]
@@ -34,7 +42,10 @@ mod cache_tests {
         repo.enable_cache(cache);
 
         // Test caching a rate
-        let rate = repo.upsert_rate("AFRI", "USD", "0.85", Some("external_api")).await.unwrap();
+        let _rate = repo
+            .upsert_rate("AFRI", "USD", "0.85", Some("external_api"))
+            .await
+            .unwrap();
 
         // First call should cache the result
         let cached_rate = repo.get_current_rate("AFRI", "USD").await.unwrap();
@@ -45,7 +56,9 @@ mod cache_tests {
         assert_eq!(cached_rate2.as_ref().unwrap().rate, "0.85");
 
         // Update rate should invalidate cache
-        repo.upsert_rate("AFRI", "USD", "0.90", Some("external_api")).await.unwrap();
+        repo.upsert_rate("AFRI", "USD", "0.90", Some("external_api"))
+            .await
+            .unwrap();
 
         let updated_rate = repo.get_current_rate("AFRI", "USD").await.unwrap();
         assert_eq!(updated_rate.as_ref().unwrap().rate, "0.90");
@@ -60,7 +73,10 @@ mod cache_tests {
         repo.enable_cache(cache);
 
         // Create a test wallet
-        let wallet = repo.create_wallet("test_user", "GA123456789", "100.00").await.unwrap();
+        let wallet = repo
+            .create_wallet("test_user", "GA123456789", "100.00")
+            .await
+            .unwrap();
 
         // First balance check should cache
         let wallet_data = repo.find_by_account("GA123456789").await.unwrap().unwrap();
@@ -85,16 +101,27 @@ mod cache_tests {
         repo.enable_cache(cache);
 
         // Create a test trustline
-        let trustline = repo.create_trustline("GA123456789", "AFRI", "issuer_address", "1000.00").await.unwrap();
+        let trustline = repo
+            .create_trustline("GA123456789", "AFRI", "issuer_address", "1000.00")
+            .await
+            .unwrap();
 
         // First check should cache existence
-        let found_trustline = repo.find_trustline("GA123456789", "AFRI").await.unwrap().unwrap();
+        let found_trustline = repo
+            .find_trustline("GA123456789", "AFRI")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found_trustline.status, "pending");
 
         // Update status
         repo.update_status(&trustline.id, "active").await.unwrap();
 
-        let updated_trustline = repo.find_trustline("GA123456789", "AFRI").await.unwrap().unwrap();
+        let updated_trustline = repo
+            .find_trustline("GA123456789", "AFRI")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated_trustline.status, "active");
 
         // Cleanup
@@ -109,17 +136,22 @@ mod cache_tests {
         let test_data = "test_value".to_string();
         let ttl = Duration::from_secs(2);
 
-        cache.set("test:ttl:key", &test_data, Some(ttl)).await.unwrap();
+        cache
+            .set("test:ttl:key", &test_data, Some(ttl))
+            .await
+            .unwrap();
 
         // Should exist immediately
-        let retrieved = cache.get::<String>("test:ttl:key").await.unwrap();
+        let retrieved = cache.get("test:ttl:key").await.unwrap();
         assert_eq!(retrieved, Some(test_data));
 
         // Wait for TTL to expire
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Should be gone
-        let expired = cache.get::<String>("test:ttl:key").await.unwrap();
+        let expired = <RedisCache as Cache<String>>::get(&cache, "test:ttl:key")
+            .await
+            .unwrap();
         assert_eq!(expired, None);
     }
 
@@ -134,7 +166,10 @@ mod cache_tests {
             ("batch:key3".to_string(), "value3".to_string()),
         ];
 
-        cache.set_multiple(items, Some(Duration::from_secs(60))).await.unwrap();
+        cache
+            .set_multiple(items, Some(Duration::from_secs(60)))
+            .await
+            .unwrap();
 
         // Test batch get
         let keys = vec![
@@ -143,7 +178,7 @@ mod cache_tests {
             "batch:key3".to_string(),
         ];
 
-        let results = cache.get_multiple::<String>(keys).await.unwrap();
+        let results = cache.get_multiple(keys).await.unwrap();
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], Some("value1".to_string()));
@@ -177,8 +212,11 @@ mod cache_tests {
         };
 
         // This should fail to connect but not panic
-        let result = aframp_backend::cache::init_cache_pool(config).await;
-        assert!(result.is_err(), "Expected cache initialization to fail with invalid Redis URL");
+        let result = Bitmesh_backend::cache::init_cache_pool(config).await;
+        assert!(
+            result.is_err(),
+            "Expected cache initialization to fail with invalid Redis URL"
+        );
 
         // In a real application, repositories would continue to work with database-only
         // This test verifies that cache initialization failures are handled gracefully

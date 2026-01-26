@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["database"]
+default = ["database", "cache"]
 database = ["dep:sqlx", "dep:tokio", "dep:async-trait", "dep:uuid", "dep:chrono", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:axum", "dep:tower", "dep:tower-http", "dep:regex", "dep:http"]
 cache = ["dep:redis", "dep:bb8", "dep:bb8-redis", "database"]
 
@@ -35,8 +35,6 @@ base64 = "0.21"
 anyhow = "1.0"
 thiserror = "1.0"
 regex = { version = "1.10", optional = true }
-rsa = "0.9.10"
-sad-rsa = "0.1.1"
 
 # Redis dependencies for caching
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager"], optional = true }
@@ -44,7 +42,7 @@ bb8 = { version = "0.8", optional = true }
 bb8-redis = { version = "0.15", optional = true }
 
 [[bin]]
-name = "Bitmesh-backend"
+name = "Aframp-Backend"
 path = "src/main.rs"
 
 [dev-dependencies]

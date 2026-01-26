@@ -5,7 +5,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 #[cfg(feature = "cache")]
-use crate::cache::{cache::Cache, keys::wallet::TrustlineKey, RedisCache};
+use crate::cache::{cache::Cache, cache::RedisCache, keys::wallet::TrustlineKey};
 #[cfg(feature = "cache")]
 use tracing::debug;
 
@@ -66,7 +66,10 @@ impl TrustlineRepository {
         #[cfg(feature = "cache")]
         if let Some(ref cache) = self.cache {
             let trustline_key = TrustlineKey::new(account);
-            if let Ok(Some(cached_exists)) = cache.get::<bool>(&trustline_key.to_string()).await {
+            if let Ok(Some(cached_exists)) =
+                <RedisCache as Cache<bool>>::get::<'_, '_, '_>(cache, &trustline_key.to_string())
+                    .await
+            {
                 if !cached_exists {
                     debug!("Cache hit: no trustline for account {}", account);
                     return Ok(None);
@@ -93,10 +96,16 @@ impl TrustlineRepository {
             let trustline_key = TrustlineKey::new(account);
             let exists = trustline.is_some();
             let ttl = crate::cache::cache::ttl::TRUSTLINES;
-            if let Err(e) = cache.set(&trustline_key.to_string(), &exists, Some(ttl)).await {
+            if let Err(e) = cache
+                .set(&trustline_key.to_string(), &exists, Some(ttl))
+                .await
+            {
                 debug!("Failed to cache trustline existence: {}", e);
             } else {
-                debug!("Cached trustline existence for account: {} ({})", account, exists);
+                debug!(
+                    "Cached trustline existence for account: {} ({})",
+                    account, exists
+                );
             }
         }
 
@@ -149,7 +158,10 @@ impl TrustlineRepository {
         if let Some(ref cache) = self.cache {
             let trustline_key = TrustlineKey::new(account);
             let ttl = crate::cache::cache::ttl::TRUSTLINES;
-            if let Err(e) = cache.set(&trustline_key.to_string(), &true, Some(ttl)).await {
+            if let Err(e) = cache
+                .set(&trustline_key.to_string(), &true, Some(ttl))
+                .await
+            {
                 debug!("Failed to cache trustline creation: {}", e);
             } else {
                 debug!("Cached trustline creation for account: {}", account);
@@ -233,6 +245,44 @@ impl TrustlineRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(DatabaseError::from_sqlx)
+    }
+
+    /// Delete a trustline by ID
+    /// Also invalidates the trustline existence cache
+    pub async fn delete(&self, trustline_id: &str) -> Result<bool, DatabaseError> {
+        // First, get the trustline to retrieve account for cache invalidation
+        let trustline = self.find_by_id(trustline_id).await?;
+
+        let result = sqlx::query("DELETE FROM trustlines WHERE id = $1")
+            .bind(trustline_id)
+            .execute(&self.pool)
+            .await
+            .map_err(DatabaseError::from_sqlx)?;
+
+        let deleted = result.rows_affected() > 0;
+
+        // Invalidate trustline existence cache if trustline was deleted
+        #[cfg(feature = "cache")]
+        if deleted {
+            if let (Some(ref cache), Some(trustline_data)) = (&self.cache, trustline) {
+                let trustline_key = TrustlineKey::new(&trustline_data.account);
+                if let Err(e) = <RedisCache as Cache<bool>>::delete::<'_, '_, '_>(
+                    cache,
+                    &trustline_key.to_string(),
+                )
+                .await
+                {
+                    debug!("Failed to invalidate trustline cache on delete: {}", e);
+                } else {
+                    debug!(
+                        "Invalidated trustline cache on delete: {}",
+                        trustline_data.account
+                    );
+                }
+            }
+        }
+
+        Ok(deleted)
     }
 }
 

@@ -1,16 +1,19 @@
+use crate::cache::keys::exchange_rate::CurrencyPairKey;
 use crate::database::error::DatabaseError;
 use crate::database::repository::{Repository, TransactionalRepository};
 use async_trait::async_trait;
+use serde::Deserialize;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 #[cfg(feature = "cache")]
-use crate::cache::{cache::Cache, keys::exchange_rate::CurrencyPairKey, RedisCache};
+use crate::cache::cache::Cache;
+use crate::cache::cache::RedisCache;
 #[cfg(feature = "cache")]
 use tracing::debug;
 
 /// Exchange Rate entity
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, FromRow, serde::Serialize, Deserialize)]
 pub struct ExchangeRate {
     pub id: String,
     pub from_currency: String,
@@ -66,7 +69,10 @@ impl ExchangeRateRepository {
         #[cfg(feature = "cache")]
         if let Some(ref cache) = self.cache {
             if let Ok(Some(cached_rate)) = cache.get(&cache_key.to_string()).await {
-                debug!("Cache hit for exchange rate: {} -> {}", from_currency, to_currency);
+                debug!(
+                    "Cache hit for exchange rate: {} -> {}",
+                    from_currency, to_currency
+                );
                 return Ok(Some(cached_rate));
             }
         }
@@ -88,7 +94,10 @@ impl ExchangeRateRepository {
         #[cfg(feature = "cache")]
         if let (Some(ref cache), Some(ref rate_result)) = (&self.cache, &rate) {
             let ttl = crate::cache::cache::ttl::EXCHANGE_RATES;
-            if let Err(e) = cache.set(&cache_key.to_string(), rate_result, Some(ttl)).await {
+            if let Err(e) = cache
+                .set(&cache_key.to_string(), rate_result, Some(ttl))
+                .await
+            {
                 debug!("Failed to cache exchange rate: {}", e);
                 // Don't fail the operation if caching fails
             } else {
@@ -151,11 +160,19 @@ impl ExchangeRateRepository {
         #[cfg(feature = "cache")]
         if let Some(ref cache) = self.cache {
             let cache_key = CurrencyPairKey::new(from_currency, to_currency);
-            if let Err(e) = cache.delete(&cache_key.to_string()).await {
+            if let Err(e) = <RedisCache as Cache<ExchangeRate>>::delete::<'_, '_, '_>(
+                cache,
+                &cache_key.to_string(),
+            )
+            .await
+            {
                 debug!("Failed to invalidate cache for exchange rate: {}", e);
                 // Don't fail the operation if cache invalidation fails
             } else {
-                debug!("Invalidated cache for exchange rate: {} -> {}", from_currency, to_currency);
+                debug!(
+                    "Invalidated cache for exchange rate: {} -> {}",
+                    from_currency, to_currency
+                );
             }
         }
 

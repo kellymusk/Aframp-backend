@@ -4,9 +4,12 @@ pub mod cache;
 pub mod error;
 pub mod keys;
 
+// Re-export commonly used items
+pub use cache::{Cache, RedisCache};
+pub use error::CacheError;
+
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use redis::{AsyncCommands, Client};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -43,17 +46,10 @@ pub async fn init_cache_pool(config: CacheConfig) -> Result<RedisPool, CacheErro
         config.max_connections, config.redis_url
     );
 
-    let client = Client::open(config.redis_url.clone())
-        .map_err(|e| {
-            error!("Failed to create Redis client: {}", e);
-            CacheError::ConnectionError(e.to_string())
-        })?;
-
-    let manager = RedisConnectionManager::new(client)
-        .map_err(|e| {
-            error!("Failed to create Redis connection manager: {}", e);
-            CacheError::ConnectionError(e.to_string())
-        })?;
+    let manager = RedisConnectionManager::new(config.redis_url.clone()).map_err(|e| {
+        error!("Failed to create Redis connection manager: {}", e);
+        CacheError::ConnectionError(e.to_string())
+    })?;
 
     let pool = Pool::builder()
         .max_size(config.max_connections)
@@ -70,7 +66,10 @@ pub async fn init_cache_pool(config: CacheConfig) -> Result<RedisPool, CacheErro
         })?;
 
     if let Err(e) = test_connection(&pool).await {
-        warn!("Initial Redis connection test failed, but continuing: {}", e);
+        warn!(
+            "Initial Redis connection test failed, but continuing: {}",
+            e
+        );
     }
 
     info!("Redis cache pool initialized successfully");
@@ -79,11 +78,10 @@ pub async fn init_cache_pool(config: CacheConfig) -> Result<RedisPool, CacheErro
 
 ///
 async fn test_connection(pool: &RedisPool) -> Result<(), CacheError> {
-    let mut conn = pool.get().await
-        .map_err(|e| {
-            error!("Failed to get Redis connection for test: {}", e);
-            CacheError::ConnectionError(e.to_string())
-        })?;
+    let mut conn = pool.get().await.map_err(|e| {
+        error!("Failed to get Redis connection for test: {}", e);
+        CacheError::ConnectionError(e.to_string())
+    })?;
 
     let _: String = redis::cmd("PING")
         .query_async(&mut *conn)
@@ -115,9 +113,7 @@ pub fn get_cache_stats(pool: &RedisPool) -> CacheStats {
     }
 }
 
-pub async fn shutdown_cache_pool(pool: &RedisPool) {
+pub async fn shutdown_cache_pool(_pool: &RedisPool) {
     info!("Shutting down Redis cache pool");
-    pool.close().await;
+    // bb8 pools are dropped automatically when they go out of scope
 }
-
-use error::CacheError;

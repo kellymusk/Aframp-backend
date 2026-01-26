@@ -5,7 +5,7 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 #[cfg(feature = "cache")]
-use crate::cache::{cache::Cache, keys::wallet::{BalanceKey, TrustlineKey, TransactionCountKey}, RedisCache};
+use crate::cache::{keys::wallet::BalanceKey, Cache, RedisCache};
 #[cfg(feature = "cache")]
 use tracing::debug;
 
@@ -74,11 +74,14 @@ impl WalletRepository {
         #[cfg(feature = "cache")]
         if let Some(ref cache) = self.cache {
             let balance_key = BalanceKey::new(account_address);
-            if let Ok(Some(cached_balance)) = cache.get::<String>(&balance_key.to_string()).await {
+            if let Ok(Some(cached_balance)) =
+                <RedisCache as Cache<String>>::get(cache, &balance_key.to_string()).await
+            {
                 debug!("Cache hit for wallet balance: {}", account_address);
                 // We have cached balance, but need full wallet data from DB
                 // This is a compromise - we avoid the full query but still need some DB access
                 // For full performance, we'd need to cache the entire wallet object
+                let _ = cached_balance; // Use the value
             }
         }
 
@@ -96,7 +99,10 @@ impl WalletRepository {
         if let (Some(ref cache), Some(ref wallet_data)) = (&self.cache, &wallet) {
             let balance_key = BalanceKey::new(account_address);
             let ttl = crate::cache::cache::ttl::WALLET_BALANCES;
-            if let Err(e) = cache.set(&balance_key.to_string(), &wallet_data.balance, Some(ttl)).await {
+            if let Err(e) = cache
+                .set(&balance_key.to_string(), &wallet_data.balance, Some(ttl))
+                .await
+            {
                 debug!("Failed to cache wallet balance: {}", e);
             } else {
                 debug!("Cached wallet balance: {}", account_address);
@@ -137,10 +143,15 @@ impl WalletRepository {
         #[cfg(feature = "cache")]
         if let Some(ref cache) = self.cache {
             let balance_key = BalanceKey::new(&wallet.account_address);
-            if let Err(e) = cache.delete(&balance_key.to_string()).await {
+            if let Err(e) =
+                <RedisCache as Cache<String>>::delete(cache, &balance_key.to_string()).await
+            {
                 debug!("Failed to invalidate wallet balance cache: {}", e);
             } else {
-                debug!("Invalidated wallet balance cache: {}", wallet.account_address);
+                debug!(
+                    "Invalidated wallet balance cache: {}",
+                    wallet.account_address
+                );
             }
         }
 
@@ -212,6 +223,41 @@ impl WalletRepository {
                 id: wallet_id.to_string(),
             })),
         }
+    }
+
+    /// Delete a wallet by ID
+    /// Also invalidates the balance cache for the wallet
+    pub async fn delete(&self, wallet_id: &str) -> Result<bool, DatabaseError> {
+        // First, get the wallet to retrieve account_address for cache invalidation
+        let wallet = self.find_by_id(wallet_id).await?;
+
+        let result = sqlx::query("DELETE FROM wallets WHERE id = $1")
+            .bind(wallet_id)
+            .execute(&self.pool)
+            .await
+            .map_err(DatabaseError::from_sqlx)?;
+
+        let deleted = result.rows_affected() > 0;
+
+        // Invalidate balance cache if wallet was deleted
+        #[cfg(feature = "cache")]
+        if deleted {
+            if let (Some(ref cache), Some(wallet_data)) = (&self.cache, wallet) {
+                let balance_key = BalanceKey::new(&wallet_data.account_address);
+                if let Err(e) =
+                    <RedisCache as Cache<String>>::delete(cache, &balance_key.to_string()).await
+                {
+                    debug!("Failed to invalidate wallet balance cache on delete: {}", e);
+                } else {
+                    debug!(
+                        "Invalidated wallet balance cache on delete: {}",
+                        wallet_data.account_address
+                    );
+                }
+            }
+        }
+
+        Ok(deleted)
     }
 }
 
