@@ -18,7 +18,6 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
- "rust_decimal",
  "serde",
  "serde_json",
  "soroban-sdk 21.7.7",

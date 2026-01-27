@@ -35,7 +35,6 @@ base64 = "0.22.1"
 anyhow = "1.0.100"
 thiserror = "2.0.18"
 regex = { version = "1.12.2", optional = true }
-rust_decimal = "1.36"
 
 # Redis dependencies for caching
 redis = { version = "1.0.2", features = ["tokio-comp", "connection-manager"], optional = true }
