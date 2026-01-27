@@ -1,42 +1,34 @@
-use soroban_sdk::{contractevent, Address};
+#![allow(deprecated)]
 
-#[contractevent]
-pub struct Transfer {
-    pub from: Address,
-    pub to: Address,
-    pub amount: i128,
-}
+use soroban_sdk::{Env, Address, symbol_short};
 
-#[contractevent]
-pub struct Mint {
-    pub to: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-pub struct Burn {
-    pub from: Address,
-    pub amount: i128,
-}
-
-pub fn transfer(env: &soroban_sdk::Env, from: &Address, to: &Address, amount: i128) {
-    env.events().publish(Transfer {
-        from: from.clone(),
-        to: to.clone(),
+pub fn transfer(env: &Env, from: &Address, to: &Address, amount: i128) {
+    env.events().publish(
+        (
+            symbol_short!("transfer"),
+            from.clone(),
+            to.clone(),
+        ),
         amount,
-    });
+    );
 }
 
-pub fn mint(env: &soroban_sdk::Env, to: &Address, amount: i128) {
-    env.events().publish(Mint {
-        to: to.clone(),
+pub fn mint(env: &Env, to: &Address, amount: i128) {
+    env.events().publish(
+        (
+            symbol_short!("mint"),
+            to.clone(),
+        ),
         amount,
-    });
+    );
 }
 
-pub fn burn(env: &soroban_sdk::Env, from: &Address, amount: i128) {
-    env.events().publish(Burn {
-        from: from.clone(),
+pub fn burn(env: &Env, from: &Address, amount: i128) {
+    env.events().publish(
+        (
+            symbol_short!("burn"),
+            from.clone(),
+        ),
         amount,
-    });
+    );
 }
