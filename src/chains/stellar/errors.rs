@@ -31,24 +31,6 @@ pub enum StellarError {
 
     #[error("Unexpected error: {message}")]
     UnexpectedError { message: String },
-
-    #[error("Invalid payment amount: {message}")]
-    InvalidAmount { message: String },
-
-    #[error("Trustline not found for asset {asset_code} issued by {issuer}")]
-    TrustlineNotFound { asset_code: String, issuer: String },
-
-    #[error("Fee estimation failed: {message}")]
-    FeeEstimationFailed { message: String },
-
-    #[error("Transaction signing failed: {message}")]
-    SigningFailed { message: String },
-
-    #[error("Invalid memo: {message}")]
-    InvalidMemo { message: String },
-
-    #[error("Transaction build failed: {message}")]
-    BuildFailed { message: String },
 }
 
 #[allow(dead_code)]
@@ -95,43 +77,6 @@ impl StellarError {
 
     pub fn unexpected_error(message: impl Into<String>) -> Self {
         Self::UnexpectedError {
-            message: message.into(),
-        }
-    }
-
-    pub fn invalid_amount(message: impl Into<String>) -> Self {
-        Self::InvalidAmount {
-            message: message.into(),
-        }
-    }
-
-    pub fn trustline_not_found(asset_code: impl Into<String>, issuer: impl Into<String>) -> Self {
-        Self::TrustlineNotFound {
-            asset_code: asset_code.into(),
-            issuer: issuer.into(),
-        }
-    }
-
-    pub fn fee_estimation_failed(message: impl Into<String>) -> Self {
-        Self::FeeEstimationFailed {
-            message: message.into(),
-        }
-    }
-
-    pub fn signing_failed(message: impl Into<String>) -> Self {
-        Self::SigningFailed {
-            message: message.into(),
-        }
-    }
-
-    pub fn invalid_memo(message: impl Into<String>) -> Self {
-        Self::InvalidMemo {
-            message: message.into(),
-        }
-    }
-
-    pub fn build_failed(message: impl Into<String>) -> Self {
-        Self::BuildFailed {
             message: message.into(),
         }
     }
