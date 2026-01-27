@@ -19,13 +19,15 @@ fn mint_transfer_burn_flow_works() {
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
 
-    let contract_id = env.register(None, AfrIContract);
+    // Register contract
+    let contract_id = env.register(AfrIContract, ());
     let client = AfrIContractClient::new(&env, &contract_id);
 
+    // Initialize contract
     client.init(&admin);
 
-    // Mint
-    client.mint(&user1, &100);
+    // Mint by admin
+    client.mint(&admin, &user1, &100);
     assert_eq!(client.balance(&user1), 100);
 
     // Transfer
@@ -48,7 +50,7 @@ fn transfer_fails_on_insufficient_balance() {
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
 
-    let contract_id = env.register(None, AfrIContract);
+    let contract_id = env.register(AfrIContract, ());
     let client = AfrIContractClient::new(&env, &contract_id);
 
     client.init(&admin);
@@ -66,11 +68,11 @@ fn mint_fails_for_non_admin() {
     let admin = Address::generate(&env);
     let attacker = Address::generate(&env);
 
-    let contract_id = env.register(None, AfrIContract);
+    let contract_id = env.register(AfrIContract, ());
     let client = AfrIContractClient::new(&env, &contract_id);
 
     client.init(&admin);
 
     // Attacker tries to mint → should panic
-    client.mint(&attacker, &100);
+    client.mint(&attacker, &attacker, &100);
 }
