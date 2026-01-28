@@ -31,6 +31,10 @@ pub mod middleware;
 #[cfg(feature = "cache")]
 pub mod cache;
 
+// Payment providers
+#[cfg(feature = "database")]
+pub mod payments;
+
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
 #[contracterror]
