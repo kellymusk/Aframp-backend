@@ -11,7 +11,6 @@ pub mod provider_config_repository;
 pub mod repository;
 pub mod transaction;
 pub mod transaction_repository;
-pub mod onramp_quote_repository;
 pub mod trustline_operation_repository;
 pub mod trustline_repository;
 pub mod wallet_repository;
