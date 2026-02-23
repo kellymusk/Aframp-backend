@@ -82,7 +82,6 @@ impl ComponentHealth {
     }
 }
 
-
 /// Health checker for the application
 #[derive(Clone)]
 pub struct HealthChecker {
@@ -186,7 +185,12 @@ impl HealthChecker {
 
         // Check Stellar health
         if let Some(stellar_client) = &self.stellar_client {
-            match timeout(Duration::from_secs(10), check_stellar_health(stellar_client)).await {
+            match timeout(
+                Duration::from_secs(10),
+                check_stellar_health(stellar_client),
+            )
+            .await
+            {
                 Ok(stellar_result) => match stellar_result {
                     Ok(response_time) => {
                         health_status.checks.insert(

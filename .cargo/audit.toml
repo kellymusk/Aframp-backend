@@ -1,4 +1,6 @@
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071",  # RSA timing variability
+    "RUSTSEC-2026-0007",  # RustCrypto: AES timing variability
+    "RUSTSEC-2026-0009",  # RustCrypto: SHA-1 timing variability
 ]

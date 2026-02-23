@@ -140,13 +140,10 @@ impl FeeCalculationService {
         payment_method: Option<&str>,
     ) -> Result<FeeBreakdown, DatabaseError> {
         let currency = "NGN".to_string();
-        
-        let fee_config = self.find_matching_tier(
-            transaction_type,
-            &amount,
-            provider,
-            payment_method,
-        ).await?;
+
+        let fee_config = self
+            .find_matching_tier(transaction_type, &amount, provider, payment_method)
+            .await?;
 
         let provider_fee = if let Some(config) = &fee_config {
             self.calculate_provider_fee(&amount, config, provider, payment_method)
@@ -165,7 +162,10 @@ impl FeeCalculationService {
 
         let stellar_fee = self.calculate_stellar_fee().await;
 
-        let total = provider_fee.as_ref().map(|p| p.calculated.clone()).unwrap_or_else(|| BigDecimal::from_str("0").unwrap())
+        let total = provider_fee
+            .as_ref()
+            .map(|p| p.calculated.clone())
+            .unwrap_or_else(|| BigDecimal::from_str("0").unwrap())
             + platform_fee.calculated.clone()
             + stellar_fee.ngn.clone();
 
@@ -188,7 +188,8 @@ impl FeeCalculationService {
         };
 
         if let Some(config) = fee_config {
-            self.log_calculation(&breakdown, config.id, transaction_type).await?;
+            self.log_calculation(&breakdown, config.id, transaction_type)
+                .await?;
         }
 
         Ok(breakdown)
@@ -204,12 +205,14 @@ impl FeeCalculationService {
         let mut max_fee = None;
 
         for provider in providers {
-            let breakdown = self.calculate_fees(
-                transaction_type,
-                amount.clone(),
-                Some(provider),
-                Some("card"),
-            ).await?;
+            let breakdown = self
+                .calculate_fees(
+                    transaction_type,
+                    amount.clone(),
+                    Some(provider),
+                    Some("card"),
+                )
+                .await?;
 
             if min_fee.is_none() || breakdown.total < min_fee.clone().unwrap() {
                 min_fee = Some(breakdown.total.clone());
@@ -232,8 +235,9 @@ impl FeeCalculationService {
         provider: Option<&str>,
         payment_method: Option<&str>,
     ) -> Result<Option<FeeConfig>, DatabaseError> {
-        let cache_key = format!("{}:{}:{}", 
-            transaction_type, 
+        let cache_key = format!(
+            "{}:{}:{}",
+            transaction_type,
             provider.unwrap_or("default"),
             payment_method.unwrap_or("default")
         );
@@ -249,8 +253,10 @@ impl FeeCalculationService {
             }
         }
 
-        let configs = self.load_fee_configs(transaction_type, provider, payment_method).await?;
-        
+        let configs = self
+            .load_fee_configs(transaction_type, provider, payment_method)
+            .await?;
+
         {
             let mut cache = self.cache.write().await;
             cache.insert(cache_key, configs.clone());
@@ -318,18 +324,21 @@ impl FeeCalculationService {
             .await
             .map_err(DatabaseError::from_sqlx)?;
 
-        let configs = rows.into_iter().map(|row| FeeConfig {
-            id: row.id,
-            transaction_type: row.transaction_type,
-            payment_provider: row.payment_provider,
-            payment_method: row.payment_method,
-            min_amount: row.min_amount,
-            max_amount: row.max_amount,
-            provider_fee_percent: row.provider_fee_percent,
-            provider_fee_flat: row.provider_fee_flat,
-            provider_fee_cap: row.provider_fee_cap,
-            platform_fee_percent: row.platform_fee_percent,
-        }).collect();
+        let configs = rows
+            .into_iter()
+            .map(|row| FeeConfig {
+                id: row.id,
+                transaction_type: row.transaction_type,
+                payment_provider: row.payment_provider,
+                payment_method: row.payment_method,
+                min_amount: row.min_amount,
+                max_amount: row.max_amount,
+                provider_fee_percent: row.provider_fee_percent,
+                provider_fee_flat: row.provider_fee_flat,
+                provider_fee_cap: row.provider_fee_cap,
+                platform_fee_percent: row.platform_fee_percent,
+            })
+            .collect();
 
         Ok(configs)
     }
@@ -342,10 +351,13 @@ impl FeeCalculationService {
         payment_method: Option<&str>,
     ) -> Option<ProviderFee> {
         let percent = config.provider_fee_percent.clone()?;
-        let flat = config.provider_fee_flat.clone().unwrap_or_else(|| BigDecimal::from_str("0").unwrap());
-        
+        let flat = config
+            .provider_fee_flat
+            .clone()
+            .unwrap_or_else(|| BigDecimal::from_str("0").unwrap());
+
         let mut calculated = (amount * &percent / BigDecimal::from_str("100").unwrap()) + &flat;
-        
+
         if let Some(cap) = &config.provider_fee_cap {
             if &calculated > cap {
                 calculated = cap.clone();
@@ -363,7 +375,10 @@ impl FeeCalculationService {
     }
 
     fn calculate_platform_fee(&self, amount: &BigDecimal, config: &FeeConfig) -> PlatformFee {
-        let percent = config.platform_fee_percent.clone().unwrap_or_else(|| BigDecimal::from_str("0").unwrap());
+        let percent = config
+            .platform_fee_percent
+            .clone()
+            .unwrap_or_else(|| BigDecimal::from_str("0").unwrap());
         let calculated = amount * &percent / BigDecimal::from_str("100").unwrap();
 
         PlatformFee {
@@ -374,7 +389,10 @@ impl FeeCalculationService {
 
     async fn calculate_stellar_fee(&self) -> StellarFee {
         let xlm_fee = BigDecimal::from_str("0.00001").unwrap();
-        let xlm_rate = self.get_xlm_rate().await.unwrap_or_else(|| BigDecimal::from_str("150").unwrap());
+        let xlm_rate = self
+            .get_xlm_rate()
+            .await
+            .unwrap_or_else(|| BigDecimal::from_str("150").unwrap());
         let _ngn_fee = &xlm_fee * &xlm_rate;
 
         StellarFee {
@@ -387,7 +405,11 @@ impl FeeCalculationService {
     async fn get_xlm_rate(&self) -> Option<BigDecimal> {
         let cache = self.xlm_rate_cache.read().await;
         if let Some((rate, timestamp)) = cache.as_ref() {
-            if chrono::Utc::now().signed_duration_since(*timestamp).num_minutes() < 5 {
+            if chrono::Utc::now()
+                .signed_duration_since(*timestamp)
+                .num_minutes()
+                < 5
+            {
                 return Some(rate.clone());
             }
         }
@@ -422,7 +444,13 @@ impl FeeCalculationService {
             .bind(breakdown.provider.as_ref().map(|p| p.name.as_str()))
             .bind(breakdown.provider.as_ref().map(|p| p.method.as_str()))
             .bind(fee_structure_id)
-            .bind(breakdown.provider.as_ref().map(|p| &p.calculated).unwrap_or(&BigDecimal::from_str("0").unwrap()))
+            .bind(
+                breakdown
+                    .provider
+                    .as_ref()
+                    .map(|p| &p.calculated)
+                    .unwrap_or(&BigDecimal::from_str("0").unwrap()),
+            )
             .bind(&breakdown.platform.calculated)
             .bind(&breakdown.stellar.xlm)
             .bind(&breakdown.stellar.ngn)
@@ -447,8 +475,8 @@ impl FeeCalculationService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_amount_in_range() {
+    #[tokio::test]
+    async fn test_amount_in_range() {
         let amount = BigDecimal::from_str("10000").unwrap();
         let min = Some(BigDecimal::from_str("1000").unwrap());
         let max = Some(BigDecimal::from_str("50000").unwrap());
@@ -456,7 +484,7 @@ mod tests {
         // Create a mock service just for testing the method
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let service = FeeCalculationService::new(pool);
-        
+
         assert!(service.amount_in_range(&amount, &min, &max));
     }
 

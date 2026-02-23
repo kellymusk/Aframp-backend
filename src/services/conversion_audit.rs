@@ -96,10 +96,7 @@ impl ConversionAuditService {
     }
 
     /// Update a conversion audit record
-    pub async fn update(
-        &self,
-        audit: &ConversionAudit,
-    ) -> Result<ConversionAudit, DatabaseError> {
+    pub async fn update(&self, audit: &ConversionAudit) -> Result<ConversionAudit, DatabaseError> {
         self.repo.update(&audit.id.to_string(), audit).await
     }
 
@@ -112,10 +109,12 @@ impl ConversionAuditService {
             .repo
             .find_by_id(&audit_id.to_string())
             .await?
-            .ok_or_else(|| DatabaseError::new(crate::database::error::DatabaseErrorKind::NotFound {
-                entity: "ConversionAudit".to_string(),
-                id: audit_id.to_string(),
-            }))?;
+            .ok_or_else(|| {
+                DatabaseError::new(crate::database::error::DatabaseErrorKind::NotFound {
+                    entity: "ConversionAudit".to_string(),
+                    id: audit_id.to_string(),
+                })
+            })?;
 
         audit.transaction_id = Some(transaction_id);
         self.update(&audit).await

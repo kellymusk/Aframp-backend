@@ -128,9 +128,7 @@ impl WebhookProcessor {
             .as_ref()
             .or(event.provider_reference.as_ref())
             .ok_or_else(|| {
-                WebhookProcessorError::ProcessingError(
-                    "Missing transaction reference".to_string(),
-                )
+                WebhookProcessorError::ProcessingError("Missing transaction reference".to_string())
             })?;
 
         // Determine event type and process accordingly
@@ -206,9 +204,7 @@ impl WebhookProcessor {
             "flutterwave" => Ok(ProviderName::Flutterwave),
             "paystack" => Ok(ProviderName::Paystack),
             "mpesa" => Ok(ProviderName::Mpesa),
-            _ => Err(WebhookProcessorError::UnknownProvider(
-                provider.to_string(),
-            )),
+            _ => Err(WebhookProcessorError::UnknownProvider(provider.to_string())),
         }
     }
 

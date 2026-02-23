@@ -55,6 +55,7 @@ hex = { version = "0.4", optional = true }
 stellar-strkey = { version = "0.0.16", optional = true }
 ed25519-dalek = { version = "2.1.1", optional = true }
 stellar-xdr = { version = "25.0.0", features = ["next", "base64"], optional = true }
+nuban = "1.1.0"
 
 
 

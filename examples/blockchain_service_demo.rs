@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use Bitmesh_backend::chains::stellar::client::StellarClient;
 use Bitmesh_backend::chains::stellar::config::{StellarConfig, StellarNetwork};
 use Bitmesh_backend::chains::stellar::service::StellarBlockchainService;
@@ -100,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Multi-chain aggregator demo
     println!("🌐 Multi-Chain Balance Aggregator Demo");
-    let chains: Vec<Box<dyn BlockchainService>> = vec![Box::new(stellar_service)];
+    let chains: Vec<Arc<dyn BlockchainService>> = vec![Arc::new(stellar_service)];
 
     let aggregator = MultiChainBalanceAggregator::new(chains);
 

@@ -20,7 +20,10 @@ impl WebhookRetryWorker {
 
     pub async fn run(&self) {
         let mut ticker = interval(Duration::from_secs(self.interval_secs));
-        info!(interval_secs = self.interval_secs, "Webhook retry worker started");
+        info!(
+            interval_secs = self.interval_secs,
+            "Webhook retry worker started"
+        );
 
         loop {
             ticker.tick().await;

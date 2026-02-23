@@ -3,12 +3,7 @@
 //! Provides a public endpoint to list available bill payment providers in Nigeria.
 //! Users can discover what services they can pay for using cNGN.
 
-use axum::{
-    extract::Query,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Query, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
@@ -236,9 +231,7 @@ pub struct ProvidersResponse {
 }
 
 /// Get all bill payment providers
-pub async fn get_providers(
-    Query(query): Query<ProviderQuery>,
-) -> impl IntoResponse {
+pub async fn get_providers(Query(query): Query<ProviderQuery>) -> impl IntoResponse {
     info!(
         country = ?query.country,
         category = ?query.category,
@@ -250,32 +243,40 @@ pub async fn get_providers(
     // Validate country (only NG supported for now)
     let country = query.country.unwrap_or_else(|| "NG".to_string());
     if country != "NG" {
-        return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: ErrorDetails {
-                code: "UNSUPPORTED_COUNTRY".to_string(),
-                message: format!("Bill payments not available in country: {}", country),
-                supported_countries: Some(vec!["NG".to_string()]),
-                supported_categories: None,
-            },
-        })).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: ErrorDetails {
+                    code: "UNSUPPORTED_COUNTRY".to_string(),
+                    message: format!("Bill payments not available in country: {}", country),
+                    supported_countries: Some(vec!["NG".to_string()]),
+                    supported_categories: None,
+                },
+            }),
+        )
+            .into_response();
     }
 
     // Validate category if provided
     if let Some(ref cat) = query.category {
         if ProviderCategory::from_str(cat).is_none() {
-            return (StatusCode::BAD_REQUEST, Json(ErrorResponse {
-                error: ErrorDetails {
-                    code: "INVALID_CATEGORY".to_string(),
-                    message: format!("Invalid category: {}", cat),
-                    supported_categories: Some(vec![
-                        "electricity".to_string(),
-                        "airtime".to_string(),
-                        "data".to_string(),
-                        "cable_tv".to_string(),
-                    ]),
-                    supported_countries: None,
-                },
-            })).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: ErrorDetails {
+                        code: "INVALID_CATEGORY".to_string(),
+                        message: format!("Invalid category: {}", cat),
+                        supported_categories: Some(vec![
+                            "electricity".to_string(),
+                            "airtime".to_string(),
+                            "data".to_string(),
+                            "cable_tv".to_string(),
+                        ]),
+                        supported_countries: None,
+                    },
+                }),
+            )
+                .into_response();
         }
     }
 
@@ -304,22 +305,30 @@ pub async fn get_providers(
 
     // Check if we should group by category
     if query.group_by.as_deref() == Some("category") {
-        return (StatusCode::OK, Json(ProvidersResponse {
-            country,
-            category: query.category,
-            providers: vec![], // Empty when grouped
-            total_providers,
-            categories: Some(categories),
-        })).into_response();
+        return (
+            StatusCode::OK,
+            Json(ProvidersResponse {
+                country,
+                category: query.category,
+                providers: vec![], // Empty when grouped
+                total_providers,
+                categories: Some(categories),
+            }),
+        )
+            .into_response();
     }
 
-    (StatusCode::OK, Json(ProvidersResponse {
-        country,
-        category: query.category,
-        providers,
-        total_providers,
-        categories: Some(categories),
-    })).into_response()
+    (
+        StatusCode::OK,
+        Json(ProvidersResponse {
+            country,
+            category: query.category,
+            providers,
+            total_providers,
+            categories: Some(categories),
+        }),
+    )
+        .into_response()
 }
 
 /// Group providers by category
@@ -327,7 +336,10 @@ fn group_providers_by_category(providers: Vec<BillProvider>) -> HashMap<String, 
     let mut grouped: HashMap<String, Vec<BillProvider>> = HashMap::new();
     for provider in providers {
         let category = provider.category.to_string();
-        grouped.entry(category).or_insert_with(Vec::new).push(provider);
+        grouped
+            .entry(category)
+            .or_insert_with(Vec::new)
+            .push(provider);
     }
     grouped
 }
@@ -335,7 +347,7 @@ fn group_providers_by_category(providers: Vec<BillProvider>) -> HashMap<String, 
 /// Build category summary
 fn build_category_summary(providers: &[BillProvider]) -> Vec<CategorySummary> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    
+
     for provider in providers {
         let cat = provider.category.to_string();
         *counts.entry(cat).or_insert(0) += 1;
@@ -970,7 +982,6 @@ pub fn get_all_providers() -> Vec<BillProvider> {
             },
             help_url: Some("https://aframp.com/help/electricity-bills".to_string()),
         },
-
         // ==================== AIRTIME PROVIDERS ====================
         BillProvider {
             provider_id: "mtn-airtime".to_string(),
@@ -1184,7 +1195,6 @@ pub fn get_all_providers() -> Vec<BillProvider> {
             },
             help_url: Some("https://aframp.com/help/airtime".to_string()),
         },
-
         // ==================== DATA PROVIDERS ====================
         BillProvider {
             provider_id: "mtn-data".to_string(),
@@ -1506,7 +1516,6 @@ pub fn get_all_providers() -> Vec<BillProvider> {
             },
             help_url: Some("https://aframp.com/help/data".to_string()),
         },
-
         // ==================== CABLE TV PROVIDERS ====================
         BillProvider {
             provider_id: "dstv".to_string(),
@@ -1745,10 +1754,22 @@ mod tests {
 
     #[test]
     fn test_provider_category_from_str() {
-        assert_eq!(ProviderCategory::from_str("electricity"), Some(ProviderCategory::Electricity));
-        assert_eq!(ProviderCategory::from_str("airtime"), Some(ProviderCategory::Airtime));
-        assert_eq!(ProviderCategory::from_str("data"), Some(ProviderCategory::Data));
-        assert_eq!(ProviderCategory::from_str("cable_tv"), Some(ProviderCategory::CableTv));
+        assert_eq!(
+            ProviderCategory::from_str("electricity"),
+            Some(ProviderCategory::Electricity)
+        );
+        assert_eq!(
+            ProviderCategory::from_str("airtime"),
+            Some(ProviderCategory::Airtime)
+        );
+        assert_eq!(
+            ProviderCategory::from_str("data"),
+            Some(ProviderCategory::Data)
+        );
+        assert_eq!(
+            ProviderCategory::from_str("cable_tv"),
+            Some(ProviderCategory::CableTv)
+        );
         assert_eq!(ProviderCategory::from_str("invalid"), None);
     }
 
@@ -1764,38 +1785,59 @@ mod tests {
     fn test_get_all_providers() {
         let providers = get_all_providers();
         assert!(!providers.is_empty());
-        
+
         // Check we have all categories
-        let electricity_count = providers.iter().filter(|p| p.category == ProviderCategory::Electricity).count();
-        let airtime_count = providers.iter().filter(|p| p.category == ProviderCategory::Airtime).count();
-        let data_count = providers.iter().filter(|p| p.category == ProviderCategory::Data).count();
-        let cable_count = providers.iter().filter(|p| p.category == ProviderCategory::CableTv).count();
-        
+        let electricity_count = providers
+            .iter()
+            .filter(|p| p.category == ProviderCategory::Electricity)
+            .count();
+        let airtime_count = providers
+            .iter()
+            .filter(|p| p.category == ProviderCategory::Airtime)
+            .count();
+        let data_count = providers
+            .iter()
+            .filter(|p| p.category == ProviderCategory::Data)
+            .count();
+        let cable_count = providers
+            .iter()
+            .filter(|p| p.category == ProviderCategory::CableTv)
+            .count();
+
         assert_eq!(electricity_count, 8); // 8 DISCOs
         assert_eq!(airtime_count, 4); // 4 networks
         assert_eq!(data_count, 4); // 4 networks
         assert_eq!(cable_count, 3); // DSTV, GOtv, Startimes
-        
-        assert_eq!(providers.len(), 23); // Total
+
+        assert_eq!(providers.len(), 19); // Total (8 electricity + 4 airtime + 4 data + 3 cable)
     }
 
     #[test]
     fn test_build_category_summary() {
         let providers = get_all_providers();
         let categories = build_category_summary(&providers);
-        
+
         assert_eq!(categories.len(), 4);
-        
-        let electricity_cat = categories.iter().find(|c| c.category_id == "electricity").unwrap();
+
+        let electricity_cat = categories
+            .iter()
+            .find(|c| c.category_id == "electricity")
+            .unwrap();
         assert_eq!(electricity_cat.count, 8);
-        
-        let airtime_cat = categories.iter().find(|c| c.category_id == "airtime").unwrap();
+
+        let airtime_cat = categories
+            .iter()
+            .find(|c| c.category_id == "airtime")
+            .unwrap();
         assert_eq!(airtime_cat.count, 4);
-        
+
         let data_cat = categories.iter().find(|c| c.category_id == "data").unwrap();
         assert_eq!(data_cat.count, 4);
-        
-        let cable_cat = categories.iter().find(|c| c.category_id == "cable_tv").unwrap();
+
+        let cable_cat = categories
+            .iter()
+            .find(|c| c.category_id == "cable_tv")
+            .unwrap();
         assert_eq!(cable_cat.count, 3);
     }
 }

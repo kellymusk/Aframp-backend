@@ -52,10 +52,11 @@ pub struct Money {
 
 impl Money {
     pub fn validate_positive(&self, field: &str) -> Result<(), PaymentError> {
-        let parsed = BigDecimal::from_str(&self.amount).map_err(|_| PaymentError::ValidationError {
-            message: format!("invalid decimal amount: {}", self.amount),
-            field: Some(field.to_string()),
-        })?;
+        let parsed =
+            BigDecimal::from_str(&self.amount).map_err(|_| PaymentError::ValidationError {
+                message: format!("invalid decimal amount: {}", self.amount),
+                field: Some(field.to_string()),
+            })?;
         if parsed <= BigDecimal::from(0) {
             return Err(PaymentError::ValidationError {
                 message: "amount must be greater than zero".to_string(),

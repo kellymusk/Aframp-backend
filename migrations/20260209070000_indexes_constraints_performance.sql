@@ -82,18 +82,3 @@ BEGIN
     END IF;
 END $$;
 
--- migrate:down
-DROP INDEX IF EXISTS idx_fee_structures_type_effective;
-DROP INDEX IF EXISTS idx_fee_structures_active_type;
-DROP INDEX IF EXISTS idx_trustline_operations_status_created_at;
-DROP INDEX IF EXISTS idx_trustline_operations_wallet_created_at;
-DROP INDEX IF EXISTS idx_conversion_audits_metadata_gin;
-DROP INDEX IF EXISTS idx_conversion_audits_transaction_id;
-DROP INDEX IF EXISTS idx_conversion_audits_status_created_at;
-DROP INDEX IF EXISTS idx_conversion_audits_wallet_created_at;
-DROP INDEX IF EXISTS idx_conversion_audits_user_created_at;
-DROP INDEX IF EXISTS idx_exchange_rates_pair_valid_until;
-
-ALTER TABLE fee_structures DROP CONSTRAINT IF EXISTS chk_fee_structures_effective_range;
-ALTER TABLE fee_structures DROP CONSTRAINT IF EXISTS chk_fee_structures_min_max;
-ALTER TABLE exchange_rates DROP CONSTRAINT IF EXISTS chk_exchange_rates_valid_range;

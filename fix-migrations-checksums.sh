@@ -1,53 +1,74 @@
 #!/bin/bash
-# Fix migration checksums by calculating them from the actual migration files
-# This resolves the "migration was previously applied but has been modified" error
+# Fix SQLx migration checksums to match current migration file contents.
+# Resolves: "migration <version> was previously applied but has been modified"
 
-set -e
+set -euo pipefail
 
-DB_NAME="aframp"
+DB_NAME="${1:-aframp}"
 
-echo "🔧 Fixing migration checksums for $DB_NAME..."
+if [ -n "${DATABASE_URL:-}" ]; then
+    PSQL_CMD=(psql "$DATABASE_URL")
+    DB_LABEL="$DATABASE_URL"
+else
+    PSQL_CMD=(psql -d "$DB_NAME")
+    DB_LABEL="$DB_NAME"
+fi
 
-# Function to calculate SHA256 checksum of a file and format it for PostgreSQL
-calculate_checksum() {
-    local file=$1
-    # Calculate SHA256, output as hex, and format for PostgreSQL bytea
-    sha256sum "$file" | awk '{print "\\x" $1}'
-}
+echo "🔧 Fixing migration checksums for: $DB_LABEL"
 
-# Calculate checksums for each migration file
-CHECKSUM_1=$(calculate_checksum "migrations/20260122120000_create_core_schema.sql")
-CHECKSUM_2=$(calculate_checksum "migrations/20260123040000_implement_payments_schema.sql")
-CHECKSUM_3=$(calculate_checksum "migrations/20260124000000_indexes_and_constraints.sql")
+if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "❌ sha256sum not found"
+    exit 1
+fi
 
-echo "📊 Calculated checksums:"
-echo "  Migration 1: $CHECKSUM_1"
-echo "  Migration 2: $CHECKSUM_2"
-echo "  Migration 3: $CHECKSUM_3"
+if ! command -v psql >/dev/null 2>&1; then
+    echo "❌ psql not found"
+    exit 1
+fi
 
-# Update the checksums in the database
-psql -d "$DB_NAME" << EOF
--- Update checksum for migration 1
-UPDATE _sqlx_migrations 
-SET checksum = '$CHECKSUM_1'::bytea
-WHERE version = 20260122120000;
+tmp_sql="$(mktemp)"
+trap 'rm -f "$tmp_sql"' EXIT
 
--- Update checksum for migration 2
-UPDATE _sqlx_migrations 
-SET checksum = '$CHECKSUM_2'::bytea
-WHERE version = 20260123040000;
+echo "-- Auto-generated checksum updates" > "$tmp_sql"
+echo "BEGIN;" >> "$tmp_sql"
 
--- Update checksum for migration 3
-UPDATE _sqlx_migrations 
-SET checksum = '$CHECKSUM_3'::bytea
-WHERE version = 20260124000000;
+updated_count=0
+skipped_count=0
+
+while IFS= read -r file; do
+    base="$(basename "$file")"
+    version="${base%%_*}"
+
+    if ! [[ "$version" =~ ^[0-9]+$ ]]; then
+        echo "⚠️  Skipping invalid migration filename: $base"
+        skipped_count=$((skipped_count + 1))
+        continue
+    fi
+
+    hex_checksum="$(sha256sum "$file" | awk '{print $1}')"
+
+    cat >> "$tmp_sql" <<EOF
+UPDATE _sqlx_migrations
+SET checksum = decode('$hex_checksum', 'hex')
+WHERE version = $version;
 EOF
 
-echo ""
-echo "✅ Migration checksums fixed!"
-echo ""
-echo "Verification:"
-psql -d "$DB_NAME" -c "SELECT version, description, encode(checksum, 'hex') as checksum FROM _sqlx_migrations ORDER BY version;"
+    echo "  queued: $version -> $hex_checksum"
+    updated_count=$((updated_count + 1))
+done < <(find migrations -maxdepth 1 -type f -name '*.sql' | sort)
+
+echo "COMMIT;" >> "$tmp_sql"
+
+if [ "$updated_count" -eq 0 ]; then
+    echo "❌ No migration SQL files found under ./migrations"
+    exit 1
+fi
+
+"${PSQL_CMD[@]}" -v ON_ERROR_STOP=1 -f "$tmp_sql"
 
 echo ""
-echo "✅ You can now run ./setup.sh without migration errors!"
+echo "✅ Updated checksums for $updated_count migration file(s); skipped $skipped_count file(s)."
+echo "📊 Current migration checksums:"
+"${PSQL_CMD[@]}" -c "SELECT version, description, success, encode(checksum, 'hex') AS checksum FROM _sqlx_migrations ORDER BY version;"
+echo ""
+echo "✅ Retry: sqlx migrate run"

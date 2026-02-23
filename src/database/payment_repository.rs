@@ -41,9 +41,7 @@ impl PaymentRepository {
     }
 
     /// List all provider configurations
-    pub async fn list_provider_configs(
-        &self,
-    ) -> Result<Vec<PaymentProviderConfig>, DatabaseError> {
+    pub async fn list_provider_configs(&self) -> Result<Vec<PaymentProviderConfig>, DatabaseError> {
         sqlx::query_as::<_, PaymentProviderConfig>(
             "SELECT provider, is_enabled, settings, created_at, updated_at 
              FROM payment_provider_configs 

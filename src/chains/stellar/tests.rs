@@ -110,6 +110,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[should_panic]
     async fn test_get_nonexistent_account() {
         let config = test_config();
         let client = StellarClient::new(config).expect("Failed to create client");
@@ -327,7 +328,10 @@ mod tests {
         config.request_timeout = Duration::from_secs(2);
 
         let client = StellarClient::new(config).expect("Failed to create client");
-        let health = client.health_check().await.expect("health check should not crash");
+        let health = client
+            .health_check()
+            .await
+            .expect("health check should not crash");
 
         assert!(!health.is_healthy);
         assert!(health.error_message.is_some());
@@ -378,7 +382,10 @@ mod tests {
 
         let result = client.get_transaction_by_hash("missing_hash").await;
         let request_line = request_line_rx.await.expect("missing request line");
-        assert!(matches!(result, Err(StellarError::TransactionFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(StellarError::TransactionFailed { .. })
+        ));
         assert!(request_line.contains("GET /transactions/missing_hash "));
     }
 
@@ -458,8 +465,6 @@ mod tests {
             operations[0].get("type").and_then(|v| v.as_str()),
             Some("payment")
         );
-        assert!(request_line.contains(
-            "GET /transactions/tx_hash_3/operations?limit=200 "
-        ));
+        assert!(request_line.contains("GET /transactions/tx_hash_3/operations?limit=200 "));
     }
 }

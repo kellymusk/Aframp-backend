@@ -14,8 +14,8 @@ pub struct PaymentFactoryConfig {
 
 impl PaymentFactoryConfig {
     pub fn from_env() -> PaymentResult<Self> {
-        let default_provider = std::env::var("DEFAULT_PAYMENT_PROVIDER")
-            .unwrap_or_else(|_| "paystack".to_string());
+        let default_provider =
+            std::env::var("DEFAULT_PAYMENT_PROVIDER").unwrap_or_else(|_| "paystack".to_string());
         let default_provider = ProviderName::from_str(&default_provider)?;
 
         let enabled_raw = std::env::var("ENABLED_PAYMENT_PROVIDERS")
@@ -121,7 +121,13 @@ impl PaymentProviderFactory {
             .config
             .enabled_providers
             .iter()
-            .min_by_key(|p| self.config.provider_fee_bps.get(*p).copied().unwrap_or(u32::MAX))
+            .min_by_key(|p| {
+                self.config
+                    .provider_fee_bps
+                    .get(*p)
+                    .copied()
+                    .unwrap_or(u32::MAX)
+            })
             .cloned()
             .unwrap_or(self.config.default_provider.clone());
         self.get_provider(cheapest)

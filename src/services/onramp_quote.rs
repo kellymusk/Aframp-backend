@@ -5,14 +5,14 @@
 
 use crate::cache::cache::Cache;
 use crate::cache::keys::onramp::QuoteKey;
+use crate::cache::RedisCache;
+use crate::chains::stellar::client::StellarClient;
 use crate::chains::stellar::trustline::CngnTrustlineManager;
 use crate::chains::stellar::types::{extract_cngn_balance, is_valid_stellar_address};
 use crate::error::{AppError, AppErrorKind, DomainError, ValidationError};
 use crate::services::exchange_rate::{ConversionDirection, ConversionRequest, ExchangeRateService};
 use crate::services::fee_structure::{FeeCalculationInput, FeeStructureService};
-use bigdecimal::BigDecimal;
-use crate::cache::RedisCache;
-use crate::chains::stellar::client::StellarClient;
+use bigdecimal::{BigDecimal, Zero};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -33,7 +33,6 @@ const QUOTE_TTL_SECS: u64 = 180;
 pub enum PaymentProvider {
     Flutterwave,
     Paystack,
-    #[serde(other)]
     Other(String),
 }
 
@@ -62,7 +61,6 @@ impl From<&str> for PaymentProvider {
 #[serde(rename_all = "lowercase")]
 pub enum Chain {
     Stellar,
-    #[serde(other)]
     Other(String),
 }
 
@@ -82,6 +80,15 @@ impl From<&str> for Chain {
             _ => Chain::Other(s.to_string()),
         }
     }
+}
+
+fn decimal_to_i64_trunc(value: &BigDecimal) -> i64 {
+    value
+        .to_string()
+        .split('.')
+        .next()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 /// API request for onramp quote
@@ -210,11 +217,13 @@ impl OnrampQuoteService {
         }
 
         let amount_bd = BigDecimal::from(request.amount_ngn);
-        let chain = request
+        let requested_chain = request
             .chain
             .as_deref()
-            .unwrap_or("stellar")
-            .to_string();
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .unwrap_or("stellar");
+        let chain = Chain::from(requested_chain).as_str().to_string();
         let provider = request.provider.trim();
         if provider.is_empty() {
             return Err(AppError::new(AppErrorKind::Validation(
@@ -223,6 +232,7 @@ impl OnrampQuoteService {
                 },
             )));
         }
+        let provider = PaymentProvider::from(provider).as_str().to_string();
 
         // 3. Fetch cached rate and calculate conversion
         let conversion = self
@@ -235,10 +245,12 @@ impl OnrampQuoteService {
             })
             .await
             .map_err(|e| {
-                AppError::new(AppErrorKind::External(crate::error::ExternalError::Blockchain {
-                    message: e.to_string(),
-                    is_retryable: true,
-                }))
+                AppError::new(AppErrorKind::External(
+                    crate::error::ExternalError::Blockchain {
+                        message: e.to_string(),
+                        is_retryable: true,
+                    },
+                ))
             })?;
 
         // Parse fees from conversion result
@@ -246,21 +258,32 @@ impl OnrampQuoteService {
             .unwrap_or_else(|_| BigDecimal::from(0));
         let provider_fee_ngn = BigDecimal::from_str(&conversion.fees.provider_fee)
             .unwrap_or_else(|_| BigDecimal::from(0));
-        let total_fee_ngn = &platform_fee_ngn + &provider_fee_ngn;
-
         // If fee service returned zeros, try onramp-specific fee types
-        let (platform_fee_ngn, provider_fee_ngn) = if platform_fee_ngn.is_zero()
-            && provider_fee_ngn.is_zero()
-        {
-            self.calculate_onramp_fees(&amount_bd).await?
-        } else {
-            (platform_fee_ngn, provider_fee_ngn)
-        };
+        let (platform_fee_ngn, provider_fee_ngn) =
+            if platform_fee_ngn.is_zero() && provider_fee_ngn.is_zero() {
+                self.calculate_onramp_fees(&amount_bd).await?
+            } else {
+                (platform_fee_ngn, provider_fee_ngn)
+            };
 
         let total_fee_ngn = &platform_fee_ngn + &provider_fee_ngn;
         let amount_ngn_after_fees = &amount_bd - &total_fee_ngn;
-        let amount_cngn_bd = amount_ngn_after_fees.clone();
-        let rate = BigDecimal::from_str(&conversion.base_rate).unwrap_or_else(|_| BigDecimal::from(1));
+        if amount_ngn_after_fees <= BigDecimal::from(0) {
+            return Err(AppError::new(AppErrorKind::Domain(
+                DomainError::InvalidAmount {
+                    amount: request.amount_ngn.to_string(),
+                    reason: "Amount after fees must be greater than zero".to_string(),
+                },
+            )));
+        }
+
+        // Use conversion net amount when available; fall back to NGN-after-fees for peg scenarios.
+        let amount_cngn_bd = BigDecimal::from_str(&conversion.net_amount)
+            .ok()
+            .filter(|v| v > &BigDecimal::from(0))
+            .unwrap_or_else(|| amount_ngn_after_fees.clone());
+        let rate =
+            BigDecimal::from_str(&conversion.base_rate).unwrap_or_else(|_| BigDecimal::from(1));
 
         // 4. Check cNGN liquidity
         if self.liquidity_check_enabled {
@@ -269,17 +292,21 @@ impl OnrampQuoteService {
 
         // 5. Check trustline
         let trustline_manager = CngnTrustlineManager::new(self.stellar_client.clone());
-        let trustline_status = trustline_manager.check_trustline(wallet_address).await.map_err(
-            |e| match e {
+        let trustline_status = trustline_manager
+            .check_trustline(wallet_address)
+            .await
+            .map_err(|e| match e {
                 crate::chains::stellar::errors::StellarError::InvalidAddress { .. } => {
-                    AppError::new(AppErrorKind::Validation(ValidationError::InvalidWalletAddress {
-                        address: wallet_address.to_string(),
-                        reason: "Stellar wallet address is invalid or does not exist".to_string(),
-                    }))
+                    AppError::new(AppErrorKind::Validation(
+                        ValidationError::InvalidWalletAddress {
+                            address: wallet_address.to_string(),
+                            reason: "Stellar wallet address is invalid or does not exist"
+                                .to_string(),
+                        },
+                    ))
                 }
                 _ => AppError::from(e),
-            },
-        )?;
+            })?;
         let trustline_required = !trustline_status.has_trustline;
 
         // 6. Generate quote_id and persist to Redis
@@ -295,7 +322,7 @@ impl OnrampQuoteService {
             platform_fee_ngn: platform_fee_ngn.to_string(),
             provider_fee_ngn: provider_fee_ngn.to_string(),
             total_fee_ngn: total_fee_ngn.to_string(),
-            provider: provider.to_string(),
+            provider: provider.clone(),
             chain: chain.clone(),
             created_at: Utc::now().to_rfc3339(),
             expires_at: expires_at.to_rfc3339(),
@@ -320,18 +347,8 @@ impl OnrampQuoteService {
 
         debug!(quote_id = %quote_id, "Stored quote in Redis");
 
-        let amount_cngn_int = amount_cngn_bd
-            .to_string()
-            .split('.')
-            .next()
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        let amount_ngn_after_fees_int = amount_ngn_after_fees
-            .to_string()
-            .split('.')
-            .next()
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(request.amount_ngn);
+        let amount_cngn_int = decimal_to_i64_trunc(&amount_cngn_bd);
+        let amount_ngn_after_fees_int = decimal_to_i64_trunc(&amount_ngn_after_fees);
 
         Ok(OnrampQuoteResponse {
             quote_id,
@@ -339,12 +356,12 @@ impl OnrampQuoteService {
             expires_in_seconds: QUOTE_TTL_SECS,
             input: QuoteInput {
                 amount_ngn: request.amount_ngn,
-                provider: provider.to_string(),
+                provider,
             },
             fees: QuoteFees {
-                platform_fee_ngn: platform_fee_ngn.to_string().split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0),
-                provider_fee_ngn: provider_fee_ngn.to_string().split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0),
-                total_fee_ngn: total_fee_ngn.to_string().split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                platform_fee_ngn: decimal_to_i64_trunc(&platform_fee_ngn),
+                provider_fee_ngn: decimal_to_i64_trunc(&provider_fee_ngn),
+                total_fee_ngn: decimal_to_i64_trunc(&total_fee_ngn),
             },
             output: QuoteOutput {
                 amount_ngn_after_fees: amount_ngn_after_fees_int,
@@ -396,8 +413,12 @@ impl OnrampQuoteService {
                 ))
             })?;
 
-        let platform_fee_bd = platform_fee.map(|r| r.fee).unwrap_or_else(|| BigDecimal::from(0));
-        let provider_fee_bd = provider_fee.map(|r| r.fee).unwrap_or_else(|| BigDecimal::from(0));
+        let platform_fee_bd = platform_fee
+            .map(|r| r.fee)
+            .unwrap_or_else(|| BigDecimal::from(0));
+        let provider_fee_bd = provider_fee
+            .map(|r| r.fee)
+            .unwrap_or_else(|| BigDecimal::from(0));
 
         if platform_fee_bd.is_zero() && provider_fee_bd.is_zero() {
             let total = self
@@ -433,18 +454,22 @@ impl OnrampQuoteService {
             .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
             .unwrap_or_else(|_| self.cngn_issuer.clone());
 
-        let account = self.stellar_client.get_account(&distribution_account).await.map_err(
-            |e| {
+        let account = self
+            .stellar_client
+            .get_account(&distribution_account)
+            .await
+            .map_err(|e| {
                 info!(
                     "Liquidity check skipped: could not fetch distribution account: {}",
                     e
                 );
-                AppError::new(AppErrorKind::External(crate::error::ExternalError::Blockchain {
-                    message: e.to_string(),
-                    is_retryable: true,
-                }))
-            },
-        )?;
+                AppError::new(AppErrorKind::External(
+                    crate::error::ExternalError::Blockchain {
+                        message: e.to_string(),
+                        is_retryable: true,
+                    },
+                ))
+            })?;
 
         let available = extract_cngn_balance(&account.balances, Some(&self.cngn_issuer));
         let available_bd: BigDecimal = available

@@ -27,9 +27,93 @@ jobs:
             echo "🚫 Pull requests must target the 'develop' branch, not 'main'."
             exit 1
           fi
-  test:
-    name: Test
+
+  changes:
+    name: Detect Changes
     runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      integration: ${{ steps.filter.outputs.integration }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'src/**'
+              - 'tests/**'
+              - 'examples/**'
+            integration:
+              - 'migrations/**'
+              - 'db/**'
+              - 'src/database/**'
+              - 'src/cache/**'
+              - 'tests/cache_integration_test.rs'
+              - 'tests/*integration*.rs'
+            ci:
+              - '.github/workflows/**'
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run unit tests only
+        run: cargo test --lib --bins --all-features -- --test-threads=4
+
+  integration-tests:
+    name: Integration Tests (Postgres + Redis)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.integration == 'true'
     services:
       postgres:
         image: postgres:14
@@ -76,21 +160,25 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check formatting
-        run: cargo fmt -- --check
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres
 
-      - name: Run tests
+      - name: Run database migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/aframp_test
+        run: sqlx migrate run
+
+      - name: Run integration tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/aframp_test
           REDIS_URL: redis://localhost:6379
-        run: cargo test --features database -- --test-threads=4
-
-      - name: Run clippy
-        run: cargo clippy --features database -- -D warnings
+        run: cargo test --tests --all-features -- --test-threads=2
 
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -102,7 +190,7 @@ jobs:
   build-push:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: [test, security-scan]
+    needs: [lint, unit-tests, integration-tests, security-scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

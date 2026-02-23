@@ -26,17 +26,31 @@ echo "  Database: $DB_NAME"
 echo "  User: $DB_USER"
 echo "  Password: [generated securely]"
 echo ""
-echo " password: $DB_PASSWORD"
+echo "  Password value: $DB_PASSWORD"
 echo ""
+
+if ! command -v sqlx >/dev/null 2>&1; then
+    echo "🔧 Installing sqlx CLI..."
+    cargo install sqlx-cli --no-default-features --features postgres
+fi
 
 # Create database and user
 echo "📊 Creating production database and user..."
 sudo -u postgres psql << EOF
--- Create database
-CREATE DATABASE $DB_NAME;
+-- Create database if it does not exist
+SELECT 'CREATE DATABASE $DB_NAME'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '$DB_NAME')\gexec
 
--- Create user with password
-CREATE USER $DB_USER WITH ENCRYPTED PASSWORD '$DB_PASSWORD';
+-- Create user if it does not exist
+DO \$\$
+BEGIN
+   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '$DB_USER') THEN
+      CREATE ROLE $DB_USER LOGIN PASSWORD '$DB_PASSWORD';
+   ELSE
+      ALTER ROLE $DB_USER WITH LOGIN PASSWORD '$DB_PASSWORD';
+   END IF;
+END
+\$\$;
 
 -- Grant privileges
 GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;
@@ -64,43 +78,9 @@ echo "✅ Database and user created!"
 
 # Run migrations
 echo "📋 Running database migrations..."
-sed '/-- migrate:down/,$d' migrations/20260122120000_create_core_schema.sql | sudo -u postgres psql -d $DB_NAME -v ON_ERROR_STOP=1
-echo "✅ Core schema created!"
-
-sed '/-- migrate:down/,$d' migrations/20260123040000_implement_payments_schema.sql | sudo -u postgres psql -d $DB_NAME -v ON_ERROR_STOP=1
-echo "✅ Payment schema created!"
-
-# Apply production optimizations
-echo "⚡ Applying production optimizations..."
-sudo -u postgres psql -d $DB_NAME << 'EOF'
--- Connection pooling settings
-ALTER SYSTEM SET max_connections = 200;
-ALTER SYSTEM SET shared_buffers = '256MB';
-ALTER SYSTEM SET effective_cache_size = '1GB';
-ALTER SYSTEM SET maintenance_work_mem = '64MB';
-ALTER SYSTEM SET checkpoint_completion_target = 0.9;
-ALTER SYSTEM SET wal_buffers = '16MB';
-ALTER SYSTEM SET default_statistics_target = 100;
-ALTER SYSTEM SET random_page_cost = 1.1;
-ALTER SYSTEM SET effective_io_concurrency = 200;
-ALTER SYSTEM SET work_mem = '4MB';
-ALTER SYSTEM SET min_wal_size = '1GB';
-ALTER SYSTEM SET max_wal_size = '4GB';
-
--- Logging for production
-ALTER SYSTEM SET log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ';
-ALTER SYSTEM SET log_checkpoints = on;
-ALTER SYSTEM SET log_connections = on;
-ALTER SYSTEM SET log_disconnections = on;
-ALTER SYSTEM SET log_lock_waits = on;
-ALTER SYSTEM SET log_temp_files = 0;
-ALTER SYSTEM SET log_autovacuum_min_duration = 0;
-
--- Performance monitoring
-CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-EOF
-
-echo "✅ Production optimizations applied!"
+# Avoid URL-parsing issues when password contains reserved characters (/, +, @, :)
+PGPASSWORD="$DB_PASSWORD" DATABASE_URL="postgresql://$DB_USER@localhost/$DB_NAME" sqlx migrate run
+echo "✅ Migrations applied!"
 
 # Create backup directory
 echo "💾 Setting up backup directory..."
@@ -137,8 +117,14 @@ cat > .env.production << ENV_FILE
 DATABASE_URL=postgresql://$DB_USER:$DB_PASSWORD@localhost/$DB_NAME
 REDIS_URL=redis://127.0.0.1:6379
 RUST_LOG=info
-HOST=0.0.0.0
-PORT=8000
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+DB_MAX_CONNECTIONS=50
+DB_MIN_CONNECTIONS=10
+DB_CONNECTION_TIMEOUT=30
+DB_IDLE_TIMEOUT=300
+CACHE_MAX_CONNECTIONS=50
+CACHE_DEFAULT_TTL=3600
 STELLAR_NETWORK=mainnet
 STELLAR_REQUEST_TIMEOUT=30
 STELLAR_MAX_RETRIES=3
@@ -247,10 +233,6 @@ MONITOR_SCRIPT
 
 chmod +x monitor-db.sh
 echo "✅ Monitoring script created: ./monitor-db.sh"
-
-# Reload PostgreSQL configuration
-echo "🔄 Reloading PostgreSQL configuration..."
-sudo systemctl reload postgresql
 
 echo ""
 echo "🎉 Production database setup complete!"

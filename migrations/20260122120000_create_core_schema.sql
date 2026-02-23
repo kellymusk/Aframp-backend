@@ -206,12 +206,3 @@ CREATE INDEX idx_exchange_rates_currencies ON exchange_rates(from_currency, to_c
 CREATE INDEX idx_trustlines_account ON trustlines(account);
 CREATE INDEX idx_trustlines_asset ON trustlines(asset_code);
 
--- migrate:down
-DROP TABLE IF EXISTS trustlines;
-DROP TABLE IF EXISTS exchange_rates;
-DROP TABLE IF EXISTS afri_trustlines;
-DROP TABLE IF EXISTS transactions;
-DROP TABLE IF EXISTS wallets;
-DROP TABLE IF EXISTS transaction_statuses;
-DROP TABLE IF EXISTS users;
-DROP FUNCTION IF EXISTS set_updated_at();

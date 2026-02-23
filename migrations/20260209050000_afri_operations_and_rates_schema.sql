@@ -118,15 +118,3 @@ CREATE TRIGGER set_updated_at_fee_structures
     BEFORE UPDATE ON fee_structures
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- migrate:down
-DROP TRIGGER IF EXISTS set_updated_at_fee_structures ON fee_structures;
-DROP TRIGGER IF EXISTS set_updated_at_trustline_operations ON trustline_operations;
-DROP TRIGGER IF EXISTS set_updated_at_conversion_audits ON conversion_audits;
-
-DROP TABLE IF EXISTS fee_structures;
-DROP TABLE IF EXISTS trustline_operations;
-DROP TABLE IF EXISTS conversion_audits;
-
-ALTER TABLE exchange_rates
-    DROP COLUMN IF EXISTS valid_until,
-    DROP COLUMN IF EXISTS valid_from;

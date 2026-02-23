@@ -189,10 +189,10 @@ impl BlockchainService for StellarBlockchainService {
         // We estimate 2 operations (payment + source account)
         const DEFAULT_BASE_FEE: u32 = 100;
         let estimated_fee = DEFAULT_BASE_FEE * 2;
-        
+
         // For non-native assets (like cNGN), might need trustline check
         let is_native = _params.asset_code == "XLM";
-        
+
         Ok(FeeEstimate {
             fee: estimated_fee.to_string(),
             fee_unit: "stroops".to_string(),
@@ -213,16 +213,21 @@ impl BlockchainService for StellarBlockchainService {
         self.validate_address(&params.to)?;
 
         // Build memo if provided
-        let memo = params.memo.as_ref().map(|m| {
-            if m.is_empty() {
-                CngnMemo::None
-            } else {
-                CngnMemo::Text(m.clone())
-            }
-        }).unwrap_or(CngnMemo::None);
+        let memo = params
+            .memo
+            .as_ref()
+            .map(|m| {
+                if m.is_empty() {
+                    CngnMemo::None
+                } else {
+                    CngnMemo::Text(m.clone())
+                }
+            })
+            .unwrap_or(CngnMemo::None);
 
         // Use the payment builder to create the transaction draft
-        let draft = self.payment_builder()
+        let draft = self
+            .payment_builder()
             .build_payment(
                 source_address,
                 &params.to,

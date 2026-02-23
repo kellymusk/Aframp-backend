@@ -5,6 +5,7 @@ pub mod conversion_audit_repository;
 pub mod error;
 pub mod exchange_rate_repository;
 pub mod fee_structure_repository;
+pub mod onramp_quote_repository;
 pub mod payment_method_repository;
 pub mod payment_repository;
 pub mod provider_config_repository;

@@ -325,7 +325,7 @@ mod tests {
     fn test_invalid_port_validation() {
         let config = ServerConfig {
             host: "127.0.0.1".to_string(),
-            port: 7000, // Invalid port
+            port: 0, // Invalid port
             cors_allowed_origins: vec![],
         };
 

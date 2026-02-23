@@ -100,10 +100,7 @@ impl StellarError {
         }
     }
 
-    pub fn trustline_already_exists(
-        address: impl Into<String>,
-        asset: impl Into<String>,
-    ) -> Self {
+    pub fn trustline_already_exists(address: impl Into<String>, asset: impl Into<String>) -> Self {
         Self::TrustlineAlreadyExists {
             address: address.into(),
             asset: asset.into(),

@@ -5,7 +5,7 @@ mod webhook_tests {
     #[test]
     fn test_webhook_error_display() {
         use Bitmesh_backend::services::webhook_processor::WebhookProcessorError;
-        
+
         let err = WebhookProcessorError::InvalidSignature;
         assert_eq!(err.to_string(), "Invalid signature");
 
@@ -27,7 +27,10 @@ mod webhook_tests {
             }
         });
 
-        let event_id = payload.get("id").and_then(|v| v.as_i64()).map(|id| id.to_string());
+        let event_id = payload
+            .get("id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string());
         assert_eq!(event_id, Some("12345".to_string()));
     }
 
@@ -42,7 +45,10 @@ mod webhook_tests {
             }
         });
 
-        let event_id = payload.get("id").and_then(|v| v.as_i64()).map(|id| id.to_string());
+        let event_id = payload
+            .get("id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string());
         assert_eq!(event_id, Some("67890".to_string()));
     }
 
@@ -84,10 +90,13 @@ mod webhook_tests {
 
         assert!(flutterwave_payload.get("event").is_some());
         assert!(flutterwave_payload.get("data").is_some());
-        
+
         let data = flutterwave_payload.get("data").unwrap();
         assert_eq!(data.get("tx_ref").and_then(|v| v.as_str()), Some("tx_123"));
-        assert_eq!(data.get("status").and_then(|v| v.as_str()), Some("successful"));
+        assert_eq!(
+            data.get("status").and_then(|v| v.as_str()),
+            Some("successful")
+        );
 
         let paystack_payload = json!({
             "event": "charge.success",
@@ -100,6 +109,9 @@ mod webhook_tests {
 
         assert!(paystack_payload.get("event").is_some());
         let data = paystack_payload.get("data").unwrap();
-        assert_eq!(data.get("reference").and_then(|v| v.as_str()), Some("tx_456"));
+        assert_eq!(
+            data.get("reference").and_then(|v| v.as_str()),
+            Some("tx_456")
+        );
     }
 }

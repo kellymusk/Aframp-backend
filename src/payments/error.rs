@@ -83,9 +83,7 @@ impl PaymentError {
             PaymentError::WebhookVerificationError { .. } => {
                 "Invalid webhook signature".to_string()
             }
-            PaymentError::ProviderError { .. } => {
-                "Payment provider returned an error".to_string()
-            }
+            PaymentError::ProviderError { .. } => "Payment provider returned an error".to_string(),
         }
     }
 }

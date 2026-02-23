@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use stellar_strkey::ed25519::PublicKey as StrkeyPublicKey;
 use std::collections::HashMap;
+use stellar_strkey::ed25519::PublicKey as StrkeyPublicKey;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StellarAccountInfo {
@@ -147,7 +147,10 @@ pub fn extract_asset_balance(
     balances
         .iter()
         .find(|balance| {
-            if !matches!(balance.asset_type.as_str(), "credit_alphanum4" | "credit_alphanum12") {
+            if !matches!(
+                balance.asset_type.as_str(),
+                "credit_alphanum4" | "credit_alphanum12"
+            ) {
                 return false;
             }
 

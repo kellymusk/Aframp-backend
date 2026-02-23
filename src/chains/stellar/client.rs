@@ -292,10 +292,7 @@ impl StellarClient {
         &self.config.network
     }
 
-    pub async fn submit_transaction_xdr(
-        &self,
-        xdr_base64: &str,
-    ) -> StellarResult<JsonValue> {
+    pub async fn submit_transaction_xdr(&self, xdr_base64: &str) -> StellarResult<JsonValue> {
         let url = format!("{}/transactions", self.config.horizon_url());
 
         let response = timeout(
@@ -333,10 +330,7 @@ impl StellarClient {
         }
 
         let json = serde_json::from_str::<JsonValue>(&body).map_err(|e| {
-            StellarError::serialization_error(format!(
-                "Horizon submit JSON parse error: {}",
-                e
-            ))
+            StellarError::serialization_error(format!("Horizon submit JSON parse error: {}", e))
         })?;
 
         Ok(json)
@@ -401,24 +395,27 @@ impl StellarClient {
             url.push_str(&encode_form_component(c));
         }
 
-        let response = timeout(self.config.request_timeout, self.http_client.get(&url).send())
-            .await
-            .map_err(|_| StellarError::timeout_error(self.config.request_timeout.as_secs()))?
-            .map_err(|e| {
-                if e.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
-                    StellarError::RateLimitError
-                } else {
-                    StellarError::network_error(format!("Horizon account tx listing error: {}", e))
-                }
-            })?
-            .error_for_status()
-            .map_err(|e| {
-                if e.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
-                    StellarError::RateLimitError
-                } else {
-                    StellarError::network_error(format!("Horizon account tx listing error: {}", e))
-                }
-            })?;
+        let response = timeout(
+            self.config.request_timeout,
+            self.http_client.get(&url).send(),
+        )
+        .await
+        .map_err(|_| StellarError::timeout_error(self.config.request_timeout.as_secs()))?
+        .map_err(|e| {
+            if e.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
+                StellarError::RateLimitError
+            } else {
+                StellarError::network_error(format!("Horizon account tx listing error: {}", e))
+            }
+        })?
+        .error_for_status()
+        .map_err(|e| {
+            if e.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
+                StellarError::RateLimitError
+            } else {
+                StellarError::network_error(format!("Horizon account tx listing error: {}", e))
+            }
+        })?;
 
         let body = response
             .json::<JsonValue>()

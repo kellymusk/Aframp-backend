@@ -14,12 +14,13 @@ pub struct PaymentHttpClient {
 
 impl PaymentHttpClient {
     pub fn new(timeout: Duration, max_retries: u32) -> PaymentResult<Self> {
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| PaymentError::NetworkError {
-                message: format!("failed to initialize HTTP client: {}", e),
-            })?;
+        let client =
+            Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|e| PaymentError::NetworkError {
+                    message: format!("failed to initialize HTTP client: {}", e),
+                })?;
 
         Ok(Self {
             client,
@@ -51,9 +52,12 @@ impl PaymentHttpClient {
                 request = request.json(payload);
             }
 
-            let response = request.send().await.map_err(|e| PaymentError::NetworkError {
-                message: format!("provider request failed: {}", e),
-            });
+            let response = request
+                .send()
+                .await
+                .map_err(|e| PaymentError::NetworkError {
+                    message: format!("provider request failed: {}", e),
+                });
 
             match response {
                 Ok(resp) => {
@@ -152,8 +156,7 @@ mod tests {
     #[test]
     fn webhook_hmac_verification_detects_invalid_signature() {
         let payload = br#"{"event":"charge.success"}"#;
-        let valid =
-            verify_hmac_sha512_hex(payload, "secret", "not-a-valid-signature");
+        let valid = verify_hmac_sha512_hex(payload, "secret", "not-a-valid-signature");
         assert!(!valid);
     }
 }

@@ -154,9 +154,3 @@ CREATE INDEX idx_webhook_events_transaction_query ON webhook_events(transaction_
 CREATE INDEX idx_webhook_deliveries_event_id ON webhook_deliveries(event_id);
 CREATE INDEX idx_webhook_deliveries_status ON webhook_deliveries(status) WHERE status != 'delivered';
 
--- migrate:down
-DROP TABLE IF EXISTS webhook_deliveries;
-DROP TABLE IF EXISTS webhook_events;
-DROP TABLE IF EXISTS bill_payments;
-DROP TABLE IF EXISTS payment_methods;
-DROP TABLE IF EXISTS payment_provider_configs;

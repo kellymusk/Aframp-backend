@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use stellar_strkey::ed25519::PublicKey as StrkeyPublicKey;
 use stellar_xdr::next::{
-    AccountId, AlphaNum4, AlphaNum12, AssetCode4, AssetCode12, ChangeTrustAsset, ChangeTrustOp,
+    AccountId, AlphaNum12, AlphaNum4, AssetCode12, AssetCode4, ChangeTrustAsset, ChangeTrustOp,
     Limits, MuxedAccount, Operation, OperationBody, Preconditions, PublicKey, SequenceNumber,
     Transaction, TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256, VecM,
     WriteXdr,
@@ -115,11 +115,7 @@ impl CngnTrustlineManager {
 
         let account = self.stellar_client.get_account(account_id).await?;
         let issuer = self.issuer().to_string();
-        let trustline = find_trustline(
-            &account.balances,
-            self.asset_code(),
-            &issuer,
-        );
+        let trustline = find_trustline(&account.balances, self.asset_code(), &issuer);
 
         Ok(match trustline {
             Some(balance) => TrustlineStatus {
@@ -232,8 +228,13 @@ impl CngnTrustlineManager {
             signatures: VecM::try_from(Vec::new())
                 .map_err(|e| StellarError::serialization_error(e.to_string()))?,
         });
-        let network_id: [u8; 32] =
-            Sha256::digest(self.stellar_client.network().network_passphrase().as_bytes()).into();
+        let network_id: [u8; 32] = Sha256::digest(
+            self.stellar_client
+                .network()
+                .network_passphrase()
+                .as_bytes(),
+        )
+        .into();
         let hash = tx
             .hash(network_id)
             .map_err(|e| StellarError::serialization_error(e.to_string()))?;
@@ -290,11 +291,13 @@ fn find_trustline<'a>(
     issuer: &str,
 ) -> Option<&'a AssetBalance> {
     balances.iter().find(|balance| {
-        matches!(balance.asset_type.as_str(), "credit_alphanum4" | "credit_alphanum12")
-            && balance
-                .asset_code
-                .as_deref()
-                .is_some_and(|code| code.eq_ignore_ascii_case(asset_code))
+        matches!(
+            balance.asset_type.as_str(),
+            "credit_alphanum4" | "credit_alphanum12"
+        ) && balance
+            .asset_code
+            .as_deref()
+            .is_some_and(|code| code.eq_ignore_ascii_case(asset_code))
             && balance.asset_issuer.as_deref() == Some(issuer)
     })
 }

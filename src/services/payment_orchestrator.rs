@@ -89,10 +89,12 @@ impl OrchestratorConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(86400),
-            provider_health_check_interval_secs: std::env::var("PROVIDER_HEALTH_CHECK_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60),
+            provider_health_check_interval_secs: std::env::var(
+                "PROVIDER_HEALTH_CHECK_INTERVAL_SECS",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60),
             min_success_rate_threshold: std::env::var("MIN_SUCCESS_RATE_THRESHOLD")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -160,7 +162,7 @@ impl ProviderMetrics {
         self.total_requests += 1;
         self.total_fees_collected += fee_amount;
         self.last_request_at = Some(SystemTime::now());
-        
+
         // Update health status based on recent failures
         if self.current_health != ProviderHealth::Healthy {
             if self.failure_count == 0 {
@@ -174,7 +176,7 @@ impl ProviderMetrics {
         self.total_requests += 1;
         self.last_request_at = Some(SystemTime::now());
         self.last_failure_at = Some(SystemTime::now());
-        
+
         // Degrade health if failure rate is high
         if self.total_requests >= 10 {
             let failure_rate = self.failure_count as f64 / self.total_requests as f64;
@@ -238,9 +240,7 @@ impl OrchestrationState {
                 OrchestrationState::Failed,
             ],
             OrchestrationState::PaymentConfirmed => vec![OrchestrationState::ProcessingBlockchain],
-            OrchestrationState::ProcessingBlockchain => vec![
-                OrchestrationState::Completed,
-            ],
+            OrchestrationState::ProcessingBlockchain => vec![OrchestrationState::Completed],
             OrchestrationState::RefundInitiated => vec![OrchestrationState::Refunded],
             // Terminal states - no valid transitions
             OrchestrationState::Completed => vec![],
@@ -270,7 +270,9 @@ impl OrchestrationState {
             "created" => Some(OrchestrationState::Created),
             "pending" | "pending_payment" => Some(OrchestrationState::PendingPayment),
             "payment_confirmed" => Some(OrchestrationState::PaymentConfirmed),
-            "processing" | "processing_blockchain" => Some(OrchestrationState::ProcessingBlockchain),
+            "processing" | "processing_blockchain" => {
+                Some(OrchestrationState::ProcessingBlockchain)
+            }
             "completed" | "success" => Some(OrchestrationState::Completed),
             "failed" => Some(OrchestrationState::Failed),
             "refund_initiated" => Some(OrchestrationState::RefundInitiated),
@@ -427,7 +429,11 @@ impl std::fmt::Display for OrchestratorError {
                 write!(f, "Duplicate transaction: {}", transaction_id)
             }
             Self::MaxRetriesExceeded { transaction_id } => {
-                write!(f, "Max retries exceeded for transaction: {}", transaction_id)
+                write!(
+                    f,
+                    "Max retries exceeded for transaction: {}",
+                    transaction_id
+                )
             }
             Self::ProviderSelectionFailed { reason } => {
                 write!(f, "Provider selection failed: {}", reason)
@@ -526,10 +532,7 @@ impl PaymentOrchestrator {
         }
 
         Self {
-            providers: providers
-                .into_iter()
-                .map(|p| (p.name(), p))
-                .collect(),
+            providers: providers.into_iter().map(|p| (p.name(), p)).collect(),
             transaction_repo,
             config,
             provider_metrics: Arc::new(RwLock::new(metrics)),
@@ -551,9 +554,12 @@ impl PaymentOrchestrator {
     // =========================================================================
 
     /// Select the best provider based on criteria
-    pub async fn select_provider(&self, context: &SelectionContext) -> OrchestratorResult<ProviderName> {
+    pub async fn select_provider(
+        &self,
+        context: &SelectionContext,
+    ) -> OrchestratorResult<ProviderName> {
         let metrics = self.provider_metrics.read().await;
-        
+
         // Filter available providers
         let available_providers: Vec<ProviderName> = self
             .providers
@@ -574,13 +580,21 @@ impl PaymentOrchestrator {
 
         // Apply selection strategy
         let selected = match context.strategy {
-            SelectionStrategy::Default => self.select_default(&available_providers, context).await?,
-            SelectionStrategy::CostBased => self.select_cost_based(&available_providers, context).await?,
+            SelectionStrategy::Default => {
+                self.select_default(&available_providers, context).await?
+            }
+            SelectionStrategy::CostBased => {
+                self.select_cost_based(&available_providers, context)
+                    .await?
+            }
             SelectionStrategy::ReliabilityBased => {
-                self.select_reliability_based(&available_providers, context).await?
+                self.select_reliability_based(&available_providers, context)
+                    .await?
             }
             SelectionStrategy::RoundRobin => self.select_round_robin(&available_providers).await?,
-            SelectionStrategy::Failover => self.select_failover(&available_providers, context).await?,
+            SelectionStrategy::Failover => {
+                self.select_failover(&available_providers, context).await?
+            }
         };
 
         info!(
@@ -625,7 +639,9 @@ impl PaymentOrchestrator {
         context: &SelectionContext,
     ) -> OrchestratorResult<ProviderName> {
         // For large transactions, compare fees
-        if context.amount >= self.config.large_transaction_threshold && self.config.fee_comparison_enabled {
+        if context.amount >= self.config.large_transaction_threshold
+            && self.config.fee_comparison_enabled
+        {
             let fees: Vec<(ProviderName, BigDecimal)> = available
                 .iter()
                 .map(|name| (name.clone(), self.calculate_fee(name, &context.amount)))
@@ -683,14 +699,17 @@ impl PaymentOrchestrator {
     }
 
     /// Select provider using round-robin
-    async fn select_round_robin(&self, available: &[ProviderName]) -> OrchestratorResult<ProviderName> {
+    async fn select_round_robin(
+        &self,
+        available: &[ProviderName],
+    ) -> OrchestratorResult<ProviderName> {
         // Use async read since this is called from async context
         let index = {
             let idx = self.round_robin_index.read().await;
             *idx
         };
         let selected = available[index % available.len()].clone();
-        
+
         // Update index for next selection
         {
             let mut index_mut = self.round_robin_index.write().await;
@@ -723,8 +742,8 @@ impl PaymentOrchestrator {
         // Fee rates (could be loaded from configuration)
         let rate = match provider {
             ProviderName::Flutterwave => BigDecimal::from(14), // 1.4%
-            ProviderName::Paystack => BigDecimal::from(15),   // 1.5%
-            ProviderName::Mpesa => BigDecimal::from(20),     // 2.0%
+            ProviderName::Paystack => BigDecimal::from(15),    // 1.5%
+            ProviderName::Mpesa => BigDecimal::from(20),       // 2.0%
         };
 
         amount * rate / BigDecimal::from(1000)
@@ -768,29 +787,26 @@ impl PaymentOrchestrator {
         // Try to get from cache first
         // In production, implement actual cache lookup
         // For now, return NewTransaction to proceed
-        
+
         // This would be implemented with actual Redis cache:
         // let cache_key = format!("idempotency:{}", idempotency_key);
         // if let Some(info) = self.cache.get(&cache_key).await? { ... }
-        
+
         Ok(IdempotencyCheckResult::NewTransaction)
     }
 
     /// Store idempotency key info
-    pub async fn store_idempotency_key(
-        &self,
-        info: &IdempotencyKeyInfo,
-    ) -> OrchestratorResult<()> {
+    pub async fn store_idempotency_key(&self, info: &IdempotencyKeyInfo) -> OrchestratorResult<()> {
         // In production, store in Redis with TTL
         // let cache_key = format!("idempotency:{}", info.key);
         // self.cache.set(&cache_key, info, Some(Duration::from_secs(info.expires_at - info.created_at))).await?;
-        
+
         info!(
             key = %info.key,
             transaction_id = %info.transaction_id,
             "Stored idempotency key"
         );
-        
+
         Ok(())
     }
 
@@ -850,11 +866,7 @@ impl PaymentOrchestrator {
         // Update transaction
         let updated = self
             .transaction_repo
-            .update_status_with_metadata(
-                transaction_id,
-                target_state.to_db_status(),
-                metadata,
-            )
+            .update_status_with_metadata(transaction_id, target_state.to_db_status(), metadata)
             .await
             .map_err(|e| OrchestratorError::ConfigurationError {
                 message: format!("Failed to update transaction state: {}", e),
@@ -1125,7 +1137,11 @@ impl PaymentOrchestrator {
 
         // Transition to failed state
         let updated = self
-            .transition_state(transaction_id, OrchestrationState::Failed, Some(error.to_string()))
+            .transition_state(
+                transaction_id,
+                OrchestrationState::Failed,
+                Some(error.to_string()),
+            )
             .await?;
 
         // Record failure metrics
@@ -1217,11 +1233,12 @@ impl PaymentOrchestrator {
         let transaction = self.get_transaction_status(transaction_id).await?;
 
         // Check if retry is allowed
-        let current_state = OrchestrationState::from_db_status(&transaction.status)
-            .ok_or(OrchestratorError::InvalidStateTransition {
+        let current_state = OrchestrationState::from_db_status(&transaction.status).ok_or(
+            OrchestratorError::InvalidStateTransition {
                 current: OrchestrationState::Created,
                 target: OrchestrationState::PendingPayment,
-            })?;
+            },
+        )?;
 
         if !current_state.allows_retry() {
             return Err(OrchestratorError::InvalidStateTransition {
@@ -1301,7 +1318,10 @@ impl PaymentOrchestrator {
     // =========================================================================
 
     /// Handle payment success webhook
-    pub async fn handle_payment_success(&self, transaction_reference: &str) -> OrchestratorResult<()> {
+    pub async fn handle_payment_success(
+        &self,
+        transaction_reference: &str,
+    ) -> OrchestratorResult<()> {
         let transaction = self
             .transaction_repo
             .find_by_payment_reference(transaction_reference)
@@ -1325,7 +1345,11 @@ impl PaymentOrchestrator {
     }
 
     /// Handle payment failure webhook
-    pub async fn handle_payment_failure(&self, transaction_reference: &str, reason: &str) -> OrchestratorResult<()> {
+    pub async fn handle_payment_failure(
+        &self,
+        transaction_reference: &str,
+        reason: &str,
+    ) -> OrchestratorResult<()> {
         let transaction = self
             .transaction_repo
             .find_by_payment_reference(transaction_reference)
@@ -1337,13 +1361,17 @@ impl PaymentOrchestrator {
                 transaction_id: transaction_reference.to_string(),
             })?;
 
-        self.handle_failure(&transaction.transaction_id.to_string(), reason).await?;
+        self.handle_failure(&transaction.transaction_id.to_string(), reason)
+            .await?;
         info!(tx_ref = %transaction_reference, reason = %reason, "Payment failure processed");
         Ok(())
     }
 
     /// Handle withdrawal success webhook
-    pub async fn handle_withdrawal_success(&self, transaction_reference: &str) -> OrchestratorResult<()> {
+    pub async fn handle_withdrawal_success(
+        &self,
+        transaction_reference: &str,
+    ) -> OrchestratorResult<()> {
         let transaction = self
             .transaction_repo
             .find_by_payment_reference(transaction_reference)
@@ -1367,7 +1395,11 @@ impl PaymentOrchestrator {
     }
 
     /// Handle withdrawal failure webhook
-    pub async fn handle_withdrawal_failure(&self, transaction_reference: &str, reason: &str) -> OrchestratorResult<()> {
+    pub async fn handle_withdrawal_failure(
+        &self,
+        transaction_reference: &str,
+        reason: &str,
+    ) -> OrchestratorResult<()> {
         let transaction = self
             .transaction_repo
             .find_by_payment_reference(transaction_reference)
@@ -1379,7 +1411,8 @@ impl PaymentOrchestrator {
                 transaction_id: transaction_reference.to_string(),
             })?;
 
-        self.handle_failure(&transaction.transaction_id.to_string(), reason).await?;
+        self.handle_failure(&transaction.transaction_id.to_string(), reason)
+            .await?;
         info!(tx_ref = %transaction_reference, reason = %reason, "Withdrawal failure processed");
         Ok(())
     }
@@ -1412,11 +1445,11 @@ mod tests {
         assert!(OrchestrationState::Created
             .valid_transitions()
             .contains(&OrchestrationState::PendingPayment));
-        
+
         assert!(OrchestrationState::PendingPayment
             .valid_transitions()
             .contains(&OrchestrationState::PaymentConfirmed));
-        
+
         assert!(OrchestrationState::PendingPayment
             .valid_transitions()
             .contains(&OrchestrationState::Failed));
@@ -1428,7 +1461,7 @@ mod tests {
         assert!(!OrchestrationState::PendingPayment
             .valid_transitions()
             .contains(&OrchestrationState::Completed));
-        
+
         // Can't go from failed to anything
         assert!(OrchestrationState::Failed.valid_transitions().is_empty());
     }
@@ -1438,7 +1471,7 @@ mod tests {
         assert!(OrchestrationState::Completed.is_terminal());
         assert!(OrchestrationState::Failed.is_terminal());
         assert!(OrchestrationState::Refunded.is_terminal());
-        
+
         assert!(!OrchestrationState::Created.is_terminal());
         assert!(!OrchestrationState::PendingPayment.is_terminal());
     }
@@ -1447,29 +1480,29 @@ mod tests {
     fn test_idempotency_key_generation() {
         let config = OrchestratorConfig::default();
         // Can't directly test without orchestrator instance, but verify format
-        
+
         // Key format: {operation}:{wallet}:{amount}:{currency}:{timestamp}:{nonce}
         let raw = "onramp:GA123:1000:NGN:1708012345:12345";
         let mut hasher = Sha256::new();
         hasher.update(raw.as_bytes());
         let result = hasher.finalize();
         let hashed = format!("{:x}", result);
-        
+
         assert_eq!(hashed.len(), 64); // SHA256 produces 64 hex characters
     }
 
     #[test]
     fn test_success_rate_calculation() {
         let mut metrics = ProviderMetrics::new(ProviderName::Flutterwave);
-        
+
         // No requests = 100% success rate
         assert_eq!(metrics.success_rate(), 1.0);
-        
+
         // Record some successes
         metrics.record_success(BigDecimal::from(10));
         metrics.record_success(BigDecimal::from(20));
         assert_eq!(metrics.success_rate(), 1.0);
-        
+
         // Record a failure
         metrics.record_failure();
         assert_eq!(metrics.success_rate(), 2.0 / 3.0);
@@ -1489,25 +1522,13 @@ mod tests {
             OrchestrationState::from_db_status("failed"),
             Some(OrchestrationState::Failed)
         );
-        assert_eq!(
-            OrchestrationState::from_db_status("unknown"),
-            None
-        );
+        assert_eq!(OrchestrationState::from_db_status("unknown"), None);
     }
 
     #[test]
     fn test_state_to_db_status() {
-        assert_eq!(
-            OrchestrationState::Created.to_db_status(),
-            "created"
-        );
-        assert_eq!(
-            OrchestrationState::PendingPayment.to_db_status(),
-            "pending"
-        );
-        assert_eq!(
-            OrchestrationState::Completed.to_db_status(),
-            "completed"
-        );
+        assert_eq!(OrchestrationState::Created.to_db_status(), "created");
+        assert_eq!(OrchestrationState::PendingPayment.to_db_status(), "pending");
+        assert_eq!(OrchestrationState::Completed.to_db_status(), "completed");
     }
 }

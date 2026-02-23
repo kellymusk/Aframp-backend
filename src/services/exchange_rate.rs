@@ -138,10 +138,7 @@ pub struct ExchangeRateService {
 
 impl ExchangeRateService {
     /// Create new exchange rate service
-    pub fn new(
-        repository: ExchangeRateRepository,
-        config: ExchangeRateServiceConfig,
-    ) -> Self {
+    pub fn new(repository: ExchangeRateRepository, config: ExchangeRateServiceConfig) -> Self {
         Self {
             repository,
             cache: None,
@@ -188,7 +185,9 @@ impl ExchangeRateService {
         if let Some(ref cache) = self.cache {
             let cache_key = CurrencyPairKey::new(from_currency, to_currency);
             let ttl = Duration::from_secs(self.config.cache_ttl_seconds);
-            let _ = cache.set(&cache_key.to_string(), &rate_data, Some(ttl)).await;
+            let _ = cache
+                .set(&cache_key.to_string(), &rate_data, Some(ttl))
+                .await;
         }
 
         Ok(rate_data.base_rate)
@@ -221,8 +220,8 @@ impl ExchangeRateService {
         let net_amount = &gross_amount - &fees.total_fees;
 
         // Calculate expiry time
-        let expires_at = Utc::now()
-            + chrono::Duration::seconds(self.config.rate_expiry_seconds as i64);
+        let expires_at =
+            Utc::now() + chrono::Duration::seconds(self.config.rate_expiry_seconds as i64);
 
         Ok(ConversionResult {
             from_currency: request.from_currency.clone(),
@@ -258,8 +257,7 @@ impl ExchangeRateService {
                 to: to_currency.to_string(),
             })?;
 
-        BigDecimal::from_str(&rate.rate)
-            .map_err(|e| ExchangeRateError::InvalidRate(e.to_string()))
+        BigDecimal::from_str(&rate.rate).map_err(|e| ExchangeRateError::InvalidRate(e.to_string()))
     }
 
     /// Update exchange rate
@@ -283,11 +281,7 @@ impl ExchangeRateService {
         // Invalidate cache
         if let Some(ref cache) = self.cache {
             let cache_key = CurrencyPairKey::new(from_currency, to_currency);
-            let _ = <RedisCache as Cache<RateData>>::delete(
-                cache,
-                &cache_key.to_string(),
-            )
-            .await;
+            let _ = <RedisCache as Cache<RateData>>::delete(cache, &cache_key.to_string()).await;
         }
 
         debug!(
@@ -315,11 +309,7 @@ impl ExchangeRateService {
 
     // Private helper methods
 
-    async fn get_cached_rate(
-        &self,
-        from_currency: &str,
-        to_currency: &str,
-    ) -> Option<RateData> {
+    async fn get_cached_rate(&self, from_currency: &str, to_currency: &str) -> Option<RateData> {
         if let Some(ref cache) = self.cache {
             let cache_key = CurrencyPairKey::new(from_currency, to_currency);
             cache.get(&cache_key.to_string()).await.ok().flatten()
@@ -351,11 +341,7 @@ impl ExchangeRateService {
                         return Ok(rate_data);
                     }
                     Err(e) => {
-                        warn!(
-                            "Provider {} failed to fetch rate: {}",
-                            provider.name(),
-                            e
-                        );
+                        warn!("Provider {} failed to fetch rate: {}", provider.name(), e);
                         continue;
                     }
                 }
@@ -495,8 +481,8 @@ mod tests {
         assert_ne!(ConversionDirection::Buy, ConversionDirection::Sell);
     }
 
-    #[test]
-    fn test_rate_validation() {
+    #[tokio::test]
+    async fn test_rate_validation() {
         let config = ExchangeRateServiceConfig::default();
         let repo = ExchangeRateRepository::new(
             sqlx::PgPool::connect_lazy("postgresql://localhost/test").unwrap(),

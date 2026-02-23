@@ -37,12 +37,11 @@ impl Default for PaystackConfig {
 
 impl PaystackConfig {
     pub fn from_env() -> PaymentResult<Self> {
-        let secret_key = std::env::var("PAYSTACK_SECRET_KEY").map_err(|_| {
-            PaymentError::ValidationError {
+        let secret_key =
+            std::env::var("PAYSTACK_SECRET_KEY").map_err(|_| PaymentError::ValidationError {
                 message: "PAYSTACK_SECRET_KEY environment variable is required".to_string(),
                 field: Some("PAYSTACK_SECRET_KEY".to_string()),
-            }
-        })?;
+            })?;
 
         Ok(Self {
             public_key: std::env::var("PAYSTACK_PUBLIC_KEY").ok(),
@@ -69,10 +68,8 @@ pub struct PaystackProvider {
 
 impl PaystackProvider {
     pub fn new(config: PaystackConfig) -> PaymentResult<Self> {
-        let http = PaymentHttpClient::new(
-            Duration::from_secs(config.timeout_secs),
-            config.max_retries,
-        )?;
+        let http =
+            PaymentHttpClient::new(Duration::from_secs(config.timeout_secs), config.max_retries)?;
         Ok(Self { config, http })
     }
 
@@ -101,7 +98,14 @@ impl PaystackProvider {
 impl PaymentProvider for PaystackProvider {
     async fn initiate_payment(&self, request: PaymentRequest) -> PaymentResult<PaymentResponse> {
         request.amount.validate_positive("amount")?;
-        if request.customer.email.as_deref().unwrap_or("").trim().is_empty() {
+        if request
+            .customer
+            .email
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             return Err(PaymentError::ValidationError {
                 message: "customer.email is required for paystack initialization".to_string(),
                 field: Some("customer.email".to_string()),
@@ -221,14 +225,15 @@ impl PaymentProvider for PaystackProvider {
             .account_name
             .clone()
             .unwrap_or_else(|| "Recipient".to_string());
-        let account_number = request
-            .recipient
-            .account_number
-            .clone()
-            .ok_or(PaymentError::ValidationError {
-                message: "recipient.account_number is required".to_string(),
-                field: Some("recipient.account_number".to_string()),
-            })?;
+        let account_number =
+            request
+                .recipient
+                .account_number
+                .clone()
+                .ok_or(PaymentError::ValidationError {
+                    message: "recipient.account_number is required".to_string(),
+                    field: Some("recipient.account_number".to_string()),
+                })?;
         let bank_code =
             request
                 .recipient
@@ -354,10 +359,11 @@ impl PaymentProvider for PaystackProvider {
     }
 
     fn parse_webhook_event(&self, payload: &[u8]) -> PaymentResult<WebhookEvent> {
-        let parsed: JsonValue =
-            serde_json::from_slice(payload).map_err(|e| PaymentError::WebhookVerificationError {
+        let parsed: JsonValue = serde_json::from_slice(payload).map_err(|e| {
+            PaymentError::WebhookVerificationError {
                 message: format!("invalid webhook JSON payload: {}", e),
-            })?;
+            }
+        })?;
 
         let event_type = parsed
             .get("event")

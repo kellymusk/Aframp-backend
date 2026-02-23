@@ -31,6 +31,7 @@ use middleware::logging::{request_logging_middleware, UuidRequestId};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::time::Duration;
 use tokio::signal;
 use tokio::sync::watch;
 use tower::ServiceBuilder;
@@ -87,10 +88,17 @@ async fn main() -> anyhow::Result<()> {
         "🚀 Starting Aframp backend service"
     );
 
+    let server_host = std::env::var("SERVER_HOST")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let server_port = std::env::var("SERVER_PORT")
+        .or_else(|_| std::env::var("PORT"))
+        .unwrap_or_else(|_| "8000".to_string());
+
     // Log configuration
     info!(
-        host = std::env::var("HOST").unwrap_or_else(|_| "unknown".to_string()),
-        port = std::env::var("PORT").unwrap_or_else(|_| "unknown".to_string()),
+        host = %server_host,
+        port = %server_port,
         "Server configuration loaded"
     );
 
@@ -102,8 +110,36 @@ async fn main() -> anyhow::Result<()> {
         info!("📊 Initializing database connection pool...");
         let database_url =
             std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL not set"))?;
+        let db_pool_config = PoolConfig {
+            max_connections: std::env::var("DB_MAX_CONNECTIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
+            min_connections: std::env::var("DB_MIN_CONNECTIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            connection_timeout: Duration::from_secs(
+                std::env::var("DB_CONNECTION_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30),
+            ),
+            idle_timeout: Duration::from_secs(
+                std::env::var("DB_IDLE_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(600),
+            ),
+            max_lifetime: Duration::from_secs(
+                std::env::var("DB_MAX_LIFETIME")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1800),
+            ),
+        };
 
-        let db_pool = init_pool(&database_url, Some(PoolConfig::default()))
+        let db_pool = init_pool(&database_url, Some(db_pool_config))
             .await
             .map_err(|e| {
                 error!("Failed to initialize database pool: {}", e);
@@ -128,7 +164,39 @@ async fn main() -> anyhow::Result<()> {
 
         let cache_config = CacheConfig {
             redis_url: redis_url.clone(),
-            ..Default::default()
+            max_connections: std::env::var("CACHE_MAX_CONNECTIONS")
+                .or_else(|_| std::env::var("REDIS_MAX_CONNECTIONS"))
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
+            min_idle: std::env::var("REDIS_MIN_IDLE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            connection_timeout: Duration::from_secs(
+                std::env::var("REDIS_CONNECTION_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(5),
+            ),
+            max_lifetime: Duration::from_secs(
+                std::env::var("REDIS_MAX_LIFETIME")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300),
+            ),
+            idle_timeout: Duration::from_secs(
+                std::env::var("REDIS_IDLE_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(60),
+            ),
+            health_check_interval: Duration::from_secs(
+                std::env::var("REDIS_HEALTH_CHECK_INTERVAL")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30),
+            ),
         };
 
         let cache_pool = init_cache_pool(cache_config).await.map_err(|e| {
@@ -263,41 +331,50 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize webhook processor and retry worker
     let webhook_routes = if let Some(pool) = db_pool.clone() {
-        let webhook_repo = std::sync::Arc::new(database::webhook_repository::WebhookRepository::new(pool.clone()));
-        let provider_factory = std::sync::Arc::new(PaymentProviderFactory::from_env().unwrap_or_else(|e| {
-            error!("Failed to initialize payment provider factory: {}", e);
-            panic!("Cannot start without payment providers");
-        }));
-        
+        let webhook_repo = std::sync::Arc::new(
+            database::webhook_repository::WebhookRepository::new(pool.clone()),
+        );
+        let provider_factory =
+            std::sync::Arc::new(PaymentProviderFactory::from_env().unwrap_or_else(|e| {
+                error!("Failed to initialize payment provider factory: {}", e);
+                panic!("Cannot start without payment providers");
+            }));
+
         // Create orchestrator for webhook processing
-        let transaction_repo = std::sync::Arc::new(database::transaction_repository::TransactionRepository::new(pool.clone()));
+        let transaction_repo = std::sync::Arc::new(
+            database::transaction_repository::TransactionRepository::new(pool.clone()),
+        );
         let orchestrator_config = services::payment_orchestrator::OrchestratorConfig::default();
-        
+
         // Initialize providers for orchestrator
         let mut providers = Vec::new();
         for provider_name in provider_factory.list_available_providers() {
             if let Ok(provider) = provider_factory.get_provider(provider_name) {
-                providers.push(std::sync::Arc::from(provider) as std::sync::Arc<dyn payments::provider::PaymentProvider>);
+                providers.push(std::sync::Arc::from(provider)
+                    as std::sync::Arc<dyn payments::provider::PaymentProvider>);
             }
         }
-        
-        let orchestrator = std::sync::Arc::new(services::payment_orchestrator::PaymentOrchestrator::new(
-            providers,
-            transaction_repo,
-            orchestrator_config,
-        ));
-        
-        let webhook_processor = std::sync::Arc::new(services::webhook_processor::WebhookProcessor::new(
-            webhook_repo,
-            provider_factory,
-            orchestrator,
-        ));
-        
+
+        let orchestrator =
+            std::sync::Arc::new(services::payment_orchestrator::PaymentOrchestrator::new(
+                providers,
+                transaction_repo,
+                orchestrator_config,
+            ));
+
+        let webhook_processor =
+            std::sync::Arc::new(services::webhook_processor::WebhookProcessor::new(
+                webhook_repo,
+                provider_factory,
+                orchestrator,
+            ));
+
         // Start webhook retry worker
         let webhook_retry_enabled = std::env::var("WEBHOOK_RETRY_ENABLED")
             .unwrap_or_else(|_| "true".to_string())
-            .to_lowercase() != "false";
-        
+            .to_lowercase()
+            != "false";
+
         if webhook_retry_enabled {
             let retry_worker = workers::webhook_retry::WebhookRetryWorker::new(
                 webhook_processor.clone(),
@@ -308,13 +385,13 @@ async fn main() -> anyhow::Result<()> {
             });
             info!("✅ Webhook retry worker started");
         }
-        
+
         let webhook_state = api::webhooks::WebhookState {
             processor: webhook_processor,
         };
-        
+
         Router::new()
-            .route("/webhooks/:provider", post(api::webhooks::handle_webhook))
+            .route("/webhooks/{provider}", post(api::webhooks::handle_webhook))
             .with_state(std::sync::Arc::new(webhook_state))
     } else {
         info!("⏭️  Skipping webhook routes (no database)");
@@ -323,22 +400,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Create the application router with logging middleware
     info!("🛣️  Setting up application routes...");
-    
+
     // Setup onramp routes (quote service)
-    let onramp_routes = if let (Some(pool), Some(cache), Some(client)) = (
-        db_pool.clone(),
-        redis_cache.clone(),
-        stellar_client.clone(),
-    ) {
+    let onramp_routes = if let (Some(pool), Some(cache), Some(client)) =
+        (db_pool.clone(), redis_cache.clone(), stellar_client.clone())
+    {
         let cngn_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
             .or_else(|_| std::env::var("CNGN_ISSUER_MAINNET"))
             .unwrap_or_else(|_| "GXXXXDEFAULTISSUERXXXX".to_string());
 
-        let rate_repo = database::exchange_rate_repository::ExchangeRateRepository::new(pool.clone());
-        let fee_repo = database::fee_structure_repository::FeeStructureRepository::new(pool.clone());
-        let fee_service = std::sync::Arc::new(services::fee_structure::FeeStructureService::new(
-            fee_repo,
-        ));
+        let rate_repo =
+            database::exchange_rate_repository::ExchangeRateRepository::new(pool.clone());
+        let fee_repo =
+            database::fee_structure_repository::FeeStructureRepository::new(pool.clone());
+        let fee_service =
+            std::sync::Arc::new(services::fee_structure::FeeStructureService::new(fee_repo));
 
         let exchange_rate_service = std::sync::Arc::new(
             services::exchange_rate::ExchangeRateService::new(
@@ -368,29 +444,29 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Setup wallet routes with balance service
-    let wallet_routes = if let (Some(client), Some(cache)) = (stellar_client.clone(), redis_cache.clone()) {
-        let cngn_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
-            .unwrap_or_else(|_| "GXXXXDEFAULTISSUERXXXX".to_string());
-        
-        let balance_service = std::sync::Arc::new(services::balance::BalanceService::new(
-            client,
-            cache,
-            cngn_issuer,
-        ));
-        
-        let wallet_state = api::wallet::WalletState { balance_service };
-        
-        Router::new()
-            .route("/api/wallet/balance", get(api::wallet::get_balance))
-            .with_state(wallet_state)
-    } else {
-        Router::new()
-    };
-    
+    let wallet_routes =
+        if let (Some(client), Some(cache)) = (stellar_client.clone(), redis_cache.clone()) {
+            let cngn_issuer = std::env::var("CNGN_ISSUER_ADDRESS")
+                .unwrap_or_else(|_| "GXXXXDEFAULTISSUERXXXX".to_string());
+
+            let balance_service = std::sync::Arc::new(services::balance::BalanceService::new(
+                client,
+                cache,
+                cngn_issuer,
+            ));
+
+            let wallet_state = api::wallet::WalletState { balance_service };
+
+            Router::new()
+                .route("/api/wallet/balance", get(api::wallet::get_balance))
+                .with_state(wallet_state)
+        } else {
+            Router::new()
+        };
+
     // Bill payment providers routes (public endpoint - no auth required)
-    let bills_routes = Router::new()
-        .route("/api/bills/providers", get(api::bills::get_providers));
-    
+    let bills_routes = Router::new().route("/api/bills/providers", get(api::bills::get_providers));
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -445,9 +521,7 @@ async fn main() -> anyhow::Result<()> {
     info!("✅ Routes configured");
 
     // Run the server with graceful shutdown
-    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
-    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+    let addr: SocketAddr = format!("{}:{}", server_host, server_port).parse()?;
 
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
         error!("❌ Failed to bind to address {}: {}", addr, e);
@@ -467,11 +541,11 @@ async fn main() -> anyhow::Result<()> {
     );
     println!(
         "║  📡 Port:            {}                                  ║",
-        port
+        server_port
     );
     println!(
         "║  🏠 Host:            {}                            ║",
-        host
+        server_host
     );
     println!("║                                                              ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
@@ -496,7 +570,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         address = %addr,
-        port = %port,
+        port = %server_port,
         "🚀 Server listening on http://{}",
         addr
     );
@@ -1096,7 +1170,9 @@ async fn list_trustline_operations_by_wallet(
 }
 
 async fn create_onramp_quote(
-    axum::extract::State(quote_service): axum::extract::State<std::sync::Arc<services::onramp_quote::OnrampQuoteService>>,
+    axum::extract::State(quote_service): axum::extract::State<
+        std::sync::Arc<services::onramp_quote::OnrampQuoteService>,
+    >,
     headers: axum::http::HeaderMap,
     Json(payload): Json<services::onramp_quote::OnrampQuoteRequest>,
 ) -> Result<

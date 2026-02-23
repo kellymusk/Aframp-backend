@@ -87,7 +87,10 @@ mod tests {
             })
         }
 
-        async fn get_payment_status(&self, request: StatusRequest) -> PaymentResult<StatusResponse> {
+        async fn get_payment_status(
+            &self,
+            request: StatusRequest,
+        ) -> PaymentResult<StatusResponse> {
             self.verify_payment(request).await
         }
 

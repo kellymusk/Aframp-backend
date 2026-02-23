@@ -13,9 +13,9 @@ use stellar_strkey::ed25519::{
 use stellar_xdr::next::{
     AccountId, AlphaNum12, AlphaNum4, Asset, AssetCode12, AssetCode4, DecoratedSignature, Hash,
     Limits, Memo, MuxedAccount, MuxedAccountMed25519, Operation, OperationBody, PaymentOp,
-    Preconditions, PublicKey, SequenceNumber, Signature, SignatureHint, StringM, TimeBounds,
-    TimePoint, Transaction, TransactionEnvelope, TransactionExt, TransactionV1Envelope, Uint256,
-    VecM, WriteXdr, ReadXdr,
+    Preconditions, PublicKey, ReadXdr, SequenceNumber, Signature, SignatureHint, StringM,
+    TimeBounds, TimePoint, Transaction, TransactionEnvelope, TransactionExt, TransactionV1Envelope,
+    Uint256, VecM, WriteXdr,
 };
 
 const DEFAULT_BASE_FEE_STROOPS: u32 = 100;
@@ -101,11 +101,7 @@ impl CngnPaymentBuilder {
             .to_string();
         let asset_code = self.config.asset_code.clone();
 
-        ensure_destination_has_trustline(
-            &destination_account.balances,
-            &asset_code,
-            &issuer,
-        )?;
+        ensure_destination_has_trustline(&destination_account.balances, &asset_code, &issuer)?;
 
         let amount_stroops = decimal_to_stroops(amount)?;
         ensure_source_has_cngn_balance(
@@ -164,11 +160,9 @@ impl CngnPaymentBuilder {
         let signing_key = decode_signing_key(secret_seed)?;
         ensure_signing_key_matches_source(&signing_key, &draft.source)?;
 
-        let envelope = TransactionEnvelope::from_xdr_base64(
-            &draft.unsigned_envelope_xdr,
-            Limits::none(),
-        )
-        .map_err(|e| StellarError::serialization_error(e.to_string()))?;
+        let envelope =
+            TransactionEnvelope::from_xdr_base64(&draft.unsigned_envelope_xdr, Limits::none())
+                .map_err(|e| StellarError::serialization_error(e.to_string()))?;
 
         let tx = match envelope {
             TransactionEnvelope::Tx(v1) => v1.tx,

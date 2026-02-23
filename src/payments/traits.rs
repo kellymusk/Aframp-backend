@@ -2,4 +2,3 @@
 //! New code should import from `crate::payments::provider`.
 
 pub use crate::payments::provider::PaymentProvider;
-

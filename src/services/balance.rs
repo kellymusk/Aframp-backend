@@ -86,7 +86,12 @@ impl BalanceService {
         let trustline_count = account
             .balances
             .iter()
-            .filter(|b| matches!(b.asset_type.as_str(), "credit_alphanum4" | "credit_alphanum12"))
+            .filter(|b| {
+                matches!(
+                    b.asset_type.as_str(),
+                    "credit_alphanum4" | "credit_alphanum12"
+                )
+            })
             .count();
 
         let reserved = self.calculate_reserve(trustline_count);
@@ -133,8 +138,10 @@ impl BalanceService {
 
     fn extract_cngn_balance(&self, balances: &[AssetBalance]) -> CngnBalance {
         let cngn = balances.iter().find(|b| {
-            matches!(b.asset_type.as_str(), "credit_alphanum4" | "credit_alphanum12")
-                && b.asset_code.as_deref() == Some("cNGN")
+            matches!(
+                b.asset_type.as_str(),
+                "credit_alphanum4" | "credit_alphanum12"
+            ) && b.asset_code.as_deref() == Some("cNGN")
                 && b.asset_issuer.as_deref() == Some(&self.cngn_issuer)
         });
 
@@ -156,7 +163,10 @@ impl BalanceService {
         balances
             .iter()
             .filter(|b| {
-                matches!(b.asset_type.as_str(), "credit_alphanum4" | "credit_alphanum12")
+                matches!(
+                    b.asset_type.as_str(),
+                    "credit_alphanum4" | "credit_alphanum12"
+                )
             })
             .filter_map(|b| {
                 Some(TrustlineInfo {

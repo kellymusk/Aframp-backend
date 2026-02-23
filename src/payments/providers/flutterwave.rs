@@ -60,10 +60,8 @@ pub struct FlutterwaveProvider {
 
 impl FlutterwaveProvider {
     pub fn new(config: FlutterwaveConfig) -> PaymentResult<Self> {
-        let http = PaymentHttpClient::new(
-            Duration::from_secs(config.timeout_secs),
-            config.max_retries,
-        )?;
+        let http =
+            PaymentHttpClient::new(Duration::from_secs(config.timeout_secs), config.max_retries)?;
         Ok(Self { config, http })
     }
 
@@ -136,7 +134,14 @@ impl PaymentProvider for FlutterwaveProvider {
                 field: Some("transaction_reference".to_string()),
             });
         }
-        if request.customer.email.as_deref().unwrap_or("").trim().is_empty() {
+        if request
+            .customer
+            .email
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             return Err(PaymentError::ValidationError {
                 message: "customer.email is required for flutterwave initialization".to_string(),
                 field: Some("customer.email".to_string()),
@@ -433,13 +438,11 @@ impl PaymentProvider for FlutterwaveProvider {
         _payload: &[u8],
         signature: &str,
     ) -> PaymentResult<WebhookVerificationResult> {
-        let expected = self
-            .config
-            .webhook_secret
-            .as_deref()
-            .ok_or(PaymentError::WebhookVerificationError {
+        let expected = self.config.webhook_secret.as_deref().ok_or(
+            PaymentError::WebhookVerificationError {
                 message: "FLUTTERWAVE_WEBHOOK_SECRET is not configured".to_string(),
-            })?;
+            },
+        )?;
         let valid = secure_eq(expected.trim().as_bytes(), signature.trim().as_bytes());
         Ok(WebhookVerificationResult {
             valid,
@@ -452,10 +455,11 @@ impl PaymentProvider for FlutterwaveProvider {
     }
 
     fn parse_webhook_event(&self, payload: &[u8]) -> PaymentResult<WebhookEvent> {
-        let parsed: JsonValue =
-            serde_json::from_slice(payload).map_err(|e| PaymentError::WebhookVerificationError {
+        let parsed: JsonValue = serde_json::from_slice(payload).map_err(|e| {
+            PaymentError::WebhookVerificationError {
                 message: format!("invalid webhook JSON payload: {}", e),
-            })?;
+            }
+        })?;
 
         let event_type = parsed
             .get("event")
@@ -467,15 +471,15 @@ impl PaymentProvider for FlutterwaveProvider {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
 
-        let status = data
-            .get("status")
-            .and_then(|v| v.as_str())
-            .map(|s| match s.to_lowercase().as_str() {
-                "successful" | "success" | "completed" => PaymentState::Success,
-                "pending" | "new" | "processing" => PaymentState::Pending,
-                "failed" | "cancelled" => PaymentState::Failed,
-                _ => PaymentState::Unknown,
-            });
+        let status =
+            data.get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| match s.to_lowercase().as_str() {
+                    "successful" | "success" | "completed" => PaymentState::Success,
+                    "pending" | "new" | "processing" => PaymentState::Pending,
+                    "failed" | "cancelled" => PaymentState::Failed,
+                    _ => PaymentState::Unknown,
+                });
 
         let provider_reference = data
             .get("flw_ref")

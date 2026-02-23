@@ -295,10 +295,10 @@ impl MultiChainBalanceAggregator {
         address: &str,
     ) -> HashMap<String, BlockchainResult<Vec<AssetBalance>>> {
         use futures::stream::{self, StreamExt};
-        
+
         let chains: Vec<_> = self.chains.iter().collect();
         let address = address.to_string();
-        
+
         let results: Vec<(String, BlockchainResult<Vec<AssetBalance>>)> = stream::iter(chains)
             .map(|chain| {
                 let chain_id = chain.chain_id().to_string();
@@ -311,7 +311,7 @@ impl MultiChainBalanceAggregator {
             .buffer_unordered(3) // Process up to 3 chains concurrently
             .collect()
             .await;
-        
+
         results.into_iter().collect()
     }
 
@@ -322,23 +322,21 @@ impl MultiChainBalanceAggregator {
         asset_code: &str,
     ) -> BlockchainResult<String> {
         use futures::stream::{self, StreamExt};
-        
+
         let chains: Vec<_> = self.chains.iter().collect();
         let address = address.to_string();
         let asset = asset_code.to_string();
-        
+
         let results: Vec<BlockchainResult<Option<String>>> = stream::iter(chains)
             .map(|chain| {
                 let addr = address.clone();
                 let asset = asset.clone();
-                async move {
-                    chain.get_asset_balance(&addr, &asset, None).await
-                }
+                async move { chain.get_asset_balance(&addr, &asset, None).await }
             })
             .buffer_unordered(3)
             .collect()
             .await;
-        
+
         let mut total = 0.0f64;
         for result in results {
             if let Ok(Some(balance)) = result {
@@ -359,13 +357,15 @@ impl MultiChainBalanceAggregator {
         converter: F,
     ) -> BlockchainResult<TotalBalance>
     where
-        F: for<'a> Fn(&'a str, &'a str) -> futures::future::BoxFuture<'a, BlockchainResult<String>> + Send + Sync,
+        F: for<'a> Fn(&'a str, &'a str) -> futures::future::BoxFuture<'a, BlockchainResult<String>>
+            + Send
+            + Sync,
     {
         use futures::stream::{self, StreamExt};
-        
+
         let chains: Vec<_> = self.chains.iter().collect();
         let address = address.to_string();
-        
+
         let results: Vec<BlockchainResult<Vec<AggregatedBalance>>> = stream::iter(chains)
             .map(|chain| {
                 let chain_id = chain.chain_id().to_string();
@@ -374,24 +374,22 @@ impl MultiChainBalanceAggregator {
                 async move {
                     let balances = chain.get_balances(&address).await?;
                     let mut aggregated = Vec::new();
-                    
+
                     for balance in balances {
                         let usd = converter(&balance.asset_code, "USD").await.ok();
                         let rate = usd.as_deref();
-                        
-                        let usd_equivalent = if let (Some(rate), Ok(amt)) = (
-                            rate,
-                            balance.balance.parse::<f64>()
-                        ) {
-                            if let Ok(r) = rate.parse::<f64>() {
-                                Some((amt * r).to_string())
+
+                        let usd_equivalent =
+                            if let (Some(rate), Ok(amt)) = (rate, balance.balance.parse::<f64>()) {
+                                if let Ok(r) = rate.parse::<f64>() {
+                                    Some((amt * r).to_string())
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
-                            }
-                        } else {
-                            None
-                        };
-                        
+                            };
+
                         aggregated.push(AggregatedBalance {
                             chain: chain_id.clone(),
                             asset_code: balance.asset_code.clone(),
@@ -400,21 +398,21 @@ impl MultiChainBalanceAggregator {
                             conversion_rate: rate.map(|s| s.to_string()),
                         });
                     }
-                    
+
                     Ok::<_, BlockchainError>(aggregated)
                 }
             })
             .buffer_unordered(3)
             .collect()
             .await;
-        
+
         let mut all_balances: Vec<AggregatedBalance> = Vec::new();
         let mut total_usd = 0.0f64;
-        
+
         for result in results {
             all_balances.extend(result?);
         }
-        
+
         for balance in &all_balances {
             if let Some(ref usd) = balance.usd_equivalent {
                 if let Ok(amt) = usd.parse::<f64>() {
@@ -422,10 +420,14 @@ impl MultiChainBalanceAggregator {
                 }
             }
         }
-        
+
         Ok(TotalBalance {
             balances: all_balances,
-            total_usd: if total_usd > 0.0 { Some(total_usd.to_string()) } else { None },
+            total_usd: if total_usd > 0.0 {
+                Some(total_usd.to_string())
+            } else {
+                None
+            },
             calculated_at: chrono::Utc::now().to_rfc3339(),
         })
     }
@@ -433,9 +435,9 @@ impl MultiChainBalanceAggregator {
     /// Check health of all chains (parallel)
     pub async fn health_check_all(&self) -> HashMap<String, ChainHealthStatus> {
         use futures::stream::{self, StreamExt};
-        
+
         let chains: Vec<_> = self.chains.iter().collect();
-        
+
         stream::iter(chains)
             .map(|chain| {
                 let chain_id = chain.chain_id().to_string();
@@ -494,10 +496,7 @@ impl TransactionHandler {
     }
 
     /// Submit a built transaction
-    pub async fn submit_transaction(
-        &self,
-        signed_tx: &str,
-    ) -> BlockchainResult<TransactionResult> {
+    pub async fn submit_transaction(&self, signed_tx: &str) -> BlockchainResult<TransactionResult> {
         self.service.submit_transaction(signed_tx).await
     }
 
@@ -618,15 +617,13 @@ mod tests {
 
     #[test]
     fn test_total_balance_creation() {
-        let balances = vec![
-            AggregatedBalance {
-                chain: "stellar".to_string(),
-                asset_code: "cNGN".to_string(),
-                balance: "1000".to_string(),
-                usd_equivalent: Some("1.50".to_string()),
-                conversion_rate: Some("0.0015".to_string()),
-            },
-        ];
+        let balances = vec![AggregatedBalance {
+            chain: "stellar".to_string(),
+            asset_code: "cNGN".to_string(),
+            balance: "1000".to_string(),
+            usd_equivalent: Some("1.50".to_string()),
+            conversion_rate: Some("0.0015".to_string()),
+        }];
 
         let total = TotalBalance {
             balances,

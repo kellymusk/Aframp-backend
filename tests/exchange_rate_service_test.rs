@@ -8,6 +8,12 @@
 
 #[cfg(all(test, feature = "database", feature = "cache"))]
 mod tests {
+    use bigdecimal::BigDecimal;
+    use chrono::Utc;
+    use sqlx::PgPool;
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use uuid::Uuid;
     use Bitmesh_backend::cache::cache::{Cache, RedisCache};
     use Bitmesh_backend::cache::init_cache_pool;
     use Bitmesh_backend::cache::CacheConfig;
@@ -21,12 +27,6 @@ mod tests {
     };
     use Bitmesh_backend::services::fee_structure::FeeStructureService;
     use Bitmesh_backend::services::rate_providers::FixedRateProvider;
-    use bigdecimal::BigDecimal;
-    use chrono::Utc;
-    use sqlx::PgPool;
-    use std::str::FromStr;
-    use std::sync::Arc;
-    use uuid::Uuid;
 
     async fn setup_test_db() -> PgPool {
         let database_url = std::env::var("DATABASE_URL")
@@ -195,8 +195,8 @@ mod tests {
         let cache = setup_test_cache().await;
 
         let repo = ExchangeRateRepository::with_cache(pool.clone(), cache.clone());
-        let service = ExchangeRateService::new(repo, ExchangeRateServiceConfig::default())
-            .with_cache(cache);
+        let service =
+            ExchangeRateService::new(repo, ExchangeRateServiceConfig::default()).with_cache(cache);
 
         // Update rate
         let new_rate = BigDecimal::from(1);
@@ -291,9 +291,8 @@ mod tests {
         service.invalidate_cache("NGN", "cNGN").await.unwrap();
 
         // Verify cache was cleared
-        let cache_key = Bitmesh_backend::cache::keys::exchange_rate::CurrencyPairKey::new(
-            "NGN", "cNGN",
-        );
+        let cache_key =
+            Bitmesh_backend::cache::keys::exchange_rate::CurrencyPairKey::new("NGN", "cNGN");
         let cached: Option<Bitmesh_backend::services::exchange_rate::RateData> =
             cache.get(&cache_key.to_string()).await.unwrap();
         assert!(cached.is_none());

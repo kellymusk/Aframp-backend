@@ -221,11 +221,7 @@ impl TransactionMonitorWorker {
             //    but haven't waited long enough since the last attempt.
             // ------------------------------------------------------------------
             let retry_count = get_retry_count(Some(&tx.metadata));
-            if retry_count > 0
-                && !is_ready_for_retry(
-                    tx.metadata.get("last_retry_at"),
-                    retry_count,
-                )
+            if retry_count > 0 && !is_ready_for_retry(tx.metadata.get("last_retry_at"), retry_count)
             {
                 continue; // not yet ready; will be picked up in a later cycle
             }
@@ -819,16 +815,14 @@ mod tests {
     #[test]
     fn old_enough_last_retry_at_is_ready() {
         // retry 1 → 10 s delay; timestamp 15 s ago → ready
-        let fifteen_seconds_ago =
-            (chrono::Utc::now() - chrono::Duration::seconds(15)).to_rfc3339();
+        let fifteen_seconds_ago = (chrono::Utc::now() - chrono::Duration::seconds(15)).to_rfc3339();
         let ts = json!(fifteen_seconds_ago);
         assert!(is_ready_for_retry(Some(&ts), 1));
     }
 
     #[test]
     fn retry_2_requires_30s_gap() {
-        let twenty_seconds_ago =
-            (chrono::Utc::now() - chrono::Duration::seconds(20)).to_rfc3339();
+        let twenty_seconds_ago = (chrono::Utc::now() - chrono::Duration::seconds(20)).to_rfc3339();
         let ts = json!(twenty_seconds_ago);
         assert!(!is_ready_for_retry(Some(&ts), 2), "20s < 30s → not ready");
 
