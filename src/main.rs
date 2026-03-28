@@ -412,6 +412,15 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Mint authorization audit service (chain-verified log trail)
+    let mint_audit_service: Option<std::sync::Arc<audit::mint_authorization::MintAuthorizationService>> =
+        if let Some(pool) = db_pool.clone() {
+            let repo = audit::mint_authorization::MintAuthorizationRepository::new(pool.clone());
+            Some(std::sync::Arc::new(audit::mint_authorization::MintAuthorizationService::new(repo)))
+        } else {
+            None
+        };
+
     // --- Cache warming (must complete before traffic is accepted) ---
     if let (Some(ref pool), Some(ref redis)) = (&db_pool, &redis_cache) {
         let registry = prometheus::default_registry();
@@ -463,6 +472,7 @@ async fn main() -> anyhow::Result<()> {
                 pool,
                 client,
                 monitor_config,
+                mint_audit_service.clone(),
             );
             monitor_handle = Some(tokio::spawn(worker.run(worker_shutdown_rx.clone())));
         } else {
@@ -566,6 +576,7 @@ async fn main() -> anyhow::Result<()> {
                     client,
                     std::sync::Arc::new(factory),
                     config,
+                    mint_audit_service.clone(),
                 );
                 onramp_handle = Some(tokio::spawn(async move {
                     if let Err(e) = processor.run(worker_shutdown_rx.clone()).await {

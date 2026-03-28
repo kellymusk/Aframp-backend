@@ -19,6 +19,7 @@ use crate::chains::stellar::errors::StellarError;
 use crate::chains::stellar::payment::{CngnMemo, CngnPaymentBuilder};
 use crate::chains::stellar::trustline::CngnTrustlineManager;
 use crate::database::transaction_repository::{Transaction, TransactionRepository};
+use crate::audit::mint_authorization::{MintAuthorizationService, MintActionType};
 use crate::payments::factory::PaymentProviderFactory;
 use crate::payments::types::{PaymentState, ProviderName, StatusRequest};
 use bigdecimal::BigDecimal;
@@ -214,6 +215,7 @@ pub struct OnrampProcessor {
     stellar: Arc<StellarClient>,
     provider_factory: Arc<PaymentProviderFactory>,
     config: OnrampProcessorConfig,
+    mint_audit_service: Option<Arc<MintAuthorizationService>>,
 }
 
 impl OnrampProcessor {
@@ -222,12 +224,14 @@ impl OnrampProcessor {
         stellar: StellarClient,
         provider_factory: Arc<PaymentProviderFactory>,
         config: OnrampProcessorConfig,
+        mint_audit_service: Option<Arc<MintAuthorizationService>>,
     ) -> Self {
         Self {
             db: Arc::new(db),
             stellar: Arc::new(stellar),
             provider_factory,
             config,
+            mint_audit_service,
         }
     }
 
@@ -695,6 +699,16 @@ impl OnrampProcessor {
             .await?
             .ok_or_else(|| ProcessorError::Internal(format!("Transaction vanished: {}", tx_id)))?;
 
+        if let Err(e) = self
+            .audit_mint_action(&tx, MintActionType::MintRequested, json!({
+                "stage": "payment_confirmed",
+                "status": "processing",
+            }))
+            .await
+        {
+            warn!(tx_id = %tx_id, error = %e, "Failed to record MintRequested audit event");
+        }
+
         // Execute the cNGN transfer on Stellar
         self.execute_cngn_transfer(&tx).await
     }
@@ -727,6 +741,17 @@ impl OnrampProcessor {
                 "Stellar tx already submitted — skipping (idempotent)"
             );
             return Ok(());
+        }
+
+        if let Err(e) = self
+            .audit_mint_action(
+                tx,
+                MintActionType::MintSubmitted,
+                json!({"stage": "execute_cngn_transfer_start"}),
+            )
+            .await
+        {
+            warn!(tx_id = %tx.transaction_id, error = %e, "Failed to record MintSubmitted audit event");
         }
 
         // Pre-flight: verify destination trustline
@@ -813,6 +838,18 @@ impl OnrampProcessor {
                     error = %e,
                     "All Stellar submission attempts exhausted — initiating refund"
                 );
+
+                if let Err(audit_err) = self
+                    .audit_mint_action(
+                        tx,
+                        MintActionType::MintFailed,
+                        json!({"reason": e.to_string(), "stage": "submit_failed"}),
+                    )
+                    .await
+                {
+                    warn!(tx_id = %tx.transaction_id, error = %audit_err, "Failed to record MintFailed audit event");
+                }
+
                 let reason = if e.is_transient() {
                     FailureReason::StellarTransientError
                 } else {
@@ -886,6 +923,35 @@ impl OnrampProcessor {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    async fn audit_mint_action(
+        &self,
+        tx: &Transaction,
+        action_type: MintActionType,
+        request_payload: serde_json::Value,
+    ) -> Result<(), String> {
+        if let Some(service) = &self.mint_audit_service {
+            let payload = json!({
+                "transaction_id": tx.transaction_id.to_string(),
+                "wallet_address": tx.wallet_address,
+                "amount_cngn": tx.cngn_amount.to_string(),
+                "status": tx.status,
+                "action": action_type.as_str(),
+                "request_payload": request_payload,
+            });
+
+            service
+                .record_event(
+                    &self.config.system_wallet_address,
+                    &self.config.system_wallet_address,
+                    action_type,
+                    payload,
+                )
+                .await
+        } else {
+            Ok(())
+        }
     }
 
     /// Submit the cNGN transfer with exponential backoff retry for transient errors.

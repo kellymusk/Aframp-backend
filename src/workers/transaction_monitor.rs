@@ -1,10 +1,12 @@
 use crate::chains::stellar::client::{HorizonTransactionRecord, StellarClient};
+use crate::audit::mint_authorization::{MintAuthorizationService, MintActionType};
 use crate::database::repository::Repository;
 use crate::database::transaction_repository::TransactionRepository;
 use crate::database::webhook_repository::WebhookRepository;
 use serde_json::{json, Value as JsonValue};
 use sqlx::PgPool;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -67,6 +69,8 @@ pub struct TransactionMonitorConfig {
     pub monitoring_window_hours: i32,
     /// Maximum number of incoming transactions fetched per cursor page.
     pub incoming_limit: usize,
+    /// Interval at which to verify mint authorization hash chain (seconds).
+    pub mint_audit_verification_interval: Duration,
     /// If set, the worker also scans this address for incoming cNGN payments.
     pub system_wallet_address: Option<String>,
 }
@@ -80,6 +84,7 @@ impl Default for TransactionMonitorConfig {
             pending_batch_size: 200,
             monitoring_window_hours: 24,
             incoming_limit: 100,
+            mint_audit_verification_interval: Duration::from_secs(3_600),
             system_wallet_address: None,
         }
     }
@@ -116,6 +121,13 @@ impl TransactionMonitorConfig {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(cfg.incoming_limit);
+        cfg.mint_audit_verification_interval = Duration::from_secs(
+            std::env::var("MINT_AUDIT_VERIFICATION_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(cfg.mint_audit_verification_interval.as_secs()),
+        );
+
         cfg.system_wallet_address = std::env::var("SYSTEM_WALLET_ADDRESS").ok();
         cfg
     }
@@ -130,6 +142,8 @@ pub struct TransactionMonitorWorker {
     stellar_client: StellarClient,
     config: TransactionMonitorConfig,
     incoming_cursor: Option<String>,
+    mint_audit_service: Option<Arc<MintAuthorizationService>>,
+    last_mint_audit_verification: Instant,
 }
 
 impl TransactionMonitorWorker {
@@ -137,12 +151,15 @@ impl TransactionMonitorWorker {
         pool: PgPool,
         stellar_client: StellarClient,
         config: TransactionMonitorConfig,
+        mint_audit_service: Option<Arc<MintAuthorizationService>>,
     ) -> Self {
         Self {
             pool,
             stellar_client,
             config,
             incoming_cursor: None,
+            mint_audit_service,
+            last_mint_audit_verification: Instant::now(),
         }
     }
 
@@ -184,6 +201,35 @@ impl TransactionMonitorWorker {
             .inc();
         self.process_pending_transactions().await?;
         self.scan_incoming_transactions().await?;
+
+        if let Some(service) = &self.mint_audit_service {
+            if self.last_mint_audit_verification.elapsed() >= self.config.mint_audit_verification_interval {
+                let now = chrono::Utc::now();
+                let one_day_ago = now - chrono::Duration::hours(24);
+
+                match service.verify_hash_chain(one_day_ago, now).await {
+                    Ok(result) => {
+                        if !result.valid {
+                            error!(
+                                tampered_count = result.tampered_entries.len(),
+                                gaps_count = result.gaps_detected.len(),
+                                "CRITICAL_SECURITY_ALERT: Mint authorization hash chain integrity failure"
+                            );
+                        } else {
+                            info!(
+                                total_checked = result.total_checked,
+                                "Mint authorization hash chain is valid"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "CRITICAL_SECURITY_ALERT: Failed to verify mint authorization hash chain");
+                    }
+                }
+
+                self.last_mint_audit_verification = Instant::now();
+            }
+        }
 
         // Update last-cycle timestamp for missed-cycle alert rule
         #[cfg(feature = "cache")]
@@ -332,6 +378,29 @@ impl TransactionMonitorWorker {
                 "transaction confirmed on stellar ledger"
             );
 
+            if let Some(service) = &self.mint_audit_service {
+                let actor = self
+                    .config
+                    .system_wallet_address
+                    .as_deref()
+                    .unwrap_or("system_wallet");
+                if let Err(e) = service
+                    .record_event(
+                        actor,
+                        actor,
+                        MintActionType::MintCompleted,
+                        json!({
+                            "transaction_id": transaction_id,
+                            "stellar_hash": record.hash,
+                            "ledger": record.ledger,
+                        }),
+                    )
+                    .await
+                {
+                    warn!(transaction_id = %transaction_id, error = %e, "Failed to record MintCompleted audit event");
+                }
+            }
+
             self.log_webhook_event(transaction_id, "stellar.transaction.confirmed", updated)
                 .await;
         } else {
@@ -363,6 +432,28 @@ impl TransactionMonitorWorker {
 
         self.log_webhook_event(transaction_id, "stellar.transaction.timeout", updated)
             .await;
+
+        if let Some(service) = &self.mint_audit_service {
+            let actor = self
+                .config
+                .system_wallet_address
+                .as_deref()
+                .unwrap_or("system_wallet");
+            if let Err(e) = service
+                .record_event(
+                    actor,
+                    actor,
+                    MintActionType::MintFailed,
+                    json!({
+                        "transaction_id": transaction_id,
+                        "reason": "absolute_timeout",
+                    }),
+                )
+                .await
+            {
+                warn!(transaction_id = %transaction_id, error = %e, "Failed to record MintFailed audit event (timeout)");
+            }
+        }
 
         warn!(
             transaction_id = %transaction_id,
@@ -404,6 +495,29 @@ impl TransactionMonitorWorker {
             tx_repo
                 .update_status_with_metadata(transaction_id, "failed", updated.clone())
                 .await?;
+
+            if let Some(service) = &self.mint_audit_service {
+                let actor = self
+                    .config
+                    .system_wallet_address
+                    .as_deref()
+                    .unwrap_or("system_wallet");
+                if let Err(e) = service
+                    .record_event(
+                        actor,
+                        actor,
+                        MintActionType::MintFailed,
+                        json!({
+                            "transaction_id": transaction_id,
+                            "reason": error_message,
+                            "retry_count": retries,
+                        }),
+                    )
+                    .await
+                {
+                    warn!(transaction_id = %transaction_id, error = %e, "Failed to record MintFailed audit event (retry exhausted)");
+                }
+            }
 
             let err = MonitorError::RetryExceeded {
                 tx_id: transaction_id.to_string(),
