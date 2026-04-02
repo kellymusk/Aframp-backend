@@ -8,11 +8,6 @@ pub mod auth;
 pub mod observability;
 pub mod routes;
 pub mod tests;
-pub mod transaction_models;
-pub mod transaction_repository;
-pub mod transaction_service;
-pub mod transaction_handlers;
-pub mod transaction_tests;
 
 pub use models::*;
 pub use repositories::*;

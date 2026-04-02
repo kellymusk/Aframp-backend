@@ -367,5 +367,3 @@ fn jwt_error_response(err: JwtError) -> (StatusCode, Json<serde_json::Value>) {
         })),
     )
 }
-
-}

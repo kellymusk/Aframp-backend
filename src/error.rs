@@ -464,18 +464,17 @@ impl AppError {
                     DomainError::SystemHalted { status } => {
                         format!("System halted due to security incident. Status: {}. Please contact support.", status)
                     }
-                }
-                DomainError::ReserveInsufficient { ratio, .. } => {
-                    format!(
-                        "Mint rejected: fiat reserve ratio ({}) is below the required 1:1 minimum.",
-                        ratio
-                    )
-                }
-                DomainError::MintDisabled => {
-                    "Minting is currently disabled due to a reserve compliance breach. Contact the treasury team.".to_string()
-                }
-                _ => "An unexpected error occurred.".to_string(),
-            },
+                    DomainError::ReserveInsufficient { ratio, .. } => {
+                        format!(
+                            "Mint rejected: fiat reserve ratio ({}) is below the required 1:1 minimum.",
+                            ratio
+                        )
+                    }
+                    DomainError::MintDisabled => {
+                        "Minting is currently disabled due to a reserve compliance breach. Contact the treasury team.".to_string()
+                    }
+                    _ => "An unexpected error occurred.".to_string(),
+                },
             AppErrorKind::Infrastructure(_) => {
                 "Service temporarily unavailable. Please try again later".to_string()
             }

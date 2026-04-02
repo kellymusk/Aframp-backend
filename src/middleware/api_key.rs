@@ -257,62 +257,11 @@ pub async fn resolve_api_key(
     .unwrap_or_default();
 
     // Update last_used_at asynchronously — does not block the request
-    let row = match row {
-        Ok(Some(r)) => r,
-        Ok(None) => return LookupResult::NotFound,
-        Err(e) => {
-            warn!(error = %e, "DB error during API key lookup");
-            return LookupResult::NotFound;
-        }
-    };
-
-    let now = Utc::now();
-
-    // Check expiry.
-    if let Some(expires_at) = row.expires_at {
-        if expires_at <= now {
-            let grace_end = crate::services::key_rotation::check_grace_period(pool, row.key_id).await;
-            if let Some(grace_end) = grace_end {
-                let auth = AuthenticatedKey {
-                    key_id: row.key_id,
-                    consumer_id: row.consumer_id,
-                    consumer_type: row.consumer_type,
-                    environment: String::new(),
-                    scopes: row.scopes.unwrap_or_default(),
-                    grace_period_warning: Some(format!(
-                        "This API key has been rotated. Please migrate to the new key before {}",
-                        grace_end.format("%Y-%m-%dT%H:%M:%SZ")
-                    )),
-                };
-                return LookupResult::GracePeriod { auth, grace_end };
-            }
-            return LookupResult::Expired {
-                key_id: row.key_id,
-                consumer_id: row.consumer_id,
-                expires_at,
-            };
-        }
-    }
-
-    // Check is_active.
-    if !row.is_active {
-        return LookupResult::Expired {
-            key_id: row.key_id,
-            consumer_id: row.consumer_id,
-            expires_at: row.expires_at.unwrap_or(now),
-        };
-    }
-
-    // Valid key — update last_used_at asynchronously.
     let pool_clone = pool.clone();
-    let key_id = row.key_id;
+    let key_id_clone = matched.id;
     tokio::spawn(async move {
-        let _ = sqlx::query!(
-            "UPDATE api_keys SET last_used_at = now() WHERE id = $1",
-            key_id
-        )
-        .execute(&pool_clone)
-        .await;
+        let repo = ApiKeyRepository::new(pool_clone);
+        let _ = repo.touch_last_used(key_id_clone).await;
     });
 
     Some(AuthenticatedKey {
@@ -321,39 +270,8 @@ pub async fn resolve_api_key(
         consumer_type,
         environment: matched.environment,
         scopes,
-    LookupResult::Valid(AuthenticatedKey {
-        key_id: row.key_id,
-        consumer_id: row.consumer_id,
-        consumer_type: row.consumer_type,
-        environment: String::new(),
-        scopes: row.scopes.unwrap_or_default(),
         grace_period_warning: None,
     })
-}
-
-// ─── Key Extraction ───────────────────────────────────────────────────────────
-
-/// Extract the raw API key from `Authorization: Bearer <key>` or `X-API-Key: <key>`.
-fn extract_raw_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(bearer) = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    {
-        return Some(bearer.to_string());
-    }
-    headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-}
-
-/// Simplified lookup used by existing code paths (returns None for expired/invalid).
-pub async fn resolve_api_key(pool: &PgPool, raw_key: &str) -> Option<AuthenticatedKey> {
-    match resolve_api_key_full(pool, raw_key).await {
-        LookupResult::Valid(auth) | LookupResult::GracePeriod { auth, .. } => Some(auth),
-        _ => None,
-    }
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────

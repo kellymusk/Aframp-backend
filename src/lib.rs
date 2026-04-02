@@ -151,9 +151,6 @@ pub mod vault;
 // Treasury Emergency Intervention Framework — one-click peg stabilisation
 #[cfg(feature = "database")]
 pub mod treasury;
-// Consumer usage analytics & reporting system
-#[cfg(feature = "database")]
-pub mod analytics;
 // Adaptive rate limiting and throttling system
 #[cfg(feature = "cache")]
 pub mod adaptive_rate_limit;
@@ -179,10 +176,6 @@ pub mod compliance_registry;
 // Cross-border payment corridor implementations
 #[cfg(feature = "database")]
 pub mod corridors;
-
-// Audit logging system
-#[cfg(feature = "database")]
-pub mod audit;
 
 // Contract error enum for Soroban (only when not using database feature)
 #[cfg(not(feature = "database"))]
