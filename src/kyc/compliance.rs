@@ -621,7 +621,7 @@ impl ComplianceService {
             SELECT COUNT(*)
             FROM transactions t
             WHERE t.consumer_id = $1 
-            AND t.amount < $2
+            AND t.from_amount < $2
             AND t.created_at > $3
             "#,
             consumer_id,
@@ -665,8 +665,8 @@ impl ComplianceService {
 
         let result = sqlx::query!(
             r#"
-            SELECT COALESCE(daily_volume, '0'::BigDecimal) as daily_volume,
-                   COALESCE(monthly_volume, '0'::BigDecimal) as monthly_volume
+            SELECT COALESCE(daily_volume, '0'::numeric) as daily_volume,
+                   COALESCE(monthly_volume, '0'::numeric) as monthly_volume
             FROM kyc_volume_trackers
             WHERE consumer_id = $1 AND date = $2
             "#,

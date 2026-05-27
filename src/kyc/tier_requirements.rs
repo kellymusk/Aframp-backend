@@ -349,8 +349,8 @@ impl VolumeTracker {
 
         let result = sqlx::query!(
             r#"
-            SELECT COALESCE(daily_volume, '0'::BigDecimal) as daily_volume,
-                   COALESCE(monthly_volume, '0'::BigDecimal) as monthly_volume
+            SELECT COALESCE(daily_volume, '0'::numeric) as daily_volume,
+                   COALESCE(monthly_volume, '0'::numeric) as monthly_volume
             FROM kyc_volume_trackers
             WHERE consumer_id = $1 AND date = $2
             "#,

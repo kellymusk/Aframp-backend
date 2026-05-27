@@ -184,7 +184,7 @@ impl ReportGenerator {
               AND actor_type = 'consumer'
               AND actor_id IS NOT NULL
             GROUP BY actor_id
-            ORDER BY request_count DESC
+            ORDER BY COUNT(*) DESC
             LIMIT 10
             "#,
             period_start,

@@ -306,7 +306,7 @@ impl KycLimitsEnforcer {
 
         let limit = limit.unwrap_or(100);
 
-        let records = sqlx::query!(
+        let records = sqlx::query(
             r#"
             SELECT 
                 kr.consumer_id,
@@ -314,45 +314,74 @@ impl KycLimitsEnforcer {
                 kr.effective_tier,
                 tdl.daily_volume_limit,
                 tdl.monthly_volume_limit,
-                COALESCE(vt.daily_volume, '0'::BigDecimal) as daily_volume,
-                COALESCE(vt.monthly_volume, '0'::BigDecimal) as monthly_volume
+                COALESCE(vt.daily_volume, '0'::numeric) as daily_volume,
+                COALESCE(vt.monthly_volume, '0'::numeric) as monthly_volume
             FROM kyc_records kr
             JOIN kyc_tier_definitions tdl ON kr.effective_tier = tdl.tier
             LEFT JOIN kyc_volume_trackers vt ON kr.consumer_id = vt.consumer_id AND vt.date = CURRENT_DATE
             WHERE kr.status = 'approved'
             AND (
-                (COALESCE(vt.daily_volume, '0'::BigDecimal) / tdl.daily_volume_limit) > $1
-                OR (COALESCE(vt.monthly_volume, '0'::BigDecimal) / tdl.monthly_volume_limit) > $2
+                (COALESCE(vt.daily_volume, '0'::numeric) / tdl.daily_volume_limit) > $1
+                OR (COALESCE(vt.monthly_volume, '0'::numeric) / tdl.monthly_volume_limit) > $2
             )
-            ORDER BY (COALESCE(vt.daily_volume, '0'::BigDecimal) / tdl.daily_volume_limit) DESC
+            ORDER BY (COALESCE(vt.daily_volume, '0'::numeric) / tdl.daily_volume_limit) DESC
             LIMIT $3
-            "#,
-            daily_threshold,
-            monthly_threshold,
-            limit
+            "#
         )
+        .bind(daily_threshold)
+        .bind(monthly_threshold)
+        .bind(limit)
         .fetch_all(&self.repository.pool)
         .await
         .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
 
-        let warnings: Vec<ConsumerLimitWarning> = records
+        let warnings: Vec<ConsumerLimitWarning> = Vec::new();
+        for record in records {
+            use sqlx::Row;
+            let consumer_id: Uuid = record.try_get("consumer_id")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+            let tier: KycTier = record.try_get("tier")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+            let effective_tier: KycTier = record.try_get("effective_tier")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+            let daily_volume_limit: BigDecimal = record.try_get("daily_volume_limit")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+            let monthly_volume_limit: BigDecimal = record.try_get("monthly_volume_limit")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+            let daily_volume: BigDecimal = record.try_get("daily_volume")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+            let monthly_volume: BigDecimal = record.try_get("monthly_volume")
+                .map_err(|e| KycLimitsError::DatabaseError(e.to_string()))?;
+
+            warnings.push(ConsumerLimitWarning {
+                consumer_id,
+                tier,
+                effective_tier,
+                daily_volume_limit,
+                monthly_volume_limit,
+                daily_volume_used: daily_volume,
+                monthly_volume_used: monthly_volume,
+            });
+        }
+
+        let result: Vec<ConsumerLimitWarning> = warnings
             .into_iter()
-            .map(|record| {
+            .map(|warning| {
                 let daily_usage_ratio =
-                    record.daily_volume.clone() / record.daily_volume_limit.clone();
+                    &warning.daily_volume_used / &warning.daily_volume_limit;
                 let monthly_usage_ratio =
-                    record.monthly_volume.clone() / record.monthly_volume_limit.clone();
+                    &warning.monthly_volume_used / &warning.monthly_volume_limit;
 
                 ConsumerLimitWarning {
-                    consumer_id: record.consumer_id,
-                    tier: record.tier,
-                    effective_tier: record.effective_tier,
+                    consumer_id: warning.consumer_id,
+                    tier: warning.tier,
+                    effective_tier: warning.effective_tier,
                     daily_usage_ratio: daily_usage_ratio.to_f64().unwrap_or(0.0),
                     monthly_usage_ratio: monthly_usage_ratio.to_f64().unwrap_or(0.0),
-                    daily_volume_used: record.daily_volume,
-                    monthly_volume_used: record.monthly_volume,
-                    daily_volume_limit: record.daily_volume_limit,
-                    monthly_volume_limit: record.monthly_volume_limit,
+                    daily_volume_used: warning.daily_volume_used,
+                    monthly_volume_used: warning.monthly_volume_used,
+                    daily_volume_limit: warning.daily_volume_limit,
+                    monthly_volume_limit: warning.monthly_volume_limit,
                 }
             })
             .collect();
@@ -406,8 +435,8 @@ impl KycLimitsEnforcer {
 
         let result = sqlx::query!(
             r#"
-            SELECT COALESCE(daily_volume, '0'::BigDecimal) as daily_volume,
-                   COALESCE(monthly_volume, '0'::BigDecimal) as monthly_volume
+            SELECT COALESCE(daily_volume, '0'::numeric) as daily_volume,
+                   COALESCE(monthly_volume, '0'::numeric) as monthly_volume
             FROM kyc_volume_trackers
             WHERE consumer_id = $1 AND date = $2
             "#,
