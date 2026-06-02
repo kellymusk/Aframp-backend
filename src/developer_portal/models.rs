@@ -418,3 +418,134 @@ pub enum DeveloperPortalError {
     #[error("Crypto error: {0}")]
     Crypto(String),
 }
+
+// ── Sandbox Data Factory ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SandboxTestUser {
+    pub id: Uuid,
+    pub application_id: Uuid,
+    pub external_id: String,
+    pub full_name: String,
+    pub email: String,
+    pub phone: Option<String>,
+    pub kyc_status: String,
+    pub balance_ngn: rust_decimal::Decimal,
+    pub balance_cngn: rust_decimal::Decimal,
+    pub stellar_address: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SandboxTestBankAccount {
+    pub id: Uuid,
+    pub application_id: Uuid,
+    pub test_user_id: Option<Uuid>,
+    pub account_number: String,
+    pub bank_code: String,
+    pub bank_name: String,
+    pub account_name: String,
+    pub currency: String,
+    pub is_verified: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SandboxMockTransaction {
+    pub id: Uuid,
+    pub application_id: Uuid,
+    pub test_user_id: Option<Uuid>,
+    pub transaction_type: String,
+    pub status: String,
+    pub amount: rust_decimal::Decimal,
+    pub currency: String,
+    pub stellar_tx_hash: Option<String>,
+    pub reference: String,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateTestDataRequest {
+    /// Number of test users to create (1-50)
+    pub user_count: Option<u8>,
+    /// Number of mock transactions per user (1-20)
+    pub transactions_per_user: Option<u8>,
+    /// Initial NGN balance for each test user
+    pub initial_balance_ngn: Option<rust_decimal::Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateTestDataResponse {
+    pub users_created: usize,
+    pub bank_accounts_created: usize,
+    pub transactions_created: usize,
+    pub users: Vec<SandboxTestUser>,
+}
+
+// ── Chaos Injection ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SandboxChaosScenario {
+    pub id: Uuid,
+    pub application_id: Uuid,
+    pub scenario_type: String,
+    pub config: serde_json::Value,
+    pub target_path_prefix: String,
+    pub is_active: bool,
+    pub activated_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateChaosScenarioRequest {
+    /// One of: http_500, http_429, tx_rejected, latency_ms, network_timeout
+    pub scenario_type: String,
+    /// For latency_ms: {"delay_ms": 2000}
+    /// For http_429: {"retry_after": 60}
+    pub config: Option<serde_json::Value>,
+    /// Path prefix to intercept, e.g. "/api/v1/onramp"
+    pub target_path_prefix: Option<String>,
+    /// Auto-expire after N seconds (optional)
+    pub expires_in_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivateChaosScenarioRequest {
+    pub active: bool,
+}
+
+// ── Certification Suite ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SandboxCertificationRun {
+    pub id: Uuid,
+    pub application_id: Uuid,
+    pub status: String,
+    pub score: Option<i16>,
+    pub passed_tests: i16,
+    pub total_tests: i16,
+    pub production_gate_met: bool,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SandboxCertificationResult {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub test_name: String,
+    pub category: String,
+    pub passed: bool,
+    pub error_message: Option<String>,
+    pub duration_ms: Option<i32>,
+    pub executed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificationRunSummary {
+    pub run: SandboxCertificationRun,
+    pub results: Vec<SandboxCertificationResult>,
+}
