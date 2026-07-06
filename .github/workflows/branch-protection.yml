@@ -13,7 +13,7 @@ jobs:
             administration: write
         steps:
             - name: "Apply protection to default branch"
-              uses: actions/github-script@v6
+              uses: actions/github-script@v9
               with:
                   script: |
                       const owner = context.repo.owner;
@@ -48,7 +48,7 @@ jobs:
                       console.log(`Protection policy applied to ${branch}`);
 
             - name: "Dump current protection config"
-              uses: actions/github-script@v6
+              uses: actions/github-script@v9
               with:
                   script: |
                       const owner = context.repo.owner;
