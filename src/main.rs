@@ -26,6 +26,7 @@ mod recurring;
 mod security_compliance;
 mod services;
 mod telemetry;
+mod verification;
 mod workers;
 
 // Imports
@@ -1750,6 +1751,22 @@ async fn main() -> anyhow::Result<()> {
         .merge(webhook_routes)
         .merge(history_routes)
         .merge(auth_routes)
+        .merge({
+            // ── OTP email/phone verification routes ───────────────────────────
+            if let Some(cache) = redis_cache.clone() {
+                let verification_state = std::sync::Arc::new(verification::handlers::VerificationState {
+                    service: std::sync::Arc::new(verification::VerificationService::new(cache)),
+                });
+                info!("✅ Verification routes enabled");
+                Router::new().nest(
+                    "/auth/verify",
+                    verification::verification_router(verification_state),
+                )
+            } else {
+                info!("⏭️  Skipping verification routes (no Redis cache)");
+                Router::new()
+            }
+        })
         .merge(batch_routes)
         .merge(admin_routes)
         .merge(adaptive_rl_admin_routes)
@@ -1811,6 +1828,22 @@ async fn main() -> anyhow::Result<()> {
         .merge(webhook_routes)
         .merge(history_routes)
         .merge(auth_routes)
+        .merge({
+            // ── OTP email/phone verification routes ───────────────────────────
+            if let Some(cache) = redis_cache.clone() {
+                let verification_state = std::sync::Arc::new(verification::handlers::VerificationState {
+                    service: std::sync::Arc::new(verification::VerificationService::new(cache)),
+                });
+                info!("✅ Verification routes enabled");
+                Router::new().nest(
+                    "/auth/verify",
+                    verification::verification_router(verification_state),
+                )
+            } else {
+                info!("⏭️  Skipping verification routes (no Redis cache)");
+                Router::new()
+            }
+        })
         .merge(batch_routes)
         .merge(admin_routes)
         .merge(adaptive_rl_admin_routes)

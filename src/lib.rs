@@ -71,6 +71,10 @@ pub mod api;
 #[cfg(feature = "database")]
 pub mod auth;
 
+// OTP-based email and phone verification
+#[cfg(feature = "database")]
+pub mod verification;
+
 // OAuth 2.0 authorization server
 #[cfg(feature = "database")]
 pub mod oauth;
