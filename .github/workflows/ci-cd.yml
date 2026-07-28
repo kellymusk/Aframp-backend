@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Verify CHANGELOG.md was updated
@@ -81,7 +81,7 @@ jobs:
       config: ${{ steps.filter.outputs.config }}
       stellar: ${{ steps.filter.outputs.stellar }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Detect changed paths
         id: filter
         uses: dorny/paths-filter@v4
@@ -121,7 +121,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -135,7 +135,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -163,7 +163,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -203,7 +203,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.openapi == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v6
         with:
@@ -244,7 +244,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate nginx configuration
         run: |
           docker run --rm \
@@ -265,7 +265,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.config == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Compare aframp-config ConfigMap manifest against config/production.toml
         run: python3 scripts/detect_config_drift.py --source manifest
 
@@ -276,7 +276,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run cargo audit
         run: |
           cargo install cargo-audit --locked
@@ -289,7 +289,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.stellar == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v6
         with:
@@ -356,7 +356,7 @@ jobs:
         ports:
           - 6379:6379
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v6
         with:
@@ -392,7 +392,7 @@ jobs:
     name: Lint Dockerfile (Hadolint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run Hadolint
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -409,7 +409,7 @@ jobs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tag: ${{ steps.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up QEMU (multi-platform)
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
@@ -461,7 +461,7 @@ jobs:
       name: staging
       url: https://staging.aframp.com
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Deploy image to staging
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
@@ -504,7 +504,7 @@ jobs:
       name: production
       url: https://aframp.com
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Deploy image to production
         env:
           PROD_HOST: ${{ secrets.PROD_HOST }}
