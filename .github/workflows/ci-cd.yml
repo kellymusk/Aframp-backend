@@ -241,7 +241,7 @@ jobs:
             git push
           fi
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ github.run_number }}
           path: lcov.info
@@ -372,7 +372,7 @@ jobs:
           exit $status
       - name: Upload benchmark results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: xdr-parser-benchmarks-${{ github.run_number }}
           path: bench_current.txt
