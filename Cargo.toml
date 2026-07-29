@@ -66,7 +66,7 @@ stellar-xdr    = { version = "25.0.0", features = ["next", "base64"], optional =
 # --- Web framework ---
 axum       = { version = "0.8.8", optional = true }
 tower      = { version = "0.4",   features = ["util"], optional = true }
-tower-http = { version = "0.5",   features = ["trace", "request-id", "cors"], optional = true }
+tower-http = { version = "0.6",   features = ["trace", "request-id", "cors"], optional = true }
 http       = { version = "1.0",   optional = true }
 
 # --- Async runtime ---
