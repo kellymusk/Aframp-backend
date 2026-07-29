@@ -107,7 +107,7 @@ bcrypt         = { version = "0.15", optional = true }
 sha1           = { version = "0.10", optional = true }
 aes-gcm        = { version = "0.10", optional = true }
 p384           = { version = "0.13", features = ["ecdh", "pem"], optional = true }
-elliptic-curve = { version = "0.13", optional = true }
+elliptic-curve = { version = "0.14", optional = true }
 hkdf           = { version = "0.12", optional = true }
 zeroize        = { version = "1.7",  features = ["derive"], optional = true }
 openssl        = { version = "0.10", features = ["vendored"], optional = true }
