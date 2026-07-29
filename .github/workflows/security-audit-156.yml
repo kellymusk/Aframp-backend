@@ -64,7 +64,7 @@ jobs:
     if: ${{ vars.SECURITY_SCAN_TARGET_URL != '' }}
     steps:
       - name: Run ZAP baseline against target
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ vars.SECURITY_SCAN_TARGET_URL }}
           cmd_options: "-a"
