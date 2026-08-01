@@ -65,7 +65,7 @@ jobs:
 
       - name: Upload dependency scan report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-scan-report-${{ github.sha }}
           path: audit-report.json
@@ -153,7 +153,7 @@ jobs:
 
       - name: Upload SAST report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sast-report-${{ github.sha }}
           path: sast-report.txt
@@ -180,7 +180,7 @@ jobs:
 
       - name: Upload secrets scan report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: secrets-scan-report-${{ github.sha }}
           path: gitleaks-report.json
@@ -232,7 +232,7 @@ jobs:
 
       - name: Upload container scan report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: container-scan-report-${{ github.sha }}
           path: trivy-report.json

@@ -129,7 +129,7 @@ jobs:
         fi
 
     - name: Upload load test artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: load-test-${{ inputs.scenario }}-${{ github.run_number }}
