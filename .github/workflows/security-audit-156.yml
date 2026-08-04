@@ -17,7 +17,7 @@ jobs:
     name: Dependency audit (cargo-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ secrets.SNYK_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Snyk CLI
         uses: snyk/actions/setup@master
@@ -73,7 +73,7 @@ jobs:
     name: Manual review checkpoint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Ensure manual review guide exists
         run: test -f docs/security/AUDIT_156_SECURITY_REVIEW.md
