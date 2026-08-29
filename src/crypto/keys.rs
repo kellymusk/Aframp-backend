@@ -70,6 +70,220 @@ pub enum KeyStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Key provider abstraction
+// ---------------------------------------------------------------------------
+
+/// Key provisioning source used by the platform encryption layer.
+///
+/// The default implementation reads from environment variables for local dev and
+/// test deployments. Production deployments can swap in AWS KMS-backed
+/// providers without changing the higher-level `KeyStore` contract.
+pub trait KeyProvider: Send + Sync {
+    fn active_kid(&self) -> String;
+    fn get_key_version(&self, kid: &str) -> Result<PlatformKeyVersion, EncryptionError>;
+    fn list_versions(&self) -> Result<Vec<PlatformKeyVersion>, EncryptionError>;
+}
+
+/// Local key provider used for development and fallback scenarios.
+#[derive(Debug, Clone, Default)]
+pub struct EnvKeyProvider {
+    active_kid: String,
+}
+
+impl EnvKeyProvider {
+    pub fn new() -> Result<Self, EncryptionError> {
+        let active_kid =
+            std::env::var("PAYLOAD_ENC_ACTIVE_KID").unwrap_or_else(|_| "v1".to_string());
+
+        let versions = Self::load_versions(&active_kid)?;
+        if versions.is_empty() {
+            tracing::warn!(
+                "PAYLOAD_ENC_KEY_V1 not set — generating ephemeral key pair (development only)"
+            );
+            return Ok(Self { active_kid });
+        }
+
+        Ok(Self { active_kid })
+    }
+
+    fn load_versions(active_kid: &str) -> Result<Vec<PlatformKeyVersion>, EncryptionError> {
+        let mut versions = Vec::new();
+
+        for kid in &["v1", "v2", "v3"] {
+            let env_var = format!("PAYLOAD_ENC_KEY_{}", kid.to_uppercase());
+            if let Ok(pem) = std::env::var(&env_var) {
+                let status = if *kid == active_kid {
+                    KeyStatus::Active
+                } else {
+                    KeyStatus::Transitional
+                };
+                versions.push(PlatformKeyVersion::from_pem(*kid, status, &pem)?);
+            }
+        }
+
+        if versions.is_empty() {
+            let generated = PlatformKeyVersion::generate("v1", KeyStatus::Active)?;
+            versions.push(generated);
+        }
+
+        Ok(versions)
+    }
+}
+
+impl KeyProvider for EnvKeyProvider {
+    fn active_kid(&self) -> String {
+        if self.active_kid.is_empty() {
+            "v1".to_string()
+        } else {
+            self.active_kid.clone()
+        }
+    }
+
+    fn get_key_version(&self, kid: &str) -> Result<PlatformKeyVersion, EncryptionError> {
+        let active_kid = self.active_kid();
+        let versions = Self::load_versions(&active_kid)?;
+        versions
+            .into_iter()
+            .find(|v| v.kid == kid)
+            .ok_or_else(|| EncryptionError::KeyVersionNotFound(kid.to_string()))
+    }
+
+    fn list_versions(&self) -> Result<Vec<PlatformKeyVersion>, EncryptionError> {
+        let active_kid = self.active_kid();
+        Self::load_versions(&active_kid)
+    }
+}
+
+/// KMS-backed key provider.
+///
+/// This provider prefers AWS KMS when `AWS_KMS_KEY_ID` or
+/// `PAYLOAD_ENC_KMS_KEY_ID` is configured. It falls back to the plain env-based
+/// key provider for local development and CI/test environments.
+#[derive(Debug, Clone, Default)]
+pub struct AwsKmsKeyProvider {
+    key_id: Option<String>,
+    fallback: EnvKeyProvider,
+}
+
+impl AwsKmsKeyProvider {
+    pub fn new() -> Self {
+        let key_id = std::env::var("AWS_KMS_KEY_ID")
+            .or_else(|_| std::env::var("PAYLOAD_ENC_KMS_KEY_ID"))
+            .ok();
+
+        Self {
+            key_id,
+            fallback: EnvKeyProvider::default(),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new()
+    }
+
+    /// Envelope-encrypt arbitrary key material using KMS and return the raw
+    /// ciphertext blob. This keeps the KMS key outside the application process
+    /// while allowing the app to wrap sensitive bootstrap secrets.
+    pub fn envelope_encrypt_key_material(&self, key_material: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+        let key_id = self.key_id.clone().ok_or_else(|| {
+            EncryptionError::InvalidKeyMaterial(
+                "AWS_KMS_KEY_ID or PAYLOAD_ENC_KMS_KEY_ID must be set to use KMS envelope encryption"
+                    .into(),
+            )
+        })?;
+
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EncryptionError::InvalidKeyMaterial(e.to_string()))?
+            .block_on(async {
+                let config = aws_config::load_from_env().await;
+                let client = aws_sdk_kms::Client::new(&config);
+                client
+                    .encrypt()
+                    .key_id(&key_id)
+                    .plaintext(key_material)
+                    .send()
+                    .await
+            });
+
+        match result {
+            Ok(response) => Ok(response.ciphertext_blob().to_vec()),
+            Err(err) => Err(EncryptionError::InvalidKeyMaterial(format!(
+                "failed to envelope-encrypt KMS key material: {err}"
+            ))),
+        }
+    }
+
+    /// Decrypt KMS envelope ciphertext back to raw key material.
+    pub fn envelope_decrypt_key_material(&self, ciphertext: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+        let key_id = self.key_id.clone().ok_or_else(|| {
+            EncryptionError::InvalidKeyMaterial(
+                "AWS_KMS_KEY_ID or PAYLOAD_ENC_KMS_KEY_ID must be set to use KMS envelope decryption"
+                    .into(),
+            )
+        })?;
+
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EncryptionError::InvalidKeyMaterial(e.to_string()))?
+            .block_on(async {
+                let config = aws_config::load_from_env().await;
+                let client = aws_sdk_kms::Client::new(&config);
+                client
+                    .decrypt()
+                    .key_id(&key_id)
+                    .ciphertext_blob(ciphertext)
+                    .send()
+                    .await
+            });
+
+        match result {
+            Ok(response) => Ok(response.plaintext().unwrap_or_default().to_vec()),
+            Err(err) => Err(EncryptionError::InvalidKeyMaterial(format!(
+                "failed to decrypt KMS envelope: {err}"
+            ))),
+        }
+    }
+}
+
+impl KeyProvider for AwsKmsKeyProvider {
+    fn active_kid(&self) -> String {
+        if self.key_id.is_some() {
+            "v1".to_string()
+        } else {
+            self.fallback.active_kid()
+        }
+    }
+
+    fn get_key_version(&self, kid: &str) -> Result<PlatformKeyVersion, EncryptionError> {
+        if self.key_id.is_none() {
+            return self.fallback.get_key_version(kid);
+        }
+
+        let versions = self.list_versions()?;
+        versions
+            .into_iter()
+            .find(|v| v.kid == kid)
+            .ok_or_else(|| EncryptionError::KeyVersionNotFound(kid.to_string()))
+    }
+
+    fn list_versions(&self) -> Result<Vec<PlatformKeyVersion>, EncryptionError> {
+        if self.key_id.is_none() {
+            return self.fallback.list_versions();
+        }
+
+        let active_kid = self.active_kid();
+        let mut versions = EnvKeyProvider::load_versions(&active_kid)?;
+        if versions.is_empty() {
+            versions.push(PlatformKeyVersion::generate("v1", KeyStatus::Active)?);
+        }
+        Ok(versions)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Platform key pair
 // ---------------------------------------------------------------------------
 
@@ -312,6 +526,23 @@ impl KeyStore {
 
         let map: HashMap<String, PlatformKeyVersion> =
             versions.into_iter().map(|v| (v.kid.clone(), v)).collect();
+
+        Ok(Self {
+            inner: Arc::new(map),
+            active_kid,
+        })
+    }
+
+    /// Build a key store from an injected provider implementation.
+    pub fn from_provider(provider: &dyn KeyProvider) -> Result<Self, EncryptionError> {
+        let versions = provider.list_versions()?;
+        let active_kid = provider.active_kid();
+        let map: HashMap<String, PlatformKeyVersion> =
+            versions.into_iter().map(|v| (v.kid.clone(), v)).collect();
+
+        if !map.contains_key(&active_kid) {
+            return Err(EncryptionError::KeyVersionNotFound(active_kid));
+        }
 
         Ok(Self {
             inner: Arc::new(map),

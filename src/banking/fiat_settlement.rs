@@ -100,7 +100,7 @@ impl FiatSettlementExecutor {
         let transaction_hash = self.mint_cngn(&wallet_address, cngn_amount).await?;
 
         // 6. Update settlement record
-        settlement.cn gn_minted = true;
+        settlement.cngn_minted = true;
         settlement.settlement_status = SettlementStatus::Completed;
         settlement.completed_at = Some(Utc::now());
 

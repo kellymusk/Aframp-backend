@@ -117,6 +117,65 @@ async fn test_offramp_happy_path() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_offramp_payment_memo_correlation_marks_paid_and_links_payment() -> anyhow::Result<()> {
+    let (pool, _, _, _) = setup_test_env().await?;
+    let tx_repo = TransactionRepository::new(pool.clone());
+
+    let memo = "WD-CORRELATE";
+    let incoming_hash = "a".repeat(64);
+
+    let tx = tx_repo
+        .create_transaction(
+            "GBCS7EDJ7VVE2A5J2FUKY3A277HBC3J5J6NXZG5U4P6B6D6B6D6B6D6B",
+            "offramp",
+            "cNGN",
+            "NGN",
+            BigDecimal::from(5000),
+            BigDecimal::from(5000),
+            BigDecimal::from(5000),
+            "pending_payment",
+            None,
+            Some(memo),
+            serde_json::json!({
+                "payment_memo": memo,
+                "withdrawal_type": "offramp"
+            }),
+        )
+        .await?;
+
+    let updated = tx_repo
+        .update_status_with_metadata(
+            &tx.transaction_id.to_string(),
+            "completed",
+            serde_json::json!({
+                "payment_memo": memo,
+                "incoming_hash": incoming_hash,
+                "incoming_ledger": 12345,
+                "incoming_confirmed_at": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+        .await?;
+
+    let linked = tx_repo
+        .update_blockchain_hash(&tx.transaction_id.to_string(), &incoming_hash)
+        .await?;
+
+    assert_eq!(updated.status, "completed");
+    assert_eq!(updated.payment_reference.as_deref(), Some(memo));
+    assert_eq!(updated.metadata["payment_memo"], serde_json::Value::String(memo.to_string()));
+    assert_eq!(updated.metadata["incoming_hash"], serde_json::Value::String(incoming_hash.clone()));
+    assert_eq!(linked.blockchain_tx_hash.as_deref(), Some(incoming_hash.as_str()));
+
+    let stored = tx_repo.find_by_id(&tx.transaction_id.to_string()).await?.unwrap();
+    assert_eq!(stored.status, "completed");
+    assert_eq!(stored.blockchain_tx_hash.as_deref(), Some(incoming_hash.as_str()));
+    assert_eq!(stored.metadata["incoming_hash"], serde_json::Value::String(incoming_hash));
+
+    let _ = tx_repo.delete(&tx.transaction_id.to_string()).await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_offramp_refund_on_mismatch() -> anyhow::Result<()> {
     let (pool, provider_factory, notification_service, stellar_client) = setup_test_env().await?;
     

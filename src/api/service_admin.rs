@@ -10,11 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{error, info};
 
-// REMOVED: use crate::service_auth::{
-    AllowlistEntry, ServiceAllowlist, ServiceAllowlistRepository, ServiceIdentityInfo,
-    ServiceRegistration, ServiceRegistry,
-};
-
 // ── State ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]

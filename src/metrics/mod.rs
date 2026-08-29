@@ -933,11 +933,9 @@ fn register_all(r: &Registry) {
     ip_detection::register(r);
     alerting::register(r);
     issuer::register(r);
-    crate::ddos::metrics::register(r);
     crate::crypto::metrics::register(r);
     crate::admin::mint_signer_metrics::register(r);
     crate::key_management::metrics::register(r);
-    crate::pentest::metrics::register(r);
     crate::masking::metrics::register(r);
     crate::gateway::metrics::register(r);
 
@@ -945,10 +943,6 @@ fn register_all(r: &Registry) {
     por::register(r);
     #[cfg(feature = "database")]
     crate::analytics::metrics::register(r);
-    crate::adaptive_rate_limit::metrics::register(r);
-    crate::security_compliance::metrics::register(r);
-    crate::liquidity::metrics::register(r);
-    crate::travel_rule::metrics::register(r);
 }
 
 // ---------------------------------------------------------------------------

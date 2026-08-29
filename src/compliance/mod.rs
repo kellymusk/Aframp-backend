@@ -7,17 +7,8 @@
 //! - Watchlist sync daemon
 //! - HELD_FOR_REVIEW transaction interceptor
 
-pub mod behavioral;
-pub mod bloom;
-pub mod handlers;
-pub mod metrics;
 pub mod models;
 pub mod repository;
-pub mod sync_daemon;
 
-pub use behavioral::BehavioralAnalytics;
-pub use bloom::BloomFilter;
-pub use handlers::{compliance_routes, ComplianceState};
 pub use models::{BehavioralRiskRecord, ComplianceWatchlistEntry, SanctionsMatchRecord};
 pub use repository::ComplianceRepository;
-pub use sync_daemon::WatchlistSyncDaemon;

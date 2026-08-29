@@ -153,8 +153,6 @@ pub struct OfframpState {
     pub system_wallet_address: String,
     pub cngn_issuer_address: String,
     pub circuit_breaker: Arc<CircuitBreakerMiddleware>,
-    /// Optional Travel Rule service — None in test/dev without DB
-    pub travel_rule_service: Option<Arc<crate::travel_rule::TravelRuleService>>,
 }
 
 // ===== CONSTANTS =====
@@ -521,72 +519,6 @@ pub async fn initiate_withdrawal(
             return handle_offramp_error(e);
         }
     };
-
-    // 4b. Travel Rule gate — checks threshold (via ExchangeRateService for NGN
-    //     conversion) and high-risk corridor. pending_travel_rule on the exchange
-    //     record is the operator-visible hold indicator.
-    if let Some(tr_svc) = &state.travel_rule_service {
-// REMOVED:         use crate::travel_rule::models::{
-            InitiateTravelRuleRequest, Ivms101NaturalPerson, Ivms101Person,
-        };
-        use rust_decimal::Decimal;
-        use std::str::FromStr;
-
-        let amount_dec = Decimal::from_str(&quote.amount_ngn.to_string()).unwrap_or(Decimal::ZERO);
-        // NG offramps are domestic — destination "NG", not high-risk
-        let requires_tr = tr_svc
-            .requires_travel_rule(amount_dec, "cNGN", "offramp", "NG")
-            .await;
-
-        if requires_tr {
-            // Split account_name into first/last on whitespace for IVMS101
-            let mut name_parts = request.bank_details.account_name.splitn(2, ' ');
-            let first = name_parts.next().unwrap_or("").to_string();
-            let last = name_parts.next().unwrap_or("").to_string();
-
-            let originator = Ivms101Person::Natural(Ivms101NaturalPerson {
-                first_name: first,
-                last_name: last,
-                date_of_birth: None,   // not available at offramp initiation — KYC data injected by service layer
-                national_id: None,     // same — injected from KYC record when full flow is implemented
-                address: None,
-                country_of_residence: Some("NG".into()),
-                account_number: Some(request.wallet_address.clone()),
-            });
-
-            let mut ben_parts = verified_bank.account_name.splitn(2, ' ');
-            let ben_first = ben_parts.next().unwrap_or("").to_string();
-            let ben_last = ben_parts.next().unwrap_or("").to_string();
-            let beneficiary = Ivms101Person::Natural(Ivms101NaturalPerson {
-                first_name: ben_first,
-                last_name: ben_last,
-                date_of_birth: None,
-                national_id: None,
-                address: None,
-                country_of_residence: Some("NG".into()),
-                account_number: Some(format!(
-                    "{}-{}",
-                    verified_bank.bank_code, verified_bank.account_number
-                )),
-            });
-            let tr_req = InitiateTravelRuleRequest {
-                transaction_id: tx_id.clone(),
-                beneficiary_vasp_id: "unhosted".into(),
-                originator,
-                beneficiary,
-                transfer_amount: quote.amount_ngn.to_string(),
-                asset_code: "cNGN".into(),
-                destination_address: None,
-            };
-            if let Err(e) = tr_svc.initiate_outbound(tr_req).await {
-                warn!(
-                    transaction_id = %tx_id,
-                    error = %e,
-                    "Travel Rule initiation failed for offramp — proceeding with enhanced monitoring"
-                );
-            }
-        }
-    }
 
     // 5. Mark quote as used in Redis
     let cache_key = QuoteKey::new(&quote.quote_id).to_string();

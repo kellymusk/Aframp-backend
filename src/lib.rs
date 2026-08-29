@@ -61,9 +61,6 @@ pub mod verification;
 pub mod payments;
 
 #[cfg(feature = "database")]
-pub mod settlement;
-
-#[cfg(feature = "database")]
 pub mod rate_engine;
 
 #[cfg(feature = "database")]
@@ -74,9 +71,6 @@ pub mod oracle;
 
 #[cfg(feature = "database")]
 pub mod banking;
-
-#[cfg(feature = "database")]
-pub mod batching;
 
 #[cfg(feature = "database")]
 pub mod recurring;

@@ -27,7 +27,7 @@ pub enum SubmissionError {
     #[error("Sequence coordinator error: {0}")]
     SequenceCoordinatorError(String),
 
-    #[error("Transient network error: {0} (retry attempt {attempt})")]
+    #[error("Transient network error: {source} (retry attempt {attempt})")]
     TransientNetworkError { source: String, attempt: u32 },
 
     #[error("Max retries exceeded: {0}")]
