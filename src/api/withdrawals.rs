@@ -5,12 +5,14 @@ use serde::Deserialize;
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, internal, ApiResult};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
+use crate::pagination::{Cursor, Page};
 use crate::services::withdrawals::{self, WithdrawalError};
 use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct ListParams {
     pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 pub async fn create(
@@ -46,15 +48,23 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<Withdrawal>>> {
+) -> ApiResult<Json<Page<Withdrawal>>> {
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request("no merchant associated with this account"))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let withdrawals = withdrawals::withdrawals_by_merchant(&state.db, merchant_id, limit)
-        .await
-        .map_err(internal)?;
-    Ok(Json(withdrawals))
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request("invalid cursor"))?),
+        None => None,
+    };
+    let withdrawals =
+        withdrawals::withdrawals_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
+            .await
+            .map_err(internal)?;
+    Ok(Json(Page::new(withdrawals, limit, |w| Cursor {
+        created_at: w.created_at,
+        id: w.id,
+    })))
 }
 
 fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
