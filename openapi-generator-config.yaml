@@ -1,0 +1,9 @@
+generatorName: typescript-fetch
+outputFolder: clients/ts
+inputSpec: openapi.yaml
+supportingFiles: true
+npmName: aframp-client
+npmVersion: 0.1.0
+withoutPrefixEnums: true
+useSingleRequestParameter: true
+legacyDiscriminatorBehavior: false

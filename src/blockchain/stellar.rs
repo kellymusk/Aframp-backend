@@ -70,7 +70,15 @@ struct OperationRecord {
     #[serde(default)]
     asset_code: Option<String>,
     #[serde(default)]
+    claimants: Vec<Claimant>,
+    #[serde(default)]
     transaction: Option<EmbeddedTransaction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Claimant {
+    #[serde(default)]
+    destination: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +123,14 @@ async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<Detec
             }
             "payment" | "path_payment_strict_receive" | "path_payment_strict_send"
                 if record.to.as_deref() == Some(address) =>
+            {
+                record.amount.as_deref()
+            }
+            "claimable_balance_created"
+                if record
+                    .claimants
+                    .iter()
+                    .any(|claimant| claimant.destination.as_deref() == Some(address)) =>
             {
                 record.amount.as_deref()
             }

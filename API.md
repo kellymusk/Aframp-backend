@@ -36,6 +36,8 @@ The header takes precedence when both are present.
 
 Tokens are **HS256, valid for 24 hours** either way. Claims are `sub` (user id), `merchant_id`, `iat`, `exp`.
 
+**CSRF posture:** all mutating routes currently accept JSON only. JSON endpoints are CSRF-safe by construction because a browser cannot trigger a cross-site JSON POST from a form submission without CORS or a script context, and the server is configured with `SameSite=Lax` cookies. If a future form-encoded endpoint is introduced, add an explicit CSRF token, bind it to the session, and reject requests without the matching value. The current posture is intentionally conservative: SameSite=Lax plus JSON-only endpoints.
+
 Two things worth building for up front:
 
 - **`merchant_id` is nullable.** `AuthResponse.merchant_id` and the JWT claim are both optional. Today signup always creates a merchant so it's always present, but the type allows `null` — an account without a merchant gets `400` from every merchant-scoped endpoint, not `401`. Don't assume non-null.
@@ -287,22 +289,27 @@ Auth required. Detected incoming payments, newest first. Query: `?limit=` (defau
 ---
 
 ### `POST /withdraw`
-Auth required. Debits the merchant's balance and initiates a Nigerian bank payout via Paystack.
+Auth required. Debits the merchant's balance and initiates a payout. For the fiat route, use the Paystack bank details. For an XLM route, send the target Stellar address instead.
 
 ```json
 { "amount_stroops": 500000000, "asset": "cNGN", "bank_code": "058", "account_number": "0123456789" }
 ```
 
+```json
+{ "amount_stroops": 25000000, "asset": "XLM", "destination_address": "GDDTPSD7BWERBIKVYXJY4KMBVFCUKNGJB2CS3DWBUUO3IB2CV7BZ5WSR" }
+```
+
 | Field | Required | Notes |
 |---|---|---|
-| `amount_stroops` | yes | Must be a whole multiple of `100000` (1 kobo) |
-| `asset` | no | Defaults to `cNGN`; **only cNGN is accepted** |
-| `bank_code` | yes | Paystack bank code, e.g. `058` GTBank, `999992` OPay |
-| `account_number` | yes | Exactly 10 digits (NUBAN) |
+| `amount_stroops` | yes | Must be positive; for `cNGN`, it must be a whole multiple of `100000` (1 kobo) |
+| `asset` | no | Defaults to `cNGN`; accepts `cNGN` or `XLM` |
+| `bank_code` | conditional | Required for `cNGN`; not used for `XLM` |
+| `account_number` | conditional | Required for `cNGN`; not used for `XLM` |
+| `destination_address` | conditional | Required for `XLM`; a Stellar `G...` address to send to |
 
 `200` → a withdrawal object with `status`, `provider`, `provider_reference`.
 
-Validation errors (`400`): `"insufficient available balance"`, `"withdrawals are only supported for the cNGN asset"`, `"amount_stroops must be a whole number of kobo"`, `"positive amount_stroops, bank_code, and a 10-digit account_number are required"`.
+Validation errors (`400`): `"insufficient available balance"`, `"withdrawals are only supported for the cNGN or XLM assets"`, `"amount_stroops must be a whole number of kobo"`, `"destination_address is required for XLM withdrawals"`, `"bank_code and account_number are required for cNGN withdrawals"`.
 
 > **Payouts do not currently complete.** The Paystack integration is real and correct, but Aframp's Paystack balance is unfunded, so live calls return `502` with *"Your balance is not enough to fulfil this request."* On failure the balance is **automatically refunded** and the withdrawal is recorded with `status: "failed"` and a `failure_reason` — no money or ledger record is lost. Treat `502` as "try later," not as data loss. Paystack's own minimum transfer is ₦50 = `500000000` stroops.
 

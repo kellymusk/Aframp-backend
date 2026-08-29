@@ -14,6 +14,7 @@ pub struct Withdrawal {
     pub provider_reference: Option<String>,
     pub bank_code: Option<String>,
     pub account_number: Option<String>,
+    pub destination_address: Option<String>,
     pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -23,8 +24,12 @@ pub struct Withdrawal {
 pub struct CreateWithdrawalRequest {
     pub amount_stroops: i64,
     pub asset: Option<String>,
-    pub bank_code: String,
-    pub account_number: String,
+    #[serde(default)]
+    pub bank_code: Option<String>,
+    #[serde(default)]
+    pub account_number: Option<String>,
+    #[serde(default)]
+    pub destination_address: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +37,7 @@ pub struct NewWithdrawal {
     pub merchant_id: Uuid,
     pub amount_stroops: i64,
     pub asset: String,
-    pub bank_code: String,
-    pub account_number: String,
+    pub bank_code: Option<String>,
+    pub account_number: Option<String>,
+    pub destination_address: Option<String>,
 }

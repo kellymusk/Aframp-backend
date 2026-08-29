@@ -507,24 +507,34 @@ components:
 
     CreateWithdrawalRequest:
       type: object
-      required: [amount_stroops, bank_code, account_number]
+      required: [amount_stroops]
       properties:
         amount_stroops:
           type: integer
           format: int64
           description: >
-            Must be a whole multiple of 100000 (1 kobo). Paystack's minimum
-            transfer is NGN 50 = 500000000 stroops.
+            For `cNGN`, it must be a whole multiple of 100000 (1 kobo).
+            Paystack's minimum transfer is NGN 50 = 500000000 stroops.
           example: 500000000
         asset:
           type: string
           default: cNGN
-          description: Only cNGN is accepted.
-        bank_code: { type: string, example: '058' }
+          description: `cNGN` for fiat or `XLM` for Stellar send.
+        bank_code:
+          type: string
+          nullable: true
+          description: Required when `asset` is `cNGN`.
+          example: '058'
         account_number:
           type: string
-          description: Exactly 10 digits (NUBAN).
+          nullable: true
+          description: Required when `asset` is `cNGN`; exactly 10 digits (NUBAN).
           example: '0123456789'
+        destination_address:
+          type: string
+          nullable: true
+          description: Required when `asset` is `XLM`; a Stellar public key to send to.
+          example: GDDTPSD7BWERBIKVYXJY4KMBVFCUKNGJB2CS3DWBUUO3IB2CV7BZ5WSR
 
     Withdrawal:
       type: object
@@ -539,6 +549,7 @@ components:
         provider_reference: { type: string, nullable: true }
         bank_code: { type: string, nullable: true }
         account_number: { type: string, nullable: true }
+        destination_address: { type: string, nullable: true }
         failure_reason:
           type: string
           nullable: true
