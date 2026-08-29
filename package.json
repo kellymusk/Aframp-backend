@@ -1,0 +1,16 @@
+{
+  "name": "aframp-cloudflare",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "npm run cf-typegen && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.0.0"
+  }
+}

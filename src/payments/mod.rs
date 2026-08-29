@@ -1,28 +1,25 @@
-//! Payment provider integration module
-//!
-//! This module provides a unified interface for payment providers (Paystack, Flutterwave, M-Pesa)
-//! to support fiat transactions in African markets.
+pub mod mock;
+pub mod paystack;
 
-#[cfg(feature = "database")]
-pub mod error;
-#[cfg(feature = "database")]
-pub mod factory;
-#[cfg(feature = "database")]
-pub mod provider;
-#[cfg(feature = "database")]
-pub mod providers;
-#[cfg(feature = "database")]
-pub mod traits;
-#[cfg(feature = "database")]
-pub mod types;
-#[cfg(feature = "database")]
-pub mod utils;
+use async_trait::async_trait;
 
-#[cfg(feature = "database")]
-pub use error::{PaymentError, PaymentResult};
-#[cfg(feature = "database")]
-pub use factory::PaymentProviderFactory;
-#[cfg(feature = "database")]
-pub use provider::PaymentProvider;
-#[cfg(feature = "database")]
-pub use types::*;
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PayoutRequest {
+    pub bank_code: String,
+    pub account_number: String,
+    /// Smallest currency unit for the payout rail (e.g. kobo for a Naira payout).
+    pub amount: String,
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PayoutResult {
+    pub provider: String,
+    pub provider_reference: String,
+    pub status: String,
+}
+
+#[async_trait]
+pub trait PaymentProvider: Send + Sync {
+    async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String>;
+}

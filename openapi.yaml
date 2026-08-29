@@ -1,0 +1,547 @@
+openapi: 3.0.3
+info:
+  title: Aframp Pay API
+  version: 0.1.0
+  description: >
+    Merchant-facing backend for Aframp Pay — Stellar-settled point-of-sale payments.
+    Prose reference with frontend guidance lives in API.md; this spec is the
+    machine-readable contract for generating typed clients.
+
+
+    Money is always integer stroops (1 unit = 10,000,000 stroops), never a float.
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local development
+
+tags:
+  - name: System
+  - name: Auth
+  - name: Wallet
+  - name: Payment requests
+  - name: Money
+
+# Either authenticates. The Authorization header wins when both are sent.
+security:
+  - cookieAuth: []
+  - bearerAuth: []
+
+paths:
+  /:
+    get:
+      tags: [System]
+      summary: Service name
+      description: Returns the literal string `aframp` as text/plain, not JSON.
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain:
+              schema: { type: string, example: aframp }
+
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      security: []
+      responses:
+        '204': { description: Service is up (empty body) }
+
+  /signup:
+    post:
+      tags: [Auth]
+      summary: Create a user and merchant
+      description: >
+        Sets the aframp_session HttpOnly cookie and echoes the same JWT in the
+        body for API clients. Browsers should rely on the cookie and ignore the
+        token field — storing it in localStorage exposes the session to XSS.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignupRequest' }
+      responses:
+        '200':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+  /login:
+    post:
+      tags: [Auth]
+      summary: Authenticate
+      description: >
+        Returns 401 for both a wrong password and an unknown email — deliberately
+        indistinguishable, so do not derive a "no such account" message from it.
+        Sets the aframp_session HttpOnly cookie on success.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+  /logout:
+    post:
+      tags: [Auth]
+      summary: Clear the session cookie
+      description: >
+        Unauthenticated by design — a browser holding an expired or malformed
+        session still needs a way to clear it. This ends the browser session
+        only; it does not revoke a JWT that has been copied elsewhere.
+      security: []
+      responses:
+        '204':
+          description: Session cookie expired
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with Max-Age=0
+
+  /me:
+    get:
+      tags: [Auth]
+      summary: Current user profile
+      description: >
+        The JWT carries only ids, so call this after a page reload to render
+        human-readable identity without forcing a re-login.
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /wallet/create:
+    post:
+      tags: [Wallet]
+      summary: Generate a Stellar wallet
+      description: >
+        Generates a real ed25519 keypair; the private key is AES-256-GCM encrypted
+        server-side and never returned. NOT idempotent — each call creates another
+        wallet, and GET /wallet then returns the newest. Check GET /wallet first.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWalletRequest' }
+      responses:
+        '200':
+          description: Wallet created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Wallet' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+
+  /wallet:
+    get:
+      tags: [Wallet]
+      summary: Get the merchant's most recent wallet
+      responses:
+        '200':
+          description: Wallet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Wallet' }
+        '400':
+          description: No wallet created yet — run onboarding
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /payment-requests:
+    post:
+      tags: [Payment requests]
+      summary: Create a payment request
+      description: >
+        The core POS action. Returns a SEP-0007 URI to render as a QR code.
+        sep7_uri is null for non-XLM assets (no cNGN issuer address configured yet).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePaymentRequest' }
+      responses:
+        '200':
+          description: Payment request created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+    get:
+      tags: [Payment requests]
+      summary: List the merchant's payment requests
+      description: Newest first, scoped to the authenticated merchant.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Payment requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PaymentRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /payment-requests/{id}:
+    get:
+      tags: [Payment requests]
+      summary: Read a payment request (public)
+      description: >
+        Deliberately unauthenticated so a customer's device can read a request
+        before paying. Poll every 3-5s to detect payment; deposit detection runs
+        on a timer (default 60s), so expect up to ~60s of latency, not instant.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Payment request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /balance:
+    get:
+      tags: [Money]
+      summary: Balances by asset
+      description: Returns an empty array for a new merchant — not an error.
+      responses:
+        '200':
+          description: Balances
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Balance' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /transactions:
+    get:
+      tags: [Money]
+      summary: Detected incoming payments
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Payments
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /withdraw:
+    post:
+      tags: [Money]
+      summary: Withdraw to a Nigerian bank account
+      description: >
+        Debits the balance and calls Paystack Transfers. Payouts do not currently
+        complete — Aframp's Paystack balance is unfunded, so live calls return 502.
+        On failure the balance is automatically refunded and the withdrawal is
+        recorded with status "failed" plus a failure_reason; nothing is lost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWithdrawalRequest' }
+      responses:
+        '200':
+          description: Withdrawal accepted by the provider
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Withdrawal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '502':
+          description: Payout provider failed; balance already refunded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /withdrawals:
+    get:
+      tags: [Money]
+      summary: List withdrawals
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Withdrawals
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Withdrawal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        HS256, 24h expiry. No refresh endpoint — a 401 means re-login. For API
+        clients and scripts; browsers should use cookieAuth instead.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: aframp_session
+      description: >
+        HttpOnly session cookie set by /signup and /login, cleared by /logout.
+        The preferred method for browsers — JS cannot read it, so an XSS on the
+        page cannot steal the session. Never copy the token into localStorage.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Max rows to return. Clamped server-side to 1-200.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+  responses:
+    BadRequest:
+      description: Validation failed, or the account has no merchant
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unauthorized:
+      description: Missing, malformed, or expired token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    UnsupportedMediaType:
+      description: >
+        POST/PUT request carries a body but `Content-Type` is not
+        `application/json` (or a `+json` subtype)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+
+  schemas:
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, example: insufficient available balance }
+
+    SignupRequest:
+      type: object
+      required: [email, password, name]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        name: { type: string, minLength: 1 }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+
+    AuthResponse:
+      type: object
+      required: [token, user_id]
+      properties:
+        token: { type: string }
+        user_id: { type: string, format: uuid }
+        merchant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for an account with no merchant; such accounts get 400 from merchant-scoped endpoints.
+
+    Me:
+      type: object
+      required: [user_id, email, name, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        merchant_id: { type: string, format: uuid, nullable: true }
+        merchant_name: { type: string, nullable: true }
+
+    CreateWalletRequest:
+      type: object
+      properties:
+        network: { type: string, default: stellar }
+
+    Wallet:
+      type: object
+      required: [id, merchant_id, address, network, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        address:
+          type: string
+          description: Stellar ed25519 public key (G...).
+          example: GDDTPSD7BWERBIKVYXJY4KMBVFCUKNGJB2CS3DWBUUO3IB2CV7BZ5WSR
+        network: { type: string, example: stellar }
+        created_at: { type: string, format: date-time }
+
+    CreatePaymentRequest:
+      type: object
+      required: [amount_stroops]
+      properties:
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Amount in stroops (1 unit = 10,000,000 stroops).
+          example: 25000000
+        asset: { type: string, default: XLM }
+        expires_in_secs:
+          type: integer
+          format: int64
+          default: 900
+          description: Clamped server-side to 60-86400.
+
+    PaymentRequest:
+      type: object
+      required: [id, merchant_id, address, network, amount_stroops, asset, memo, status, expires_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        address: { type: string, description: Stellar destination address to pay. }
+        network: { type: string, example: stellar }
+        amount_stroops: { type: integer, format: int64 }
+        asset: { type: string, example: XLM }
+        memo:
+          type: string
+          description: >
+            Correlation key. A payment without this memo still credits the balance
+            but leaves the request pending forever. Included in sep7_uri automatically.
+        status:
+          type: string
+          enum: [pending, paid, expired]
+          description: >
+            'expired' is computed at read time from expires_at. A request that
+            expires and is then paid still flips to 'paid'.
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        sep7_uri:
+          type: string
+          nullable: true
+          description: >
+            SEP-0007 payment URI to render as a QR code. Null for non-XLM assets —
+            no cNGN issuer address is configured, and a guessed one would misdirect funds.
+          example: web+stellar:pay?destination=GDDT...&amount=2.5000000&memo=1f97c93409172a7d&memo_type=MEMO_TEXT
+
+    Balance:
+      type: object
+      required: [merchant_id, asset, available, pending, updated_at]
+      properties:
+        merchant_id: { type: string, format: uuid }
+        asset: { type: string, example: XLM }
+        available: { type: integer, format: int64, description: Withdrawable, in stroops. }
+        pending:
+          type: integer
+          format: int64
+          description: Detected but unconfirmed. Almost always 0 — no confirmation-depth threshold yet.
+        updated_at: { type: string, format: date-time }
+
+    Payment:
+      type: object
+      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        wallet_id: { type: string, format: uuid }
+        wallet_address: { type: string }
+        tx_hash:
+          type: string
+          description: Real Stellar transaction hash; linkable to a block explorer.
+        amount_stroops: { type: integer, format: int64 }
+        asset: { type: string }
+        network: { type: string, example: stellar }
+        status: { type: string, enum: [detected, verified, confirmed, failed] }
+        confirmations:
+          type: integer
+          description: Currently always 0 — confirmation-depth tracking is not implemented. Do not display.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateWithdrawalRequest:
+      type: object
+      required: [amount_stroops, bank_code, account_number]
+      properties:
+        amount_stroops:
+          type: integer
+          format: int64
+          description: >
+            Must be a whole multiple of 100000 (1 kobo). Paystack's minimum
+            transfer is NGN 50 = 500000000 stroops.
+          example: 500000000
+        asset:
+          type: string
+          default: cNGN
+          description: Only cNGN is accepted.
+        bank_code: { type: string, example: '058' }
+        account_number:
+          type: string
+          description: Exactly 10 digits (NUBAN).
+          example: '0123456789'
+
+    Withdrawal:
+      type: object
+      required: [id, merchant_id, amount_stroops, asset, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        amount_stroops: { type: integer, format: int64 }
+        asset: { type: string, example: cNGN }
+        status: { type: string, enum: [pending, processing, completed, failed] }
+        provider: { type: string, nullable: true, example: paystack }
+        provider_reference: { type: string, nullable: true }
+        bank_code: { type: string, nullable: true }
+        account_number: { type: string, nullable: true }
+        failure_reason:
+          type: string
+          nullable: true
+          description: Provider's own wording on a failed payout. Show this to the merchant.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
