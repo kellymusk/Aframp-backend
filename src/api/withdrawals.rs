@@ -3,7 +3,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_gateway, bad_request, internal, ApiResult};
+use crate::error::{bad_gateway, bad_request, internal, ApiResult, ErrorCode};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
 use crate::services::withdrawals::{self, WithdrawalError};
 use crate::AppState;
@@ -20,9 +20,10 @@ pub async fn create(
 ) -> ApiResult<Json<Withdrawal>> {
     let merchant_id = auth
         .merchant_id
-        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
     if req.amount_stroops <= 0 || req.bank_code.is_empty() || req.account_number.len() != 10 {
         return Err(bad_request(
+            ErrorCode::InvalidParameters,
             "positive amount_stroops, bank_code, and a 10-digit account_number are required",
         ));
     }
@@ -49,7 +50,7 @@ pub async fn list(
 ) -> ApiResult<Json<Vec<Withdrawal>>> {
     let merchant_id = auth
         .merchant_id
-        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let withdrawals = withdrawals::withdrawals_by_merchant(&state.db, merchant_id, limit)
         .await
@@ -59,12 +60,18 @@ pub async fn list(
 
 fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
     match err {
-        WithdrawalError::InsufficientBalance => bad_request("insufficient available balance"),
-        WithdrawalError::UnsupportedAsset => bad_request("withdrawals are only supported for the cNGN asset"),
-        WithdrawalError::InvalidAmountPrecision => {
-            bad_request("amount_stroops must be a whole number of kobo")
+        WithdrawalError::InsufficientBalance => {
+            bad_request(ErrorCode::InsufficientBalance, "insufficient available balance")
         }
-        WithdrawalError::PayoutFailed(msg) => bad_gateway(&msg),
+        WithdrawalError::UnsupportedAsset => bad_request(
+            ErrorCode::UnsupportedAsset,
+            "withdrawals are only supported for the cNGN asset",
+        ),
+        WithdrawalError::InvalidAmountPrecision => bad_request(
+            ErrorCode::InvalidAmount,
+            "amount_stroops must be a whole number of kobo",
+        ),
+        WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
         WithdrawalError::Database(e) => internal(e),
     }
 }

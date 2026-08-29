@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::Json;
 
 use crate::auth::{cookie, jwt};
-use crate::error::ApiError;
+use crate::error::{ApiError, ErrorCode};
 use crate::AppState;
 
 #[derive(Debug, Clone)]
@@ -28,9 +28,9 @@ impl FromRequestParts<AppState> for AuthUser {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .or_else(|| cookie::from_headers(&parts.headers))
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { error: "missing session cookie or bearer token".into() })))?;
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "missing session cookie or bearer token".into() })))?;
         let claims = jwt::verify(&state.jwt_secret, token)
-            .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid or expired token".into() })))?;
+            .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into() })))?;
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,
