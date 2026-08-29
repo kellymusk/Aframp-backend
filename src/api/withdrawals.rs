@@ -36,6 +36,7 @@ pub async fn create(
             bank_code: req.bank_code,
             account_number: req.account_number,
         },
+        state.daily_withdrawal_limit_stroops,
     )
     .await
     .map_err(map_withdrawal_error)?;
@@ -64,6 +65,7 @@ fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<c
         WithdrawalError::InvalidAmountPrecision => {
             bad_request("amount_stroops must be a whole number of kobo")
         }
+        WithdrawalError::DailyLimitExceeded => bad_request("daily withdrawal limit exceeded"),
         WithdrawalError::PayoutFailed(msg) => bad_gateway(&msg),
         WithdrawalError::Database(e) => internal(e),
     }

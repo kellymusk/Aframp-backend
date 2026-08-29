@@ -43,6 +43,7 @@ pub async fn state() -> Option<AppState> {
             secure: true,
             same_site: aframp::SameSite::Lax,
         },
+        daily_withdrawal_limit_stroops: None,
     })
 }
 

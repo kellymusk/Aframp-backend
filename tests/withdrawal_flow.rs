@@ -283,3 +283,180 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "simulated provider failure");
 }
+
+#[tokio::test]
+async fn withdrawal_daily_limit_exceeded_rejected() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.daily_withdrawal_limit_stroops = Some(3_000_000);
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "daily_limit_exceeded").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 10_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Completed withdrawal earlier today of 2,000,000 stroops
+    sqlx::query(
+        "INSERT INTO withdrawals (merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1::uuid, 2_000_000, 'cNGN', 'completed', '058', '0123456789', now(), now())",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Attempting 2,000,000 more (total 4,000,000 > 3,000,000 limit)
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "expected daily limit rejection: {json}");
+    assert_eq!(json["error"], "daily withdrawal limit exceeded");
+
+    // Balance should remain unchanged
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 10_000_000);
+}
+
+#[tokio::test]
+async fn withdrawal_daily_limit_within_limit_allowed() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.daily_withdrawal_limit_stroops = Some(5_000_000);
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "daily_limit_within").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 10_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Completed withdrawal earlier today of 2,000,000 stroops
+    sqlx::query(
+        "INSERT INTO withdrawals (merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1::uuid, 2_000_000, 'cNGN', 'completed', '058', '0123456789', now(), now())",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Attempting 3,000,000 (total 5,000,000 == 5,000,000 limit) -> allowed
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 3_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "expected withdrawal success: {json}");
+
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 7_000_000);
+}
+
+#[tokio::test]
+async fn withdrawal_daily_limit_ignores_past_days_and_failed_withdrawals() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.daily_withdrawal_limit_stroops = Some(3_000_000);
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "daily_limit_past_and_failed").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 10_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let past_time = chrono::Utc::now() - chrono::Duration::days(2);
+
+    // Completed withdrawal 2 days ago of 3,000,000 stroops
+    sqlx::query(
+        "INSERT INTO withdrawals (merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1::uuid, 3_000_000, 'cNGN', 'completed', '058', '0123456789', $2, $2)",
+    )
+    .bind(&merchant_id)
+    .bind(past_time)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Failed withdrawal today of 3,000,000 stroops
+    sqlx::query(
+        "INSERT INTO withdrawals (merchant_id, amount_stroops, asset, status, failure_reason, bank_code, account_number, created_at, updated_at)
+         VALUES ($1::uuid, 3_000_000, 'cNGN', 'failed', 'declined', '058', '0123456789', now(), now())",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Attempting 2,000,000 today (today's completed sum is 0 <= 3,000,000 limit) -> allowed
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "expected withdrawal success: {json}");
+
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 8_000_000);
+}

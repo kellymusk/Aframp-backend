@@ -20,6 +20,7 @@ pub struct AppState {
     pub wallet_encryption_key: std::sync::Arc<[u8; 32]>,
     pub payment_provider: std::sync::Arc<dyn payments::PaymentProvider>,
     pub cookie: CookieConfig,
+    pub daily_withdrawal_limit_stroops: Option<i64>,
 }
 
 pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::error::Error>> {
@@ -37,6 +38,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
             (*config.paystack_secret_key).clone(),
         )),
         cookie: config.cookie,
+        daily_withdrawal_limit_stroops: config.daily_withdrawal_limit_stroops,
     })
 }
 

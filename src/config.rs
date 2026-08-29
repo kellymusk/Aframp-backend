@@ -20,6 +20,8 @@ pub struct AppConfig {
     /// `Secure` on, `SameSite=Lax`. Browsers treat localhost as a secure
     /// context, so the defaults also work for local development over HTTP.
     pub cookie: CookieConfig,
+    /// Per-merchant daily withdrawal limit in stroops.
+    pub daily_withdrawal_limit_stroops: Option<i64>,
 }
 
 impl AppConfig {
@@ -38,6 +40,14 @@ impl AppConfig {
         if cookie_same_site == SameSite::None && !cookie_secure {
             return Err("COOKIE_SAME_SITE=none requires COOKIE_SECURE=true; browsers reject a SameSite=None cookie that is not Secure".into());
         }
+
+        let daily_withdrawal_limit_stroops = match std::env::var("DAILY_WITHDRAWAL_LIMIT_STROOPS") {
+            Ok(val) => match val.trim().parse::<i64>() {
+                Ok(limit) => Some(limit),
+                Err(e) => return Err(format!("DAILY_WITHDRAWAL_LIMIT_STROOPS must be an integer: {e}")),
+            },
+            Err(_) => None,
+        };
 
         Ok(Self {
             database_url: env("DATABASE_URL")?,
@@ -63,6 +73,7 @@ impl AppConfig {
                 secure: cookie_secure,
                 same_site: cookie_same_site,
             },
+            daily_withdrawal_limit_stroops,
         })
     }
 }

@@ -16,6 +16,8 @@ pub enum WithdrawalError {
     UnsupportedAsset,
     #[error("amount_stroops must be a whole number of kobo (a multiple of {STROOPS_PER_KOBO})")]
     InvalidAmountPrecision,
+    #[error("daily withdrawal limit exceeded")]
+    DailyLimitExceeded,
     #[error("payout provider failed: {0}")]
     PayoutFailed(String),
     #[error(transparent)]
@@ -26,6 +28,7 @@ pub async fn create_withdrawal(
     db: &PgPool,
     provider: &dyn PaymentProvider,
     withdrawal: NewWithdrawal,
+    daily_limit_stroops: Option<i64>,
 ) -> Result<Withdrawal, WithdrawalError> {
     if withdrawal.asset != "cNGN" {
         return Err(WithdrawalError::UnsupportedAsset);
@@ -36,6 +39,24 @@ pub async fn create_withdrawal(
     let amount_kobo = withdrawal.amount_stroops / STROOPS_PER_KOBO;
 
     let mut tx = db.begin().await?;
+
+    if let Some(limit) = daily_limit_stroops {
+        let today_completed = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(amount_stroops), 0)
+               FROM withdrawals
+              WHERE merchant_id = $1
+                AND status = 'completed'
+                AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')",
+        )
+        .bind(withdrawal.merchant_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if today_completed + withdrawal.amount_stroops > limit {
+            tx.rollback().await?;
+            return Err(WithdrawalError::DailyLimitExceeded);
+        }
+    }
 
     let updated = sqlx::query(
         "UPDATE balances
@@ -139,6 +160,22 @@ pub async fn create_withdrawal(
             Err(WithdrawalError::PayoutFailed(err))
         }
     }
+}
+
+pub async fn completed_withdrawals_today_stroops(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(amount_stroops), 0)
+           FROM withdrawals
+          WHERE merchant_id = $1
+            AND status = 'completed'
+            AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')",
+    )
+    .bind(merchant_id)
+    .fetch_one(db)
+    .await
 }
 
 pub async fn withdrawals_by_merchant(
