@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
-use super::{PaymentProvider, PayoutRequest, PayoutResult};
+use super::{PaymentProvider, PayoutRequest, PayoutResult, PayoutVerification};
 
 const BASE_URL: &str = "https://api.paystack.co";
 
@@ -138,10 +138,71 @@ impl PaymentProvider for PaystackProvider {
             )
             .await?;
 
+        let status = match transfer.status.to_lowercase().as_str() {
+            "success" => "completed",
+            "failed" | "reversed" | "abandoned" => "failed",
+            "processing" => "processing",
+            _ => "pending",
+        };
+
         Ok(PayoutResult {
             provider: "paystack".into(),
             provider_reference: transfer.transfer_code,
-            status: transfer.status,
+            status: status.into(),
         })
+    }
+
+    async fn verify_payout(&self, reference: &str) -> Result<PayoutVerification, String> {
+        let response = self
+            .http
+            .get(format!("{BASE_URL}/transfer/verify/{reference}"))
+            .bearer_auth(&self.secret_key)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(PayoutVerification::NotFound);
+        }
+
+        let raw = response.text().await.map_err(|e| e.to_string())?;
+        let body: PaystackResponse<Transfer> = serde_json::from_str(&raw).map_err(|e| {
+            format!("Paystack returned an unexpected response (HTTP {status}): {e} — body: {raw}")
+        })?;
+
+        if !status.is_success() || !body.status {
+            if body.message.to_lowercase().contains("not found") {
+                return Ok(PayoutVerification::NotFound);
+            }
+            return Err(format!("Paystack error (HTTP {status}): {}", body.message));
+        }
+
+        let transfer = match body.data {
+            Some(t) => t,
+            None => return Ok(PayoutVerification::NotFound),
+        };
+
+        let verification = match transfer.status.to_lowercase().as_str() {
+            "success" => PayoutVerification::Completed {
+                provider: "paystack".into(),
+                provider_reference: transfer.transfer_code,
+            },
+            "failed" | "reversed" | "abandoned" => PayoutVerification::Failed {
+                provider: "paystack".into(),
+                provider_reference: Some(transfer.transfer_code),
+                reason: format!("Paystack transfer status: {}", transfer.status),
+            },
+            "processing" => PayoutVerification::Processing {
+                provider: "paystack".into(),
+                provider_reference: transfer.transfer_code,
+            },
+            _ => PayoutVerification::Pending {
+                provider: "paystack".into(),
+                provider_reference: transfer.transfer_code,
+            },
+        };
+
+        Ok(verification)
     }
 }

@@ -16,6 +16,29 @@ impl PaymentProvider for FailingProvider {
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err("simulated provider failure".into())
     }
+
+    async fn verify_payout(&self, _reference: &str) -> Result<PayoutVerification, String> {
+        Err("simulated provider failure".into())
+    }
+}
+
+struct MockVerificationProvider {
+    verification: PayoutVerification,
+}
+
+#[async_trait]
+impl PaymentProvider for MockVerificationProvider {
+    async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
+        Ok(PayoutResult {
+            provider: "mock".into(),
+            provider_reference: format!("mock_{}", req.reference),
+            status: "pending".into(),
+        })
+    }
+
+    async fn verify_payout(&self, _reference: &str) -> Result<PayoutVerification, String> {
+        Ok(self.verification.clone())
+    }
 }
 
 #[tokio::test]
@@ -282,4 +305,242 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     assert_eq!(withdrawals.len(), 1, "the failed attempt should still leave an audit-trail row");
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "simulated provider failure");
+}
+
+#[tokio::test]
+async fn reconciliation_completed_marks_status_completed() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (_, merchant_id) = ensure_merchant(&app, "reconcile_ok").await;
+
+    let withdrawal_id = uuid::Uuid::new_v4();
+    let past = chrono::Utc::now() - chrono::Duration::minutes(15);
+
+    sqlx::query(
+        "INSERT INTO withdrawals (id, merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1, $2::uuid, 2_000_000, 'cNGN', 'pending', '058', '0123456789', $3, $3)",
+    )
+    .bind(withdrawal_id)
+    .bind(&merchant_id)
+    .bind(past)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let provider = MockVerificationProvider {
+        verification: PayoutVerification::Completed {
+            provider: "paystack".into(),
+            provider_reference: "TRF_test_completed".into(),
+        },
+    };
+
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
+        &state.db,
+        &provider,
+    )
+    .await
+    .unwrap();
+
+    assert!(report.completed >= 1);
+
+    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
+        "SELECT * FROM withdrawals WHERE id = $1",
+    )
+    .bind(withdrawal_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+
+    assert_eq!(row.status, "completed");
+    assert_eq!(row.provider.as_deref(), Some("paystack"));
+    assert_eq!(row.provider_reference.as_deref(), Some("TRF_test_completed"));
+}
+
+#[tokio::test]
+async fn reconciliation_failed_refunds_balance() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (_, merchant_id) = ensure_merchant(&app, "reconcile_fail").await;
+
+    // Seed balance after debit: 3,000,000 (was 5,000,000 before a 2,000,000 withdrawal)
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 3_000_000, 0)
+         ON CONFLICT (merchant_id, asset) DO UPDATE SET available = 3_000_000, pending = 0",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let withdrawal_id = uuid::Uuid::new_v4();
+    let past = chrono::Utc::now() - chrono::Duration::minutes(15);
+
+    sqlx::query(
+        "INSERT INTO withdrawals (id, merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1, $2::uuid, 2_000_000, 'cNGN', 'pending', '058', '0123456789', $3, $3)",
+    )
+    .bind(withdrawal_id)
+    .bind(&merchant_id)
+    .bind(past)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let provider = MockVerificationProvider {
+        verification: PayoutVerification::Failed {
+            provider: "paystack".into(),
+            provider_reference: Some("TRF_test_failed".into()),
+            reason: "Paystack transfer status: failed".into(),
+        },
+    };
+
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
+        &state.db,
+        &provider,
+    )
+    .await
+    .unwrap();
+
+    assert!(report.failed_and_refunded >= 1);
+
+    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
+        "SELECT * FROM withdrawals WHERE id = $1",
+    )
+    .bind(withdrawal_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+
+    assert_eq!(row.status, "failed");
+    assert_eq!(row.failure_reason.as_deref(), Some("Paystack transfer status: failed"));
+
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 5_000_000, "balance must be refunded back to 5_000_000");
+}
+
+#[tokio::test]
+async fn reconciliation_not_found_refunds_balance() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (_, merchant_id) = ensure_merchant(&app, "reconcile_notfound").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 3_000_000, 0)
+         ON CONFLICT (merchant_id, asset) DO UPDATE SET available = 3_000_000, pending = 0",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let withdrawal_id = uuid::Uuid::new_v4();
+    let past = chrono::Utc::now() - chrono::Duration::minutes(20);
+
+    sqlx::query(
+        "INSERT INTO withdrawals (id, merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1, $2::uuid, 2_000_000, 'cNGN', 'pending', '058', '0123456789', $3, $3)",
+    )
+    .bind(withdrawal_id)
+    .bind(&merchant_id)
+    .bind(past)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let provider = MockVerificationProvider {
+        verification: PayoutVerification::NotFound,
+    };
+
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
+        &state.db,
+        &provider,
+    )
+    .await
+    .unwrap();
+
+    assert!(report.failed_and_refunded >= 1);
+
+    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
+        "SELECT * FROM withdrawals WHERE id = $1",
+    )
+    .bind(withdrawal_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+
+    assert_eq!(row.status, "failed");
+    assert!(row.failure_reason.unwrap().contains("not found"));
+
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 5_000_000, "balance must be refunded");
+}
+
+#[tokio::test]
+async fn reconciliation_skips_recent_pending_withdrawals() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (_, merchant_id) = ensure_merchant(&app, "reconcile_recent").await;
+
+    let withdrawal_id = uuid::Uuid::new_v4();
+    // Only 2 minutes old (< 10 minutes)
+    let recent = chrono::Utc::now() - chrono::Duration::minutes(2);
+
+    sqlx::query(
+        "INSERT INTO withdrawals (id, merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1, $2::uuid, 2_000_000, 'cNGN', 'pending', '058', '0123456789', $3, $3)",
+    )
+    .bind(withdrawal_id)
+    .bind(&merchant_id)
+    .bind(recent)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let provider = MockVerificationProvider {
+        verification: PayoutVerification::Completed {
+            provider: "paystack".into(),
+            provider_reference: "TRF_should_not_run".into(),
+        },
+    };
+
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
+        &state.db,
+        &provider,
+    )
+    .await
+    .unwrap();
+
+    // Check that recent withdrawal was not reconciled
+    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
+        "SELECT * FROM withdrawals WHERE id = $1",
+    )
+    .bind(withdrawal_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+
+    assert_eq!(row.status, "pending", "recent pending withdrawal must stay pending");
+    assert_eq!(row.provider_reference, None);
 }

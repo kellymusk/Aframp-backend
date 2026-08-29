@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::{NewWithdrawal, Withdrawal};
-use crate::payments::{PaymentProvider, PayoutRequest};
+use crate::payments::{PaymentProvider, PayoutRequest, PayoutVerification};
 
 /// 1 unit of a Stellar asset = 10,000,000 stroops; 1 Naira = 100 kobo.
 /// cNGN is pegged 1:1 to NGN, so 1 kobo = 100,000 stroops.
@@ -20,6 +20,24 @@ pub enum WithdrawalError {
     PayoutFailed(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ReconciliationReport {
+    pub total_scanned: usize,
+    pub completed: usize,
+    pub processing: usize,
+    pub pending: usize,
+    pub failed_and_refunded: usize,
+    pub errors: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconciledStatus {
+    Completed,
+    Processing,
+    Pending,
+    FailedAndRefunded,
 }
 
 pub async fn create_withdrawal(
@@ -159,4 +177,247 @@ pub async fn withdrawals_by_merchant(
     .bind(limit)
     .fetch_all(db)
     .await
+}
+
+pub async fn find_pending_withdrawals_older_than(
+    db: &PgPool,
+    older_than: chrono::Duration,
+) -> Result<Vec<Withdrawal>, sqlx::Error> {
+    let cutoff = chrono::Utc::now() - older_than;
+    sqlx::query_as::<_, Withdrawal>(
+        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                provider_reference, bank_code, account_number, failure_reason,
+                created_at, updated_at
+           FROM withdrawals
+          WHERE status = 'pending'
+            AND created_at <= $1
+          ORDER BY created_at ASC",
+    )
+    .bind(cutoff)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn reconcile_single_withdrawal(
+    db: &PgPool,
+    provider: &dyn PaymentProvider,
+    w: &Withdrawal,
+) -> Result<ReconciledStatus, WithdrawalError> {
+    let verification = provider
+        .verify_payout(&w.id.to_string())
+        .await
+        .map_err(WithdrawalError::PayoutFailed)?;
+
+    match verification {
+        PayoutVerification::Completed {
+            provider,
+            provider_reference,
+        } => {
+            sqlx::query(
+                "UPDATE withdrawals
+                    SET provider = $2, provider_reference = $3, status = 'completed', updated_at = now()
+                  WHERE id = $1 AND status = 'pending'",
+            )
+            .bind(w.id)
+            .bind(&provider)
+            .bind(&provider_reference)
+            .execute(db)
+            .await?;
+
+            tracing::info!(
+                withdrawal_id = %w.id,
+                merchant_id = %w.merchant_id,
+                provider = %provider,
+                provider_reference = %provider_reference,
+                "reconciled pending withdrawal as completed"
+            );
+            Ok(ReconciledStatus::Completed)
+        }
+        PayoutVerification::Processing {
+            provider,
+            provider_reference,
+        } => {
+            sqlx::query(
+                "UPDATE withdrawals
+                    SET provider = $2, provider_reference = $3, status = 'processing', updated_at = now()
+                  WHERE id = $1 AND status = 'pending'",
+            )
+            .bind(w.id)
+            .bind(&provider)
+            .bind(&provider_reference)
+            .execute(db)
+            .await?;
+
+            tracing::info!(
+                withdrawal_id = %w.id,
+                merchant_id = %w.merchant_id,
+                "reconciled pending withdrawal as processing"
+            );
+            Ok(ReconciledStatus::Processing)
+        }
+        PayoutVerification::Pending {
+            provider,
+            provider_reference,
+        } => {
+            sqlx::query(
+                "UPDATE withdrawals
+                    SET provider = $2, provider_reference = $3, updated_at = now()
+                  WHERE id = $1 AND status = 'pending'",
+            )
+            .bind(w.id)
+            .bind(&provider)
+            .bind(&provider_reference)
+            .execute(db)
+            .await?;
+
+            tracing::info!(
+                withdrawal_id = %w.id,
+                merchant_id = %w.merchant_id,
+                "pending withdrawal remains pending on provider"
+            );
+            Ok(ReconciledStatus::Pending)
+        }
+        PayoutVerification::Failed {
+            provider,
+            provider_reference,
+            reason,
+        } => {
+            let mut tx = db.begin().await?;
+
+            let updated = sqlx::query(
+                "UPDATE withdrawals
+                    SET provider = $2, provider_reference = $3, status = 'failed', failure_reason = $4, updated_at = now()
+                  WHERE id = $1 AND status = 'pending'",
+            )
+            .bind(w.id)
+            .bind(&provider)
+            .bind(&provider_reference)
+            .bind(&reason)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+
+            if updated > 0 {
+                sqlx::query(
+                    "UPDATE balances
+                        SET available = available + $2, updated_at = now()
+                      WHERE merchant_id = $1 AND asset = $3",
+                )
+                .bind(w.merchant_id)
+                .bind(w.amount_stroops)
+                .bind(&w.asset)
+                .execute(&mut *tx)
+                .await?;
+
+                tx.commit().await?;
+                tracing::info!(
+                    withdrawal_id = %w.id,
+                    merchant_id = %w.merchant_id,
+                    reason = %reason,
+                    "reconciled pending withdrawal as failed and refunded balance"
+                );
+            } else {
+                tx.rollback().await?;
+            }
+
+            Ok(ReconciledStatus::FailedAndRefunded)
+        }
+        PayoutVerification::NotFound => {
+            let reason = "withdrawal not found on payment provider during reconciliation".to_string();
+            let mut tx = db.begin().await?;
+
+            let updated = sqlx::query(
+                "UPDATE withdrawals
+                    SET status = 'failed', failure_reason = $2, updated_at = now()
+                  WHERE id = $1 AND status = 'pending'",
+            )
+            .bind(w.id)
+            .bind(&reason)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+
+            if updated > 0 {
+                sqlx::query(
+                    "UPDATE balances
+                        SET available = available + $2, updated_at = now()
+                      WHERE merchant_id = $1 AND asset = $3",
+                )
+                .bind(w.merchant_id)
+                .bind(w.amount_stroops)
+                .bind(&w.asset)
+                .execute(&mut *tx)
+                .await?;
+
+                tx.commit().await?;
+                tracing::info!(
+                    withdrawal_id = %w.id,
+                    merchant_id = %w.merchant_id,
+                    "pending withdrawal not found on provider, marked as failed and refunded balance"
+                );
+            } else {
+                tx.rollback().await?;
+            }
+
+            Ok(ReconciledStatus::FailedAndRefunded)
+        }
+    }
+}
+
+pub async fn reconcile_pending_withdrawals_with_age(
+    db: &PgPool,
+    provider: &dyn PaymentProvider,
+    older_than: chrono::Duration,
+) -> Result<ReconciliationReport, sqlx::Error> {
+    let pending_list = find_pending_withdrawals_older_than(db, older_than).await?;
+    let mut report = ReconciliationReport {
+        total_scanned: pending_list.len(),
+        ..Default::default()
+    };
+
+    if pending_list.is_empty() {
+        tracing::debug!("no pending withdrawals older than {:?} to reconcile", older_than);
+        return Ok(report);
+    }
+
+    tracing::info!(
+        count = pending_list.len(),
+        "starting reconciliation of pending withdrawals"
+    );
+
+    for w in &pending_list {
+        match reconcile_single_withdrawal(db, provider, w).await {
+            Ok(ReconciledStatus::Completed) => report.completed += 1,
+            Ok(ReconciledStatus::Processing) => report.processing += 1,
+            Ok(ReconciledStatus::Pending) => report.pending += 1,
+            Ok(ReconciledStatus::FailedAndRefunded) => report.failed_and_refunded += 1,
+            Err(err) => {
+                report.errors += 1;
+                tracing::warn!(
+                    withdrawal_id = %w.id,
+                    error = %err,
+                    "failed to reconcile pending withdrawal"
+                );
+            }
+        }
+    }
+
+    tracing::info!(
+        total = report.total_scanned,
+        completed = report.completed,
+        processing = report.processing,
+        pending = report.pending,
+        failed_and_refunded = report.failed_and_refunded,
+        errors = report.errors,
+        "completed pending withdrawals reconciliation"
+    );
+
+    Ok(report)
+}
+
+pub async fn reconcile_pending_withdrawals(
+    db: &PgPool,
+    provider: &dyn PaymentProvider,
+) -> Result<ReconciliationReport, sqlx::Error> {
+    reconcile_pending_withdrawals_with_age(db, provider, chrono::Duration::minutes(10)).await
 }

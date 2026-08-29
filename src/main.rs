@@ -20,6 +20,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::from_env()?;
     let state = Arc::new(build_state(&config).await?);
 
+    // Reconcile pending withdrawals on startup (older than 10 minutes)
+    if let Err(err) = aframp::services::withdrawals::reconcile_pending_withdrawals(
+        &state.db,
+        state.payment_provider.as_ref(),
+    )
+    .await
+    {
+        tracing::error!(error = %err, "failed to reconcile pending withdrawals on startup");
+    }
+
     let listener = aframp::blockchain::worker::run(
         state.clone(),
         config.stellar_horizon_url.clone(),
