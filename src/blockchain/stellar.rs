@@ -13,9 +13,18 @@ pub struct DetectedDeposit {
     pub memo: Option<String>,
 }
 
+/// The result of polling Horizon for a batch of wallet addresses.
+pub struct DepositPoll {
+    pub deposits: Vec<DetectedDeposit>,
+    /// Addresses that returned HTTP 404, i.e. accounts with no ledger history
+    /// yet (unfunded). Callers should apply backoff before re-polling these so
+    /// we don't hammer Horizon for wallets that cannot have deposits.
+    pub unfunded: Vec<String>,
+}
+
 #[async_trait]
 pub trait BlockchainListener: Send + Sync {
-    async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String>;
+    async fn fetch_deposits(&self, addresses: &[String]) -> Result<DepositPoll, String>;
 }
 
 pub struct StellarListener {
@@ -24,11 +33,13 @@ pub struct StellarListener {
 
 #[async_trait]
 impl BlockchainListener for StellarListener {
-    async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
+    async fn fetch_deposits(&self, addresses: &[String]) -> Result<DepositPoll, String> {
         let mut deposits = Vec::new();
+        let mut unfunded = Vec::new();
         for address in addresses {
             match fetch_for_address(&self.horizon_url, address).await {
-                Ok(found) => deposits.extend(found),
+                Ok(Some(found)) => deposits.extend(found),
+                Ok(None) => unfunded.push(address.clone()),
                 Err(err) => {
                     // One bad/unreachable address must not block deposit detection
                     // for every other wallet in this poll cycle.
@@ -36,7 +47,7 @@ impl BlockchainListener for StellarListener {
                 }
             }
         }
-        Ok(deposits)
+        Ok(DepositPoll { deposits, unfunded })
     }
 }
 
@@ -84,7 +95,14 @@ struct EmbeddedTransaction {
 /// first funding always arrives as a `create_account` operation (Stellar
 /// rejects `payment` ops to accounts that don't exist on-ledger yet), so both
 /// operation types are handled here, not just `payment`.
-async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<DetectedDeposit>, String> {
+///
+/// Returns `Ok(None)` when Horizon reports the account as 404 — it has no
+/// ledger history yet (never funded), so there is nothing to detect and the
+/// caller should back off rather than re-polling every interval.
+async fn fetch_for_address(
+    horizon_url: &str,
+    address: &str,
+) -> Result<Option<Vec<DetectedDeposit>>, String> {
     let url = format!(
         "{}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions",
         horizon_url.trim_end_matches('/')
@@ -93,7 +111,7 @@ async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<Detec
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         // Account has no ledger history yet (never funded) — nothing to detect.
-        return Ok(vec![]);
+        return Ok(None);
     }
 
     let page: PaymentsPage = response
@@ -150,7 +168,7 @@ async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<Detec
             memo,
         });
     }
-    Ok(deposits)
+    Ok(Some(deposits))
 }
 
 /// Converts a Stellar decimal amount string (up to 7 fractional digits) to stroops.
