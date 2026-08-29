@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_request, internal, not_found, ApiResult};
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
+use crate::pagination::{Cursor, Page};
 use crate::services::{payment_requests, wallets};
 use crate::AppState;
 
@@ -81,22 +82,35 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<PaymentRequestView>>> {
+) -> ApiResult<Json<Page<PaymentRequestView>>> {
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request("no merchant associated with this account"))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request("invalid cursor"))?),
+        None => None,
+    };
 
-    let rows = payment_requests::payment_requests_by_merchant(&state.db, merchant_id, limit)
-        .await
-        .map_err(internal)?;
+    let rows =
+        payment_requests::payment_requests_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
+            .await
+            .map_err(internal)?;
 
-    Ok(Json(rows.iter().map(row_to_view).collect()))
+    Ok(Json(Page::new(
+        rows.iter().map(row_to_view).collect(),
+        limit,
+        |v: &PaymentRequestView| Cursor {
+            created_at: v.created_at,
+            id: v.id,
+        },
+    )))
 }
 
 #[derive(serde::Deserialize)]
 pub struct ListParams {
     pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 /// A `pending` row whose expiry has passed is reported as `expired` at read
