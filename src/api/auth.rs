@@ -3,18 +3,51 @@ use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 
+use std::collections::BTreeMap;
+
 use crate::auth::jwt;
-use crate::error::{bad_request, internal, ApiResult};
+use crate::error::{bad_request, bad_request_with_fields, internal, ApiResult};
 use crate::models::{AuthResponse, LoginRequest, SignupRequest};
 use crate::services::users::{self, UserError};
 use crate::AppState;
+
+fn is_valid_email(email: &str) -> bool {
+    let email = email.trim();
+    if email.is_empty() || email != email.trim() || email.contains(char::is_whitespace) {
+        return false;
+    }
+    let Some((local, domain)) = email.rsplit_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() || local.starts_with('.') || local.ends_with('.') {
+        return false;
+    }
+    if domain.starts_with('.') || domain.ends_with('.') || !domain.contains('.') {
+        return false;
+    }
+    let domain_parts: Vec<_> = domain.split('.').collect();
+    if domain_parts.iter().any(|part| part.is_empty() || part.len() < 2) {
+        return false;
+    }
+    !local.contains("..")
+}
 
 pub async fn signup(
     State(state): State<AppState>,
     Json(req): Json<SignupRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    if req.email.is_empty() || req.password.len() < 8 || req.name.is_empty() {
-        return Err(bad_request("email, a password of at least 8 characters, and name are required"));
+    let mut field_errors = BTreeMap::new();
+    if !is_valid_email(&req.email) {
+        field_errors.insert("email".into(), "must be a valid email address".into());
+    }
+    if req.password.len() < 8 {
+        field_errors.insert("password".into(), "must be at least 8 characters long".into());
+    }
+    if req.name.trim().is_empty() {
+        field_errors.insert("name".into(), "is required".into());
+    }
+    if !field_errors.is_empty() {
+        return Err(bad_request_with_fields("validation failed", field_errors));
     }
     let (user, merchant) = users::signup(&state.db, &req.email, &req.password, &req.name)
         .await
@@ -35,6 +68,16 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    let mut field_errors = BTreeMap::new();
+    if !is_valid_email(&req.email) {
+        field_errors.insert("email".into(), "must be a valid email address".into());
+    }
+    if req.password.is_empty() {
+        field_errors.insert("password".into(), "is required".into());
+    }
+    if !field_errors.is_empty() {
+        return Err(bad_request_with_fields("validation failed", field_errors));
+    }
     let (user, merchant) = users::login(&state.db, &req.email, &req.password)
         .await
         .map_err(map_user_error)?;

@@ -287,6 +287,11 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422':
+          description: Bank account could not be resolved, so no payout was attempted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '502':
           description: Payout provider failed; balance already refunded
           content:

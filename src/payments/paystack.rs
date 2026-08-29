@@ -80,6 +80,41 @@ struct Transfer {
     status: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_ok_response_shape() {
+        let body = r#"{
+            "status": true,
+            "message": "Account resolved",
+            "data": {
+                "account_name": "Jane Doe"
+            }
+        }"#;
+
+        let parsed: PaystackResponse<ResolvedAccount> = serde_json::from_str(body).unwrap();
+        assert!(parsed.status);
+        assert_eq!(parsed.data.unwrap().account_name, "Jane Doe");
+    }
+
+    #[test]
+    fn transfer_response_deserializes_with_transfer_code() {
+        let body = r#"{
+            "status": true,
+            "message": "Transfer queued",
+            "data": {
+                "transfer_code": "TRF_123",
+                "status": "pending"
+            }
+        }"#;
+
+        let parsed: PaystackResponse<Transfer> = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.data.unwrap().transfer_code, "TRF_123");
+    }
+}
+
 #[async_trait]
 impl PaymentProvider for PaystackProvider {
     async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
@@ -88,25 +123,20 @@ impl PaymentProvider for PaystackProvider {
             .parse()
             .map_err(|_| format!("invalid payout amount: {}", req.amount))?;
 
-        // Best-effort: resolving gets us the real account holder's name (and would
-        // catch a typo'd account number), but its failure shouldn't hard-block the
-        // payout — Paystack checks this against real NIBSS data even in test mode,
-        // so a fabricated test account number fails here even though the recipient
-        // and transfer calls below don't perform the same check.
-        let resolved: Option<ResolvedAccount> = self
+        // Account verification is required before a withdrawal can proceed. This
+        // fails early and surfaces bad account numbers before the balance debit is
+        // committed in the service layer.
+        let resolved: ResolvedAccount = self
             .get(
                 "/bank/resolve",
                 &[("account_number", req.account_number.as_str()), ("bank_code", req.bank_code.as_str())],
             )
             .await
             .map_err(|err| {
-                tracing::warn!(error = %err, "account resolution failed, proceeding with a placeholder name");
-                err
-            })
-            .ok();
-        let recipient_name = resolved
-            .map(|r| r.account_name)
-            .unwrap_or_else(|| "Aframp Merchant".to_string());
+                tracing::warn!(error = %err, "account resolution failed before payout");
+                format!("account could not be resolved for the provided bank_code and account_number: {err}")
+            })?;
+        let recipient_name = resolved.account_name;
 
         let recipient: Recipient = self
             .post(
