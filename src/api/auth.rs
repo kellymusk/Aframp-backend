@@ -67,6 +67,7 @@ fn map_user_error(err: UserError) -> (axum::http::StatusCode, Json<crate::error:
     match err {
         UserError::EmailTaken => crate::error::conflict("email already registered"),
         UserError::InvalidCredentials => crate::error::unauthorized("invalid email or password"),
+        UserError::AccountLocked(until) => crate::error::locked(until),
         _ => internal(err),
     }
 }
