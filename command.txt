@@ -1,0 +1,89 @@
+# Aframp backend — command reference
+# Commands only, no output. Copy/paste ready.
+
+## Database (Docker Postgres — dev only)
+docker start aframp-postgres
+docker stop aframp-postgres
+for f in migrations/*.sql; do docker exec -i aframp-postgres psql -U postgres -d aframp < "$f"; done
+docker exec -it aframp-postgres psql -U postgres -d aframp
+docker logs -f aframp-postgres
+docker rm -f aframp-postgres   # destroys the container AND its data
+
+## Build / run / test
+cargo check
+cargo build
+RUST_LOG=info cargo run
+cargo test
+cargo fix --lib -p aframp   # auto-apply the dead-code/unused-import suggestions
+
+## Integration tests actually hit a database (see tests/common/mod.rs)
+## Without TEST_DATABASE_URL set, every test short-circuits and reports "ok"
+## without touching the DB. Always set it before trusting a green run:
+docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;"   # one-time
+TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/aframp_test" cargo test
+
+## Generate secrets (JWT_SECRET / WEBHOOK_SECRET / WALLET_ENCRYPTION_KEY)
+openssl rand -hex 32
+
+## Health check
+curl -sS http://127.0.0.1:3000/health -w "\nHTTP:%{http_code}\n"
+curl -sS http://127.0.0.1:3000/
+
+## Auth
+curl -sS -X POST http://127.0.0.1:3000/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"at-least-8-chars","name":"Your Name"}'
+
+curl -sS -X POST http://127.0.0.1:3000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"at-least-8-chars"}'
+
+# Save token to a shell var for the calls below:
+TOKEN=$(curl -sS -X POST http://127.0.0.1:3000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"at-least-8-chars"}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+## Wallet (requires TOKEN)
+curl -sS -X POST http://127.0.0.1:3000/wallet/create \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}'
+
+curl -sS http://127.0.0.1:3000/wallet -H "Authorization: Bearer $TOKEN"
+
+## Balance / transactions (requires TOKEN)
+curl -sS http://127.0.0.1:3000/balance -H "Authorization: Bearer $TOKEN"
+curl -sS http://127.0.0.1:3000/transactions -H "Authorization: Bearer $TOKEN"
+curl -sS "http://127.0.0.1:3000/transactions?limit=10" -H "Authorization: Bearer $TOKEN"
+
+## Profile (requires TOKEN)
+curl -sS http://127.0.0.1:3000/me -H "Authorization: Bearer $TOKEN"
+
+## Payment requests (create/list require TOKEN; get-by-id is deliberately public)
+curl -sS -X POST http://127.0.0.1:3000/payment-requests \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"amount_stroops":25000000}'   # defaults to asset=XLM, expires_in_secs=900
+
+curl -sS http://127.0.0.1:3000/payment-requests -H "Authorization: Bearer $TOKEN"
+curl -sS "http://127.0.0.1:3000/payment-requests?limit=10" -H "Authorization: Bearer $TOKEN"
+curl -sS http://127.0.0.1:3000/payment-requests/<id>   # no auth header
+
+## Prove the whole scan-and-pay loop with a real Stellar testnet payment
+## (creates a throwaway merchant + customer, submits a real memo-tagged tx,
+##  polls until the request flips to paid)
+cargo run --example prove_payment_loop
+
+## Validate the OpenAPI spec / check it still matches the router
+python3 -c "import yaml;yaml.safe_load(open('openapi.yaml'));print('openapi.yaml parses OK')"
+
+## Withdrawals (requires TOKEN)
+## amount_stroops must be a whole multiple of 100,000 (1 kobo) and asset must be cNGN.
+## Paystack's own minimum transfer is NGN 50 = 500,000,000 stroops.
+curl -sS -X POST http://127.0.0.1:3000/withdraw \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"amount_stroops":500000000,"asset":"cNGN","bank_code":"058","account_number":"0123456789"}'
+
+curl -sS http://127.0.0.1:3000/withdrawals -H "Authorization: Bearer $TOKEN"
+
+## Stellar testnet (verify an address / fund a test account)
+curl -sS "https://horizon-testnet.stellar.org/accounts/<G...ADDRESS>"
+curl -sS "https://friendbot.stellar.org/?addr=<G...ADDRESS>"   # funds a testnet account with 10,000 XLM

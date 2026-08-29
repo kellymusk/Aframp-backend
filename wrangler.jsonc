@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aframp-backend",
+  "main": "cloudflare/worker.ts",
+  "compatibility_date": "2026-08-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "APP_BIND_ADDR": "0.0.0.0:3000",
+    "STELLAR_HORIZON_URL": "https://horizon-testnet.stellar.org",
+    "STELLAR_POLL_INTERVAL_SECS": "60",
+    "CORS_ALLOWED_ORIGINS": "https://replace-with-your-frontend.example",
+    "COOKIE_SECURE": "true",
+    "COOKIE_SAME_SITE": "lax"
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "containers": [
+    {
+      "class_name": "AframpContainer",
+      "image": "./Dockerfile",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AFRAMP_CONTAINER",
+        "class_name": "AframpContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AframpContainer"]
+    }
+  ]
+}
