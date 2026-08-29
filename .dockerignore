@@ -1,54 +1,6 @@
-# =============================================================================
-# .dockerignore — reduces build context sent to the Docker daemon
-# =============================================================================
-
-# Rust build artifacts (largest exclusion — can be several GB)
-target/
-
-# Environment files — secrets must never enter an image layer
 .env
-.env.*
-!.env.example
-
-# Version control
-.git/
-.gitignore
-
-# IDE / editor
-.vscode/
-.idea/
-*.iml
-.cursor/
-
-# OS artefacts
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-build.log
-
-# Local test / load-test artefacts
-load-tests/
-test_snapshots/
-arms_cache/
-
-# Documentation (not needed in the image)
-docs/
-*.md
-!README.md
-
-# Shell scripts not needed at runtime
-*.sh
-!docker-entrypoint.sh
-
-# CI / GitHub Actions
-.github/
-
-# Cargo audit config
-.cargo/
-
-# Misc project files
-curl-format.txt
-rate_limits.yaml
-examples/
+.git
+.wrangler
+node_modules
+target
+log.txt
