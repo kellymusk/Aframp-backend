@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aframp-backend
+  namespace: aframp
+  labels:
+    app: aframp-backend
+    version: "1.0"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: aframp-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: aframp-backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: aframp-backend
+          image: aframp/backend:latest
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: REGION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['topology.kubernetes.io/region']
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aframp-db-secrets
+                  key: database_url
+            - name: DATABASE_READ_REPLICA_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aframp-db-secrets
+                  key: database_read_replica_url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aframp-cache-secrets
+                  key: redis_url
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Drain in-flight requests before pod termination (graceful scale-down)
+                command: ["/bin/sh", "-c", "sleep 10"]
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: aframp-backend
+                topologyKey: kubernetes.io/hostname

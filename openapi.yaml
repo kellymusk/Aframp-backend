@@ -19,6 +19,8 @@ tags:
   - name: Wallet
   - name: Payment requests
   - name: Money
+  - name: KYB
+  - name: Compliance
 
 # Either authenticates. The Authorization header wins when both are sent.
 security:
@@ -305,6 +307,198 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /kyb/applications:
+    post:
+      tags: [KYB]
+      summary: Start KYB application
+      description: Create a new KYB application for the authenticated merchant.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartKybRequest' }
+      responses:
+        '201':
+          description: KYB application created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KybApplication' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /kyb/applications/{id}:
+    get:
+      tags: [KYB]
+      summary: Get KYB application
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: KYB application
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KybApplication' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /kyb/applications/{id}/documents:
+    post:
+      tags: [KYB]
+      summary: Submit KYB document
+      description: Upload a business document for KYB verification.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitDocumentRequest' }
+      responses:
+        '200':
+          description: Document submitted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KybApplication' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /kyb/applications/{id}/verify-registry:
+    post:
+      tags: [KYB]
+      summary: Verify corporate registry
+      description: Trigger registry verification for a KYB application. Compliance officer only.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Registry verification completed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KybApplication' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /kyb/applications/{id}/submit-review:
+    post:
+      tags: [KYB]
+      summary: Submit for compliance review
+      description: Move KYB application to compliance review stage.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Submitted for review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KybApplication' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /kyb/applications/{id}/decision:
+    post:
+      tags: [KYB]
+      summary: Record KYB decision
+      description: Approve or reject a KYB application. Compliance officer only.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewDecisionRequest' }
+      responses:
+        '200':
+          description: Decision recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KybApplication' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /compliance/reports:
+    post:
+      tags: [Compliance]
+      summary: Generate compliance report
+      description: Generate a new compliance effectiveness report.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GenerateReportRequest' }
+      responses:
+        '201':
+          description: Report generated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [Compliance]
+      summary: List compliance reports
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Reports list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReportListPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /compliance/reports/{id}:
+    get:
+      tags: [Compliance]
+      summary: Get compliance report
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Compliance report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -527,9 +721,123 @@ components:
         provider_reference: { type: string, nullable: true }
         bank_code: { type: string, nullable: true }
         account_number: { type: string, nullable: true }
-        failure_reason:
+    failure_reason:
+      type: string
+      nullable: true
+      description: Provider's own wording on a failed payout. Show this to the merchant.
+      example: Insufficient funds
+    created_at: { type: string, format: date-time }
+    updated_at: { type: string, format: date-time }
+
+    StartKybRequest:
+      type: object
+      required: [merchant_id, business_name, registration_number, jurisdiction]
+      properties:
+        merchant_id: { type: string, format: uuid }
+        business_name: { type: string }
+        registration_number: { type: string }
+        jurisdiction: { type: string, example: NG }
+        industry_code: { type: string, nullable: true }
+
+    SubmitDocumentRequest:
+      type: object
+      required: [document_type, file_name, file_path, file_hash]
+      properties:
+        document_type:
           type: string
-          nullable: true
-          description: Provider's own wording on a failed payout. Show this to the merchant.
+          enum: [memorandum, articles, proof_of_address, tax_certificate, bank_statement, other]
+        file_name: { type: string }
+        file_path: { type: string }
+        file_hash: { type: string }
+        encrypted: { type: boolean, default: true }
+
+    ReviewDecisionRequest:
+      type: object
+      required: [decision, notes]
+      properties:
+        decision: { type: string, enum: [approved, rejected] }
+        notes: { type: string }
+
+    KybApplication:
+      type: object
+      required: [id, merchant_id, business_name, registration_number, jurisdiction, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        business_name: { type: string }
+        registration_number: { type: string }
+        jurisdiction: { type: string }
+        industry_code: { type: string, nullable: true }
+        registered_address: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [draft, documents_submitted, registry_verified, compliance_review, approved, rejected]
+        registry_status: { type: string, nullable: true }
+        registry_verified_at: { type: string, format: date-time, nullable: true }
+        registry_data: { type: object, nullable: true }
+        risk_level: { type: string, nullable: true, enum: [light, enhanced] }
+        risk_score: { type: number, nullable: true }
+        reviewed_by: { type: string, nullable: true }
+        review_notes: { type: string, nullable: true }
+        rejection_reason: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        approved_at: { type: string, format: date-time, nullable: true }
+
+    GenerateReportRequest:
+      type: object
+      required: [report_type, period_start, period_end, format]
+      properties:
+        report_type:
+          type: string
+          enum: [monthly, quarterly, annual, ad_hoc]
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        format:
+          type: string
+          enum: [pdf, csv, json]
+
+    ComplianceReport:
+      type: object
+      required: [id, report_type, period_start, period_end, generated_by, generated_at, format]
+      properties:
+        id: { type: string, format: uuid }
+        report_type:
+          type: string
+          enum: [monthly, quarterly, annual, ad_hoc]
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        total_alerts: { type: integer }
+        sanctions_alerts: { type: integer }
+        aml_alerts: { type: integer }
+        kyc_alerts: { type: integer }
+        false_positives: { type: integer }
+        false_positive_rate: { type: number }
+        avg_resolution_time_hrs: { type: number }
+        median_resolution_time_hrs: { type: number }
+        sla_breaches: { type: integer }
+        sla_compliance_rate: { type: number }
+        cases_cleared: { type: integer }
+        cases_blocked: { type: integer }
+        cases_pending: { type: integer }
+        low_risk_cases: { type: integer }
+        medium_risk_cases: { type: integer }
+        critical_risk_cases: { type: integer }
+        alert_volume_trend: { type: string, nullable: true }
+        false_positive_trend: { type: string, nullable: true }
+        generated_by: { type: string }
+        generated_at: { type: string, format: date-time }
+        format:
+          type: string
+          enum: [pdf, csv, json]
+        file_path: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ReportListPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ComplianceReport' }
+        total: { type: integer }

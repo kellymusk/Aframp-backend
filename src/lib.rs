@@ -1,8 +1,12 @@
 mod api;
 mod auth;
 pub mod blockchain;
+mod compliance_effectiveness;
 mod config;
+mod database;
 mod error;
+mod kyb;
+mod middleware;
 mod models;
 pub mod payments;
 pub mod services;
@@ -66,5 +70,12 @@ pub fn router(state: AppState) -> axum::Router {
             "/payment-requests/{id}",
             axum::routing::get(api::payment_requests::get),
         )
+        .merge(kyb::routes::kyb_routes(std::sync::Arc::new(kyb::KybState {
+            orchestrator: std::sync::Arc::new(kyb::KybOrchestrator::new(std::sync::Arc::new(kyb::repository::KybRepository::new(state.db.clone())))),
+        })))
+        .merge(compliance_effectiveness::routes::compliance_effectiveness_routes(std::sync::Arc::new(compliance_effectiveness::ComplianceEffectivenessState {
+            repo: std::sync::Arc::new(compliance_effectiveness::repository::ComplianceEffectivenessRepository::new(state.db.clone())),
+            service: std::sync::Arc::new(compliance_effectiveness::service::ReportGenerationService::new(std::sync::Arc::new(compliance_effectiveness::repository::ComplianceEffectivenessRepository::new(state.db.clone())))),
+        })))
         .with_state(state)
 }
