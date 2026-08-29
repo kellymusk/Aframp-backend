@@ -3,7 +3,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, internal, ApiResult};
+use crate::error::{bad_request, internal, ApiResult, ErrorCode};
 use crate::models::Payment;
 use crate::services::payments;
 use crate::AppState;
@@ -20,7 +20,7 @@ pub async fn list(
 ) -> ApiResult<Json<Vec<Payment>>> {
     let merchant_id = auth
         .merchant_id
-        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let payments = payments::payments_by_merchant(&state.db, merchant_id, limit)
         .await

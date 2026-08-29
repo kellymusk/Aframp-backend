@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use crate::auth::jwt;
-use crate::error::{bad_request, internal, ApiResult};
+use crate::error::{bad_request, internal, ApiResult, ErrorCode};
 use crate::models::{AuthResponse, LoginRequest, SignupRequest};
 use crate::services::users::{self, UserError};
 use crate::AppState;
@@ -14,7 +14,10 @@ pub async fn signup(
     Json(req): Json<SignupRequest>,
 ) -> ApiResult<impl IntoResponse> {
     if req.email.is_empty() || req.password.len() < 8 || req.name.is_empty() {
-        return Err(bad_request("email, a password of at least 8 characters, and name are required"));
+        return Err(bad_request(
+            ErrorCode::InvalidParameters,
+            "email, a password of at least 8 characters, and name are required",
+        ));
     }
     let (user, merchant) = users::signup(&state.db, &req.email, &req.password, &req.name)
         .await
@@ -65,8 +68,10 @@ fn authenticated(state: &AppState, body: AuthResponse) -> ApiResult<impl IntoRes
 
 fn map_user_error(err: UserError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
     match err {
-        UserError::EmailTaken => crate::error::conflict("email already registered"),
-        UserError::InvalidCredentials => crate::error::unauthorized("invalid email or password"),
+        UserError::EmailTaken => crate::error::conflict(ErrorCode::EmailTaken, "email already registered"),
+        UserError::InvalidCredentials => {
+            crate::error::unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
+        }
         _ => internal(err),
     }
 }
