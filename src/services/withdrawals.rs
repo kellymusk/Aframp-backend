@@ -12,8 +12,12 @@ const STROOPS_PER_KOBO: i64 = 100_000;
 pub enum WithdrawalError {
     #[error("insufficient available balance")]
     InsufficientBalance,
-    #[error("withdrawals are only supported for the cNGN asset")]
+    #[error("withdrawals are only supported for the cNGN or XLM assets")]
     UnsupportedAsset,
+    #[error("destination_address is required for XLM withdrawals")]
+    InvalidDestinationAddress,
+    #[error("bank_code and account_number are required for cNGN withdrawals")]
+    MissingBankDetails,
     #[error("amount_stroops must be a whole number of kobo (a multiple of {STROOPS_PER_KOBO})")]
     InvalidAmountPrecision,
     #[error("payout provider failed: {0}")]
@@ -27,15 +31,36 @@ pub async fn create_withdrawal(
     provider: &dyn PaymentProvider,
     withdrawal: NewWithdrawal,
 ) -> Result<Withdrawal, WithdrawalError> {
-    if withdrawal.asset != "cNGN" {
+    if withdrawal.asset != "cNGN" && withdrawal.asset != "XLM" {
         return Err(WithdrawalError::UnsupportedAsset);
     }
-    if withdrawal.amount_stroops % STROOPS_PER_KOBO != 0 {
-        return Err(WithdrawalError::InvalidAmountPrecision);
-    }
-    let amount_kobo = withdrawal.amount_stroops / STROOPS_PER_KOBO;
 
     let mut tx = db.begin().await?;
+    let amount_for_provider = match withdrawal.asset.as_str() {
+        "cNGN" => {
+            if withdrawal.amount_stroops % STROOPS_PER_KOBO != 0 {
+                return Err(WithdrawalError::InvalidAmountPrecision);
+            }
+            let bank_code = withdrawal.bank_code.as_deref().unwrap_or("").trim().to_string();
+            let account_number = withdrawal.account_number.as_deref().unwrap_or("").trim().to_string();
+            if bank_code.is_empty() || account_number.is_empty() {
+                return Err(WithdrawalError::MissingBankDetails);
+            }
+            let amount_kobo = withdrawal.amount_stroops / STROOPS_PER_KOBO;
+            (Some(bank_code), Some(account_number), None, amount_kobo.to_string())
+        }
+        "XLM" => {
+            let destination = withdrawal
+                .destination_address
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or(WithdrawalError::InvalidDestinationAddress)?
+                .to_string();
+            (None, None, Some(destination), withdrawal.amount_stroops.to_string())
+        }
+        _ => unreachable!(),
+    };
 
     let updated = sqlx::query(
         "UPDATE balances
@@ -56,49 +81,59 @@ pub async fn create_withdrawal(
 
     let w = sqlx::query_as::<_, Withdrawal>(
         "INSERT INTO withdrawals (
-             merchant_id, amount_stroops, asset, status, bank_code, account_number
+             merchant_id, amount_stroops, asset, status, bank_code, account_number, destination_address
          )
-         VALUES ($1, $2, $3, 'pending', $4, $5)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6)
          RETURNING id, merchant_id, amount_stroops, asset, status, provider,
-                   provider_reference, bank_code, account_number, failure_reason,
-                   created_at, updated_at",
+                   provider_reference, bank_code, account_number, destination_address,
+                   failure_reason, created_at, updated_at",
     )
     .bind(withdrawal.merchant_id)
     .bind(withdrawal.amount_stroops)
     .bind(&withdrawal.asset)
-    .bind(&withdrawal.bank_code)
-    .bind(&withdrawal.account_number)
+    .bind(amount_for_provider.0)
+    .bind(amount_for_provider.1)
+    .bind(amount_for_provider.2)
     .fetch_one(&mut *tx)
     .await?;
 
-    // Commit the debit + pending row before ever calling out to Paystack. This
-    // guarantees a durable record that the withdrawal was attempted regardless
-    // of what happens next — nothing about the external call can make this
-    // local state vanish.
     tx.commit().await?;
 
-    let payout = provider
-        .create_payout(&PayoutRequest {
-            bank_code: withdrawal.bank_code.clone(),
-            account_number: withdrawal.account_number.clone(),
-            amount: amount_kobo.to_string(),
-            reference: w.id.to_string(),
-        })
-        .await;
+    let payout = match withdrawal.asset.as_str() {
+        "cNGN" => {
+            provider
+                .create_payout(&PayoutRequest {
+                    bank_code: amount_for_provider.0.clone(),
+                    account_number: amount_for_provider.1.clone(),
+                    destination_address: None,
+                    amount: amount_for_provider.3.clone(),
+                    reference: w.id.to_string(),
+                })
+                .await
+        }
+        "XLM" => {
+            provider
+                .create_stellar_payout(&PayoutRequest {
+                    bank_code: None,
+                    account_number: None,
+                    destination_address: amount_for_provider.2.clone(),
+                    amount: amount_for_provider.3.clone(),
+                    reference: w.id.to_string(),
+                })
+                .await
+        }
+        _ => unreachable!(),
+    };
 
     match payout {
         Ok(result) => {
-            // If this write fails, the row is left `pending` with no provider
-            // info — recoverable later, and safe: it under-states what happened
-            // (a real transfer may have gone out) rather than erasing the record
-            // that a withdrawal was attempted at all.
             sqlx::query_as::<_, Withdrawal>(
                 "UPDATE withdrawals
                     SET provider = $2, provider_reference = $3, status = $4, updated_at = now()
                   WHERE id = $1
                   RETURNING id, merchant_id, amount_stroops, asset, status, provider,
-                            provider_reference, bank_code, account_number, failure_reason,
-                            created_at, updated_at",
+                            provider_reference, bank_code, account_number, destination_address,
+                            failure_reason, created_at, updated_at",
             )
             .bind(w.id)
             .bind(&result.provider)
@@ -109,10 +144,6 @@ pub async fn create_withdrawal(
             .map_err(WithdrawalError::Database)
         }
         Err(err) => {
-            // Refund + mark failed as one atomic unit, in a fresh transaction —
-            // the original debit is already committed, so this is a compensating
-            // action, not a rollback. Keeps an audit trail instead of pretending
-            // the attempt never happened.
             let mut refund_tx = db.begin().await?;
             sqlx::query(
                 "UPDATE balances
@@ -148,8 +179,8 @@ pub async fn withdrawals_by_merchant(
 ) -> Result<Vec<Withdrawal>, sqlx::Error> {
     sqlx::query_as::<_, Withdrawal>(
         "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                created_at, updated_at
+                provider_reference, bank_code, account_number, destination_address,
+                failure_reason, created_at, updated_at
            FROM withdrawals
           WHERE merchant_id = $1
           ORDER BY created_at DESC

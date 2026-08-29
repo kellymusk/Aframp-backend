@@ -28,24 +28,46 @@ pub async fn create(
             "must be a positive number",
         ));
     }
-    if !is_valid_bank_code(&req.bank_code) {
-        return Err(bad_request_field("bank_code", "must be a 3-digit code"));
+
+    let asset = req.asset.unwrap_or_else(|| "cNGN".to_string());
+    if asset == "cNGN" {
+        let bank_code = req.bank_code.as_deref().unwrap_or("").trim().to_string();
+        let account_number = req.account_number.as_deref().unwrap_or("").trim().to_string();
+        if !is_valid_bank_code(&bank_code) {
+            return Err(bad_request_field("bank_code", "must be a 3-digit code"));
+        }
+        if !is_valid_account_number(&account_number) {
+            return Err(bad_request_field(
+                "account_number",
+                "must be a 10-digit NUBAN account number",
+            ));
+        }
+    } else if asset == "XLM" {
+        let destination = req
+            .destination_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if destination.is_none() {
+            return Err(bad_request_field(
+                "destination_address",
+                "destination_address is required for XLM withdrawals",
+            ));
+        }
+    } else {
+        return Err(bad_request("withdrawals are only supported for the cNGN or XLM assets"));
     }
-    if !is_valid_account_number(&req.account_number) {
-        return Err(bad_request_field(
-            "account_number",
-            "must be a 10-digit NUBAN account number",
-        ));
-    }
+
     let withdrawal = withdrawals::create_withdrawal(
         &state.db,
         state.payment_provider.as_ref(),
         NewWithdrawal {
             merchant_id,
             amount_stroops: req.amount_stroops,
-            asset: req.asset.unwrap_or_else(|| "cNGN".into()),
+            asset,
             bank_code: req.bank_code,
             account_number: req.account_number,
+            destination_address: req.destination_address,
         },
     )
     .await
@@ -71,10 +93,18 @@ pub async fn list(
 fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
     match err {
         WithdrawalError::InsufficientBalance => bad_request("insufficient available balance"),
-        WithdrawalError::UnsupportedAsset => bad_request("withdrawals are only supported for the cNGN asset"),
+        WithdrawalError::UnsupportedAsset => {
+            bad_request("withdrawals are only supported for the cNGN or XLM assets")
+        }
         WithdrawalError::InvalidAmountPrecision => {
             bad_request("amount_stroops must be a whole number of kobo")
         }
+        WithdrawalError::InvalidDestinationAddress => bad_request(
+            "destination_address is required for XLM withdrawals",
+        ),
+        WithdrawalError::MissingBankDetails => bad_request(
+            "bank_code and account_number are required for cNGN withdrawals",
+        ),
         WithdrawalError::PayoutFailed(msg) => bad_gateway(&msg),
         WithdrawalError::Database(e) => internal(e),
     }
