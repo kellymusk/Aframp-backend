@@ -73,6 +73,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
 
   /login:
     post:
@@ -95,6 +96,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
 
   /logout:
     post:
@@ -150,6 +152,7 @@ paths:
               schema: { $ref: '#/components/schemas/Wallet' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
 
   /wallet:
     get:
@@ -188,6 +191,7 @@ paths:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
     get:
       tags: [Payment requests]
       summary: List the merchant's payment requests
@@ -282,6 +286,7 @@ paths:
               schema: { $ref: '#/components/schemas/Withdrawal' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '502':
           description: Payout provider failed; balance already refunded
           content:
@@ -344,6 +349,13 @@ components:
           schema: { $ref: '#/components/schemas/ApiError' }
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    UnsupportedMediaType:
+      description: >
+        POST/PUT request carries a body but `Content-Type` is not
+        `application/json` (or a `+json` subtype)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }

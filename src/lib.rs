@@ -3,9 +3,11 @@ mod auth;
 pub mod blockchain;
 mod config;
 mod error;
+mod middleware;
 mod models;
 pub mod payments;
 pub mod services;
+mod validation;
 
 pub use auth::cookie::{CookieConfig, SameSite};
 pub use config::AppConfig;
@@ -67,4 +69,5 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::get(api::payment_requests::get),
         )
         .with_state(state)
+        .layer(axum::middleware::from_fn(middleware::require_json_content_type))
 }

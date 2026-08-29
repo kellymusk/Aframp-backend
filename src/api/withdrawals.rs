@@ -3,9 +3,10 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_gateway, bad_request, internal, ApiResult, ErrorCode};
+use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
 use crate::services::withdrawals::{self, WithdrawalError};
+use crate::validation::{is_valid_account_number, is_valid_bank_code};
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -20,11 +21,20 @@ pub async fn create(
 ) -> ApiResult<Json<Withdrawal>> {
     let merchant_id = auth
         .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-    if req.amount_stroops <= 0 || req.bank_code.is_empty() || req.account_number.len() != 10 {
-        return Err(bad_request(
-            ErrorCode::InvalidParameters,
-            "positive amount_stroops, bank_code, and a 10-digit account_number are required",
+        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+    if req.amount_stroops <= 0 {
+        return Err(bad_request_field(
+            "amount_stroops",
+            "must be a positive number",
+        ));
+    }
+    if !is_valid_bank_code(&req.bank_code) {
+        return Err(bad_request_field("bank_code", "must be a 3-digit code"));
+    }
+    if !is_valid_account_number(&req.account_number) {
+        return Err(bad_request_field(
+            "account_number",
+            "must be a 10-digit NUBAN account number",
         ));
     }
     let withdrawal = withdrawals::create_withdrawal(
