@@ -88,6 +88,50 @@ pub async fn payments_by_merchant(
     .await
 }
 
+/// Keyset-paginated variant of [`payments_by_merchant`]. Orders by
+/// `(created_at, id)` DESC so concurrent inserts can't shift rows across
+/// pages the way an OFFSET-based scan can.
+pub async fn payments_by_merchant_cursor(
+    db: &PgPool,
+    merchant_id: Uuid,
+    limit: i64,
+    cursor: Option<crate::pagination::Cursor>,
+) -> Result<Vec<Payment>, sqlx::Error> {
+    match cursor {
+        Some(c) => {
+            sqlx::query_as::<_, Payment>(
+                "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                        network, status, confirmations, created_at, updated_at
+                   FROM payments
+                  WHERE merchant_id = $1
+                    AND (created_at, id) < ($2, $3)
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT $4",
+            )
+            .bind(merchant_id)
+            .bind(c.created_at)
+            .bind(c.id)
+            .bind(limit + 1)
+            .fetch_all(db)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, Payment>(
+                "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                        network, status, confirmations, created_at, updated_at
+                   FROM payments
+                  WHERE merchant_id = $1
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT $2",
+            )
+            .bind(merchant_id)
+            .bind(limit + 1)
+            .fetch_all(db)
+            .await
+        }
+    }
+}
+
 pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sqlx::Error> {
     sqlx::query_as::<_, Payment>(
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
