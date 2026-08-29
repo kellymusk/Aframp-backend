@@ -16,6 +16,8 @@ pub enum WithdrawalError {
     UnsupportedAsset,
     #[error("amount_stroops must be a whole number of kobo (a multiple of {STROOPS_PER_KOBO})")]
     InvalidAmountPrecision,
+    #[error("account resolution failed: {0}")]
+    AccountResolutionFailed(String),
     #[error("payout provider failed: {0}")]
     PayoutFailed(String),
     #[error(transparent)]
@@ -109,6 +111,33 @@ pub async fn create_withdrawal(
             .map_err(WithdrawalError::Database)
         }
         Err(err) => {
+            if err.contains("account could not be resolved") {
+                let mut refund_tx = db.begin().await?;
+                sqlx::query(
+                    "UPDATE balances
+                        SET available = available + $2, updated_at = now()
+                      WHERE merchant_id = $1 AND asset = $3",
+                )
+                .bind(withdrawal.merchant_id)
+                .bind(withdrawal.amount_stroops)
+                .bind(&withdrawal.asset)
+                .execute(&mut *refund_tx)
+                .await?;
+
+                sqlx::query(
+                    "UPDATE withdrawals
+                        SET status = 'failed', failure_reason = $2, updated_at = now()
+                      WHERE id = $1",
+                )
+                .bind(w.id)
+                .bind(&err)
+                .execute(&mut *refund_tx)
+                .await?;
+
+                refund_tx.commit().await?;
+                return Err(WithdrawalError::AccountResolutionFailed(err));
+            }
+
             // Refund + mark failed as one atomic unit, in a fresh transaction —
             // the original debit is already committed, so this is a compensating
             // action, not a rollback. Keeps an audit trail instead of pretending
