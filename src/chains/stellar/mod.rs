@@ -7,6 +7,7 @@ pub mod issuer;
 pub mod payment;
 pub mod sep;
 pub mod service;
+pub mod sse_listener;
 pub mod trustline;
 pub mod types;
 pub mod xdr_parser;
