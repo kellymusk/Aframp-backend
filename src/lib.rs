@@ -13,6 +13,9 @@ pub use auth::cookie::{CookieConfig, SameSite};
 pub use config::AppConfig;
 
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::num::NonZeroU32;
+use tower_governor::{governor, Quota, RateLimiter};
+use axum::middleware as axum_middleware;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -43,6 +46,11 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
 }
 
 pub fn router(state: AppState) -> axum::Router {
+    // Issue #949: Rate limiting for login endpoint (5 requests per minute per IP)
+    let login_limiter = RateLimiter::direct(Quota::per_minute(
+        NonZeroU32::new(5).unwrap(),
+    ));
+
     axum::Router::new()
         .route("/", axum::routing::get(|| async { "aframp" }))
         .route(
@@ -50,7 +58,13 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::get(|| async { axum::http::StatusCode::NO_CONTENT }),
         )
         .route("/signup", axum::routing::post(api::auth::signup))
-        .route("/login", axum::routing::post(api::auth::login))
+        .route(
+            "/login",
+            axum::routing::post(api::auth::login)
+                .layer(axum_middleware::from_fn(move |req, next| {
+                    rate_limit_middleware(req, next, login_limiter.clone())
+                })),
+        )
         .route("/logout", axum::routing::post(api::auth::logout))
         .route("/me", axum::routing::get(api::me::get))
         .route("/wallet/create", axum::routing::post(api::wallets::create))
@@ -70,4 +84,20 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .with_state(state)
         .layer(axum::middleware::from_fn(middleware::require_json_content_type))
+}
+
+async fn rate_limit_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+    limiter: RateLimiter,
+) -> Result<axum::response::Response, (axum::http::StatusCode, axum::Json<error::ApiError>)> {
+    if limiter.check().is_err() {
+        return Err((
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(error::ApiError {
+                error: "too many login attempts, please try again later".to_string(),
+            }),
+        ));
+    }
+    Ok(next.run(req).await)
 }
