@@ -160,3 +160,49 @@ pub async fn withdrawals_by_merchant(
     .fetch_all(db)
     .await
 }
+
+/// Keyset-paginated variant of [`withdrawals_by_merchant`]. Orders by
+/// `(created_at, id)` DESC so concurrent inserts can't shift rows across
+/// pages the way an OFFSET-based scan can.
+pub async fn withdrawals_by_merchant_cursor(
+    db: &PgPool,
+    merchant_id: Uuid,
+    limit: i64,
+    cursor: Option<crate::pagination::Cursor>,
+) -> Result<Vec<Withdrawal>, sqlx::Error> {
+    match cursor {
+        Some(c) => {
+            sqlx::query_as::<_, Withdrawal>(
+                "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                        provider_reference, bank_code, account_number, failure_reason,
+                        created_at, updated_at
+                   FROM withdrawals
+                  WHERE merchant_id = $1
+                    AND (created_at, id) < ($2, $3)
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT $4",
+            )
+            .bind(merchant_id)
+            .bind(c.created_at)
+            .bind(c.id)
+            .bind(limit + 1)
+            .fetch_all(db)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, Withdrawal>(
+                "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                        provider_reference, bank_code, account_number, failure_reason,
+                        created_at, updated_at
+                   FROM withdrawals
+                  WHERE merchant_id = $1
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT $2",
+            )
+            .bind(merchant_id)
+            .bind(limit + 1)
+            .fetch_all(db)
+            .await
+        }
+    }
+}
