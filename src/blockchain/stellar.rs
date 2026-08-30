@@ -13,9 +13,25 @@ pub struct DetectedDeposit {
     pub memo: Option<String>,
 }
 
+/// One wallet address to poll, along with the paging cursor of the last
+/// operation already processed for it (`None` on a wallet's first poll).
+#[derive(Debug, Clone)]
+pub struct AddressCursor {
+    pub address: String,
+    pub cursor: Option<String>,
+}
+
+/// Result of polling a single address: the deposits found and the cursor to
+/// persist so the next poll doesn't re-fetch them.
+pub struct AddressPollResult {
+    pub address: String,
+    pub deposits: Vec<DetectedDeposit>,
+    pub next_cursor: Option<String>,
+}
+
 #[async_trait]
 pub trait BlockchainListener: Send + Sync {
-    async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String>;
+    async fn fetch_deposits(&self, addresses: &[AddressCursor]) -> Result<Vec<AddressPollResult>, String>;
 }
 
 pub struct StellarListener {
@@ -24,19 +40,23 @@ pub struct StellarListener {
 
 #[async_trait]
 impl BlockchainListener for StellarListener {
-    async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
-        let mut deposits = Vec::new();
-        for address in addresses {
-            match fetch_for_address(&self.horizon_url, address).await {
-                Ok(found) => deposits.extend(found),
+    async fn fetch_deposits(&self, addresses: &[AddressCursor]) -> Result<Vec<AddressPollResult>, String> {
+        let mut results = Vec::new();
+        for entry in addresses {
+            match fetch_for_address(&self.horizon_url, &entry.address, entry.cursor.as_deref()).await {
+                Ok((deposits, next_cursor)) => results.push(AddressPollResult {
+                    address: entry.address.clone(),
+                    deposits,
+                    next_cursor: next_cursor.or_else(|| entry.cursor.clone()),
+                }),
                 Err(err) => {
                     // One bad/unreachable address must not block deposit detection
                     // for every other wallet in this poll cycle.
-                    tracing::warn!(error = %err, %address, "failed to fetch deposits for address");
+                    tracing::warn!(error = %err, address = %entry.address, "failed to fetch deposits for address");
                 }
             }
         }
-        Ok(deposits)
+        Ok(results)
     }
 }
 
@@ -71,6 +91,7 @@ struct OperationRecord {
     asset_code: Option<String>,
     #[serde(default)]
     transaction: Option<EmbeddedTransaction>,
+    paging_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,16 +105,31 @@ struct EmbeddedTransaction {
 /// first funding always arrives as a `create_account` operation (Stellar
 /// rejects `payment` ops to accounts that don't exist on-ledger yet), so both
 /// operation types are handled here, not just `payment`.
-async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<DetectedDeposit>, String> {
-    let url = format!(
-        "{}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions",
-        horizon_url.trim_end_matches('/')
-    );
+///
+/// When `cursor` is `None` (a wallet's first poll) the most recent 20
+/// operations are fetched, matching the previous behavior. Once a cursor is
+/// known, only operations after it are fetched (ascending order), so
+/// already-processed payments are never re-fetched.
+async fn fetch_for_address(
+    horizon_url: &str,
+    address: &str,
+    cursor: Option<&str>,
+) -> Result<(Vec<DetectedDeposit>, Option<String>), String> {
+    let url = match cursor {
+        Some(cursor) => format!(
+            "{}/accounts/{address}/payments?order=asc&cursor={cursor}&limit=20&include_failed=false&join=transactions",
+            horizon_url.trim_end_matches('/')
+        ),
+        None => format!(
+            "{}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions",
+            horizon_url.trim_end_matches('/')
+        ),
+    };
 
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         // Account has no ledger history yet (never funded) — nothing to detect.
-        return Ok(vec![]);
+        return Ok((vec![], None));
     }
 
     let page: PaymentsPage = response
@@ -102,6 +138,14 @@ async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<Detec
         .json()
         .await
         .map_err(|e| e.to_string())?;
+
+    // The newest record's paging token becomes the next cursor: on the first
+    // poll (order=desc) that's the first record; once polling ascending from
+    // a cursor, it's the last one.
+    let next_cursor = match cursor {
+        Some(_) => page.embedded.records.last().map(|r| r.paging_token.clone()),
+        None => page.embedded.records.first().map(|r| r.paging_token.clone()),
+    };
 
     let mut deposits = Vec::new();
     for record in page.embedded.records {
@@ -150,7 +194,7 @@ async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<Vec<Detec
             memo,
         });
     }
-    Ok(deposits)
+    Ok((deposits, next_cursor))
 }
 
 /// Converts a Stellar decimal amount string (up to 7 fractional digits) to stroops.

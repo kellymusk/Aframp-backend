@@ -10,6 +10,7 @@ pub struct Wallet {
     pub address: String,
     pub network: String,
     pub created_at: DateTime<Utc>,
+    pub last_polled_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone)]

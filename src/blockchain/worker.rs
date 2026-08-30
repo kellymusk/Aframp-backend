@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use sqlx::PgPool;
 
-use crate::blockchain::stellar::{BlockchainListener, StellarListener};
+use crate::blockchain::stellar::{AddressCursor, BlockchainListener, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
 use crate::services::{balances, payment_requests, payments, wallets};
 use crate::AppState;
@@ -20,20 +20,41 @@ pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: 
 }
 
 async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
-    let addresses: Vec<String> = wallets::all_wallets(db)
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|w| w.address)
-        .collect();
-    if addresses.is_empty() {
+    let wallet_list = wallets::all_wallets(db).await.map_err(|e| e.to_string())?;
+    if wallet_list.is_empty() {
         return Ok(());
     }
 
-    let deposits = listener.fetch_deposits(&addresses).await?;
-    for deposit in deposits {
-        if let Err(err) = process_deposit(db, deposit).await {
-            tracing::warn!(error = %err, "failed to process deposit");
+    let address_cursors: Vec<AddressCursor> = wallet_list
+        .iter()
+        .map(|w| AddressCursor {
+            address: w.address.clone(),
+            cursor: w.last_polled_cursor.clone(),
+        })
+        .collect();
+
+    let results = listener.fetch_deposits(&address_cursors).await?;
+    for result in results {
+        for deposit in result.deposits {
+            if let Err(err) = process_deposit(db, deposit).await {
+                tracing::warn!(error = %err, "failed to process deposit");
+            }
+        }
+
+        if let Some(next_cursor) = result.next_cursor {
+            let already_current = wallet_list
+                .iter()
+                .find(|w| w.address == result.address)
+                .and_then(|w| w.last_polled_cursor.as_deref())
+                == Some(next_cursor.as_str());
+            if already_current {
+                continue;
+            }
+            if let Some(wallet) = wallet_list.iter().find(|w| w.address == result.address) {
+                if let Err(err) = wallets::update_last_polled_cursor(db, wallet.id, &next_cursor).await {
+                    tracing::warn!(error = %err, address = %result.address, "failed to persist poll cursor");
+                }
+            }
         }
     }
     Ok(())
