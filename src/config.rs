@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 use crate::auth::cookie::{CookieConfig, SameSite};
 
@@ -11,7 +12,7 @@ pub struct AppConfig {
     pub stellar_system_wallet: Arc<String>,
     pub stellar_horizon_url: String,
     pub stellar_poll_interval_secs: u64,
-    pub wallet_encryption_key: Arc<String>,
+    pub wallet_encryption_key: Arc<Zeroizing<[u8; 32]>>,
     pub paystack_secret_key: Arc<String>,
     /// Browser origins allowed to call this API. The merchant frontend is a
     /// separate origin, so without this every request fails CORS preflight.
@@ -51,7 +52,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(60),
-            wallet_encryption_key: Arc::new(env("WALLET_ENCRYPTION_KEY")?),
+            wallet_encryption_key: Arc::new(Zeroizing::new(parse_wallet_key()?)),
             paystack_secret_key: Arc::new(env("PAYSTACK_SECRET_KEY")?),
             cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
                 .unwrap_or_else(|_| "http://localhost:3001".into())
@@ -80,4 +81,12 @@ fn flag(name: &str, default: bool) -> Result<bool, String> {
             other => Err(format!("{name} must be true or false, got `{other}`")),
         },
     }
+}
+
+fn parse_wallet_key() -> Result<[u8; 32], String> {
+    let hex_key = env("WALLET_ENCRYPTION_KEY")?;
+    let bytes = hex::decode(&hex_key).map_err(|e| format!("WALLET_ENCRYPTION_KEY is not valid hex: {e}"))?;
+    bytes
+        .try_into()
+        .map_err(|_| "WALLET_ENCRYPTION_KEY must decode to exactly 32 bytes".to_string())
 }

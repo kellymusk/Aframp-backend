@@ -4,6 +4,8 @@ use uuid::Uuid;
 use crate::models::{NewWithdrawal, Withdrawal};
 use crate::payments::{PaymentProvider, PayoutRequest};
 
+const REFUND_COMMIT_MAX_RETRIES: usize = 3;
+
 /// 1 unit of a Stellar asset = 10,000,000 stroops; 1 Naira = 100 kobo.
 /// cNGN is pegged 1:1 to NGN, so 1 kobo = 100,000 stroops.
 const STROOPS_PER_KOBO: i64 = 100_000;
@@ -113,29 +115,25 @@ pub async fn create_withdrawal(
             // the original debit is already committed, so this is a compensating
             // action, not a rollback. Keeps an audit trail instead of pretending
             // the attempt never happened.
-            let mut refund_tx = db.begin().await?;
-            sqlx::query(
-                "UPDATE balances
-                    SET available = available + $2, updated_at = now()
-                  WHERE merchant_id = $1 AND asset = $3",
+            if let Err(refund_err) = retry_refund_transaction(
+                db,
+                w.id,
+                withdrawal.merchant_id,
+                withdrawal.amount_stroops,
+                &withdrawal.asset,
+                &err,
             )
-            .bind(withdrawal.merchant_id)
-            .bind(withdrawal.amount_stroops)
-            .bind(&withdrawal.asset)
-            .execute(&mut *refund_tx)
-            .await?;
+            .await
+            {
+                tracing::error!(
+                    withdrawal_id = %w.id,
+                    merchant_id = %withdrawal.merchant_id,
+                    error = %refund_err,
+                    "Failed to execute refund transaction after payout failure — balance was debited but refund did not succeed"
+                );
+                return Err(refund_err);
+            }
 
-            sqlx::query(
-                "UPDATE withdrawals
-                    SET status = 'failed', failure_reason = $2, updated_at = now()
-                  WHERE id = $1",
-            )
-            .bind(w.id)
-            .bind(&err)
-            .execute(&mut *refund_tx)
-            .await?;
-
-            refund_tx.commit().await?;
             Err(WithdrawalError::PayoutFailed(err))
         }
     }
@@ -159,4 +157,66 @@ pub async fn withdrawals_by_merchant(
     .bind(limit)
     .fetch_all(db)
     .await
+}
+
+async fn retry_refund_transaction(
+    db: &PgPool,
+    withdrawal_id: Uuid,
+    merchant_id: Uuid,
+    amount_stroops: i64,
+    asset: &str,
+    failure_reason: &str,
+) -> Result<(), WithdrawalError> {
+    for attempt in 0..REFUND_COMMIT_MAX_RETRIES {
+        match execute_refund_transaction(db, withdrawal_id, merchant_id, amount_stroops, asset, failure_reason).await {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < REFUND_COMMIT_MAX_RETRIES - 1 => {
+                let backoff_ms = 100 * (2_u64.pow(attempt as u32));
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    backoff_ms,
+                    error = %e,
+                    "Refund transaction failed, retrying with exponential backoff"
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+async fn execute_refund_transaction(
+    db: &PgPool,
+    withdrawal_id: Uuid,
+    merchant_id: Uuid,
+    amount_stroops: i64,
+    asset: &str,
+    failure_reason: &str,
+) -> Result<(), WithdrawalError> {
+    let mut refund_tx = db.begin().await?;
+
+    sqlx::query(
+        "UPDATE balances
+            SET available = available + $2, updated_at = now()
+          WHERE merchant_id = $1 AND asset = $3",
+    )
+    .bind(merchant_id)
+    .bind(amount_stroops)
+    .bind(asset)
+    .execute(&mut *refund_tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE withdrawals
+            SET status = 'failed', failure_reason = $2, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(withdrawal_id)
+    .bind(failure_reason)
+    .execute(&mut *refund_tx)
+    .await?;
+
+    refund_tx.commit().await?;
+    Ok(())
 }

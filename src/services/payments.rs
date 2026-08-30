@@ -73,19 +73,36 @@ pub async fn payments_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
     limit: i64,
+    before: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<Payment>, sqlx::Error> {
-    sqlx::query_as::<_, Payment>(
-        "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
-                network, status, confirmations, created_at, updated_at
-           FROM payments
-          WHERE merchant_id = $1
-          ORDER BY created_at DESC
-          LIMIT $2",
-    )
-    .bind(merchant_id)
-    .bind(limit)
-    .fetch_all(db)
-    .await
+    if let Some(before_timestamp) = before {
+        sqlx::query_as::<_, Payment>(
+            "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                    network, status, confirmations, created_at, updated_at
+               FROM payments
+              WHERE merchant_id = $1 AND created_at < $3
+              ORDER BY created_at DESC
+              LIMIT $2",
+        )
+        .bind(merchant_id)
+        .bind(limit)
+        .bind(before_timestamp)
+        .fetch_all(db)
+        .await
+    } else {
+        sqlx::query_as::<_, Payment>(
+            "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                    network, status, confirmations, created_at, updated_at
+               FROM payments
+              WHERE merchant_id = $1
+              ORDER BY created_at DESC
+              LIMIT $2",
+        )
+        .bind(merchant_id)
+        .bind(limit)
+        .fetch_all(db)
+        .await
+    }
 }
 
 pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sqlx::Error> {
