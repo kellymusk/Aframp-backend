@@ -29,6 +29,8 @@ tower-http = { version = "0.6", features = ["trace", "limit", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+urlencoding = "2"
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 stellar-base = "0.7.0"

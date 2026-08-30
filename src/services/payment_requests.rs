@@ -80,21 +80,40 @@ pub async fn payment_requests_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
     limit: i64,
+    before: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<PaymentRequestWithWallet>, sqlx::Error> {
-    sqlx::query_as::<_, PaymentRequestWithWallet>(
-        "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
-                pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
-                w.address, w.network
-           FROM payment_requests pr
-           JOIN wallets w ON w.id = pr.wallet_id
-          WHERE pr.merchant_id = $1
-          ORDER BY pr.created_at DESC
-          LIMIT $2",
-    )
-    .bind(merchant_id)
-    .bind(limit)
-    .fetch_all(db)
-    .await
+    if let Some(before_timestamp) = before {
+        sqlx::query_as::<_, PaymentRequestWithWallet>(
+            "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
+                    pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                    w.address, w.network
+               FROM payment_requests pr
+               JOIN wallets w ON w.id = pr.wallet_id
+              WHERE pr.merchant_id = $1 AND pr.created_at < $3
+              ORDER BY pr.created_at DESC
+              LIMIT $2",
+        )
+        .bind(merchant_id)
+        .bind(limit)
+        .bind(before_timestamp)
+        .fetch_all(db)
+        .await
+    } else {
+        sqlx::query_as::<_, PaymentRequestWithWallet>(
+            "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
+                    pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                    w.address, w.network
+               FROM payment_requests pr
+               JOIN wallets w ON w.id = pr.wallet_id
+              WHERE pr.merchant_id = $1
+              ORDER BY pr.created_at DESC
+              LIMIT $2",
+        )
+        .bind(merchant_id)
+        .bind(limit)
+        .fetch_all(db)
+        .await
+    }
 }
 
 pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<PaymentRequest>, sqlx::Error> {
