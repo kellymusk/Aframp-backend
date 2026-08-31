@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/balance", axum::routing::get(api::balances::get))
         .route("/transactions", axum::routing::get(api::transactions::list))
         .route("/withdraw", axum::routing::post(api::withdrawals::create))
+        .route("/withdrawal-fee", axum::routing::get(api::withdrawals::withdrawal_fee))
         .route("/withdrawals", axum::routing::get(api::withdrawals::list))
         .route(
             "/payment-requests",
