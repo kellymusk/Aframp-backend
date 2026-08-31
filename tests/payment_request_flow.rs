@@ -1,9 +1,11 @@
 mod common;
 
+use aframp::blockchain::stellar::DetectedDeposit;
+use aframp::blockchain::worker::poll_once;
 use axum::http::StatusCode;
 use serde_json::json;
 
-use common::{ensure_merchant, send, state};
+use common::{ensure_merchant, send, state, MockBlockchainListener};
 
 async fn create_wallet(app: &axum::Router, token: &str) {
     let (status, json) = send(app.clone(), "POST", "/wallet/create", Some(token), Some(json!({}))).await;
@@ -243,4 +245,145 @@ async fn payment_request_marked_paid_on_memo_correlated_deposit() {
     let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["status"], "paid");
+}
+
+/// Creates a wallet for `token` and returns its Stellar address, so a test
+/// can build a [`DetectedDeposit`] that targets it.
+async fn create_wallet_with_address(app: &axum::Router, token: &str) -> String {
+    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(token), Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet}");
+    wallet["address"].as_str().unwrap().to_string()
+}
+
+/// End-to-end: create a payment request, feed the worker a synthetic
+/// deposit via a mock Horizon listener (no real Stellar node involved),
+/// and assert the request is correlated by memo and marked `paid`.
+#[tokio::test]
+async fn full_qr_payment_flow_marks_request_paid_via_mock_horizon() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "flow_paid").await;
+    let address = create_wallet_with_address(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 25_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let memo = created["memo"].as_str().unwrap().to_string();
+
+    let listener = MockBlockchainListener {
+        deposits: vec![DetectedDeposit {
+            tx_hash: format!("mock_tx_{memo}"),
+            destination: address,
+            amount_stroops: 25_000_000,
+            asset: "XLM".into(),
+            confirmations: 1,
+            memo: Some(memo),
+        }],
+    };
+    poll_once(&state.db, &listener).await.expect("poll_once failed");
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["status"], "paid", "matching deposit should mark the request paid");
+}
+
+/// A deposit that under-pays the requested amount should leave the request
+/// `partial`, not `paid`.
+#[tokio::test]
+async fn underpaid_deposit_marks_request_partial() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "flow_partial").await;
+    let address = create_wallet_with_address(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 25_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let memo = created["memo"].as_str().unwrap().to_string();
+
+    let listener = MockBlockchainListener {
+        deposits: vec![DetectedDeposit {
+            tx_hash: format!("mock_tx_{memo}"),
+            destination: address,
+            amount_stroops: 10_000_000,
+            asset: "XLM".into(),
+            confirmations: 1,
+            memo: Some(memo),
+        }],
+    };
+    poll_once(&state.db, &listener).await.expect("poll_once failed");
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["status"], "partial", "underpaid deposit should mark the request partial, not paid");
+}
+
+/// A payment request whose expiry has already passed still has a `pending`
+/// row in the database (expiry is computed at read time, not enforced by a
+/// background job — see `effective_status`), so a late-arriving deposit that
+/// matches its memo is still correlated by the worker today.
+#[tokio::test]
+async fn late_deposit_on_expired_request_is_still_correlated_by_memo() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "flow_expired").await;
+    let address = create_wallet_with_address(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 15_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let memo = created["memo"].as_str().unwrap().to_string();
+
+    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["status"], "expired", "should report expired before any deposit arrives");
+
+    let listener = MockBlockchainListener {
+        deposits: vec![DetectedDeposit {
+            tx_hash: format!("mock_tx_{memo}"),
+            destination: address,
+            amount_stroops: 15_000_000,
+            asset: "XLM".into(),
+            confirmations: 1,
+            memo: Some(memo),
+        }],
+    };
+    poll_once(&state.db, &listener).await.expect("poll_once failed");
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["status"], "paid", "late deposit still correlates by memo — no expiry check in the worker today");
 }
