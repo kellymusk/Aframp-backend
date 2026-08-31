@@ -5,17 +5,50 @@ use sqlx::PgPool;
 
 use crate::blockchain::stellar::{BlockchainListener, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
-use crate::services::{balances, payment_requests, payments, wallets};
+use crate::services::{balances, payment_requests, payments, sweep, wallets};
 use crate::AppState;
 
 pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
-    let listener = StellarListener { horizon_url };
+    let listener = StellarListener { horizon_url: horizon_url.clone() };
 
     loop {
         if let Err(err) = poll_once(&state.db, &listener).await {
             tracing::warn!(error = %err, "deposit poll failed");
         }
         tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
+    }
+}
+
+/// Runs the sweep worker that periodically moves funds from merchant wallets
+/// to the platform wallet. Runs on a separate schedule from deposit polling.
+pub async fn run_sweep_worker(
+    state: Arc<AppState>,
+    horizon_url: String,
+    platform_wallet: String,
+    sweep_interval_secs: u64,
+    min_balance_stroops: i64,
+) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(sweep_interval_secs)).await;
+        
+        match sweep::sweep_all_wallets(
+            &state.db,
+            &horizon_url,
+            &platform_wallet,
+            &state.wallet_encryption_key,
+            min_balance_stroops,
+        )
+        .await
+        {
+            Ok(transactions) => {
+                if !transactions.is_empty() {
+                    tracing::info!(count = transactions.len(), "swept wallets");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "sweep worker failed");
+            }
+        }
     }
 }
 

@@ -27,6 +27,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tokio::spawn(listener);
 
+    let sweep_worker = aframp::blockchain::worker::run_sweep_worker(
+        state.clone(),
+        config.stellar_horizon_url.clone(),
+        (*config.stellar_system_wallet).clone(),
+        config.stellar_sweep_interval_secs,
+        config.stellar_sweep_min_balance_stroops,
+    );
+    tokio::spawn(sweep_worker);
+
     // Auth travels as an HttpOnly cookie for browsers, so credentials are on —
     // which means origins must be listed explicitly, never mirrored back.
     let origins = config

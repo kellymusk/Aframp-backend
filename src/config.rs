@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub stellar_system_wallet: Arc<String>,
     pub stellar_horizon_url: String,
     pub stellar_poll_interval_secs: u64,
+    pub stellar_sweep_interval_secs: u64,
+    pub stellar_sweep_min_balance_stroops: i64,
     pub wallet_encryption_key: Arc<String>,
     pub paystack_secret_key: Arc<String>,
     /// Browser origins allowed to call this API. The merchant frontend is a
@@ -51,6 +53,14 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(60),
+            stellar_sweep_interval_secs: std::env::var("STELLAR_SWEEP_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600), // Default: sweep every hour
+            stellar_sweep_min_balance_stroops: std::env::var("STELLAR_SWEEP_MIN_BALANCE_STROOPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50_000_000), // Default: 5 XLM minimum
             wallet_encryption_key: Arc::new(env("WALLET_ENCRYPTION_KEY")?),
             paystack_secret_key: Arc::new(env("PAYSTACK_SECRET_KEY")?),
             cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
