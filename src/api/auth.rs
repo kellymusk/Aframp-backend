@@ -7,7 +7,7 @@ use crate::auth::jwt;
 use crate::error::{bad_request_field, internal, ApiResult};
 use crate::models::{AuthResponse, LoginRequest, SignupRequest};
 use crate::services::users::{self, UserError};
-use crate::validation::{is_valid_email, validate_name};
+use crate::validation::{is_valid_email, validate_name, MAX_PASSWORD_LEN};
 use crate::AppState;
 
 pub async fn signup(
@@ -21,6 +21,16 @@ pub async fn signup(
         return Err(bad_request_field(
             "password",
             "must be at least 8 characters",
+        ));
+    }
+    // Argon2 hashing cost scales with input size. The 1MB RequestBodyLimitLayer
+    // in main.rs is the primary defence against a huge body; this is defence
+    // in depth against a password field specifically, sized well above any
+    // real password while still being cheap to hash.
+    if req.password.len() > MAX_PASSWORD_LEN {
+        return Err(bad_request_field(
+            "password",
+            "must be at most 1024 characters",
         ));
     }
     let name = validate_name(&req.name).map_err(|msg| bad_request_field("name", msg))?;
@@ -45,6 +55,15 @@ pub async fn login(
 ) -> ApiResult<impl IntoResponse> {
     if !is_valid_email(&req.email) {
         return Err(bad_request_field("email", "must be a valid email address"));
+    }
+    // Same defence-in-depth as signup: Argon2's verification cost scales with
+    // input size regardless of whether it matches, so an oversized password
+    // is worth rejecting before it reaches the hasher.
+    if req.password.len() > MAX_PASSWORD_LEN {
+        return Err(bad_request_field(
+            "password",
+            "must be at most 1024 characters",
+        ));
     }
     let (user, merchant) = users::login(&state.db, &req.email, &req.password)
         .await

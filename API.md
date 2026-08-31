@@ -237,6 +237,15 @@ Query: `?limit=` (default 50, clamped 1–200).
 
 `expired` is computed at read time, so it's accurate the moment you fetch it. A request that expires and is *then* paid still flips to `paid` — expiry doesn't block correlation.
 
+### `POST /payment-requests/{id}/expire`
+Auth required, merchant-scoped. Forces a `pending` request straight to `expired`, without waiting for `expires_at` — e.g. the customer abandoned the session and the merchant wants to regenerate the QR immediately.
+
+Unlike the natural TTL expiry above (computed at read time), this writes `expired` to the database row, so it's durable and visible to anyone else reading the request.
+
+`200` → the updated object, same shape as `GET`.
+
+`400` if the request is not currently `pending` (already `paid`, `partial`, or already `expired`). `404` if the id doesn't exist or belongs to another merchant.
+
 ---
 
 ### `GET /balance`

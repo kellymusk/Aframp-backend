@@ -147,3 +147,57 @@ pub async fn mark_partial(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(),
     .await
     .map(|_| ())
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExpireError {
+    #[error("payment request not found")]
+    NotFound,
+    #[error("only a pending payment request can be expired")]
+    NotPending,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Forces a `pending` request straight to `expired`, merchant-scoped. Unlike
+/// the natural TTL expiry (computed at read time by `effective_status`), this
+/// writes the DB row so the state is durable — a merchant regenerating a QR
+/// mid-session doesn't leave a `pending` row that could still be paid into a
+/// forgotten link.
+pub async fn expire(
+    db: &PgPool,
+    id: Uuid,
+    merchant_id: Uuid,
+) -> Result<PaymentRequest, ExpireError> {
+    let current = sqlx::query_as::<_, PaymentRequest>(
+        "SELECT id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
+                expires_at, created_at, updated_at
+           FROM payment_requests WHERE id = $1 AND merchant_id = $2",
+    )
+    .bind(id)
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(ExpireError::NotFound)?;
+
+    if current.status != "pending" {
+        return Err(ExpireError::NotPending);
+    }
+
+    let updated = sqlx::query_as::<_, PaymentRequest>(
+        "UPDATE payment_requests
+            SET status = 'expired', updated_at = now()
+          WHERE id = $1 AND merchant_id = $2 AND status = 'pending'
+          RETURNING id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
+                    expires_at, created_at, updated_at",
+    )
+    .bind(id)
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await?
+    // A concurrent update (e.g. the deposit worker marking it paid) between the
+    // read above and this write loses the race gracefully instead of forcing
+    // an already-paid request into expired.
+    .ok_or(ExpireError::NotPending)?;
+
+    Ok(updated)
+}

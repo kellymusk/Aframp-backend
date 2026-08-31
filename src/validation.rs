@@ -49,6 +49,16 @@ pub fn is_valid_account_number(account_number: &str) -> bool {
 
 pub const MAX_NAME_LEN: usize = 100;
 
+/// Well above any real password, but small enough that Argon2 hashing it
+/// costs about the same as a normal one — the point is bounding the cost of
+/// an oversized input, not accommodating longer passphrases.
+///
+/// The `RequestBodyLimitLayer::new(1024 * 1024)` in `main.rs` is the primary
+/// defence against a huge request body; this is defence in depth against the
+/// `password` field specifically, which is the one field whose cost to
+/// process scales with its size regardless of body limits.
+pub const MAX_PASSWORD_LEN: usize = 1024;
+
 /// Trims the name and validates it is non-empty and within the max length.
 pub fn validate_name(name: &str) -> Result<String, &'static str> {
     let trimmed = name.trim();

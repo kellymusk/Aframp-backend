@@ -176,6 +176,16 @@ docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test cargo test
 ```
 
+### Request correlation
+
+Every response carries an `X-Request-ID` header — a UUID either generated for the request or echoed
+back if the client already sent a well-formed one. Include it when reporting a bug or searching logs;
+it's on the `TraceLayer` span (`request_id`) for every log line the request produces, so it correlates
+a support ticket straight to the exact server-side trace.
+
+An incoming `X-Request-ID` that isn't a valid UUID is discarded and replaced rather than trusted
+as-is — a client can't use it to inject arbitrary values into the logs.
+
 ## API reference
 
 **Building a frontend?** Start with **[`API.md`](API.md)** — the full contract with request/response examples, error semantics, the stroops convention, polling guidance, and the known gaps worth designing around. **[`openapi.yaml`](openapi.yaml)** is the machine-readable version; generate a typed client from it rather than hand-writing calls.

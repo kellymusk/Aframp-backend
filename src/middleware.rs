@@ -12,8 +12,32 @@ use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::Json;
+use tower_http::request_id::{MakeRequestId, RequestId};
+use uuid::Uuid;
 
 use crate::error::{unsupported_media_type, ApiError};
+
+/// Generates the `X-Request-ID` correlating one request across logs and a
+/// client bug report. An incoming `X-Request-ID` is trusted and echoed back
+/// only if it is already a valid UUID — anything else (missing, malformed, or
+/// used to try to inject a bogus value into logs) gets a freshly generated
+/// one instead, so the header in a log line is always a value we generated or
+/// explicitly vetted.
+#[derive(Clone, Default)]
+pub struct SanitizingRequestId;
+
+impl MakeRequestId for SanitizingRequestId {
+    fn make_request_id<B>(&mut self, request: &axum::http::Request<B>) -> Option<RequestId> {
+        let sanitized = request
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| Uuid::parse_str(v).ok())
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        HeaderValue::from_str(&sanitized).ok().map(RequestId::new)
+    }
+}
 
 /// Rejects POST/PUT requests that carry a body but declare a content type
 /// other than JSON, so handlers that expect `Json` never see a mislabeled

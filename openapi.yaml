@@ -231,6 +231,34 @@ paths:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /payment-requests/{id}/expire:
+    post:
+      tags: [Payment requests]
+      summary: Manually expire a pending payment request
+      description: >
+        Forces a `pending` request straight to `expired` without waiting for
+        `expires_at`, e.g. when a customer abandons a session and the merchant
+        wants to regenerate the QR immediately. Unlike the read-time computed
+        expiry on GET, this writes the row, so the state is durable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The now-expired payment request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '400':
+          description: Request is not currently pending (already paid, partial, or expired)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /balance:
     get:
       tags: [Money]

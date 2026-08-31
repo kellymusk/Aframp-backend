@@ -99,6 +99,30 @@ pub struct ListParams {
     pub limit: Option<i64>,
 }
 
+/// Forces a `pending` request to `expired` immediately, merchant-scoped —
+/// e.g. a customer abandoned the payment session and the merchant wants to
+/// regenerate the QR without waiting out the TTL.
+pub async fn expire(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<PaymentRequestView>> {
+    let merchant_id = auth
+        .merchant_id
+        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+
+    let pr = payment_requests::expire(&state.db, id, merchant_id)
+        .await
+        .map_err(map_expire_error)?;
+
+    let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| internal("payment request references a missing wallet"))?;
+
+    Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+}
+
 /// A `pending` row whose expiry has passed is reported as `expired` at read
 /// time, so a request going stale needs no background job to flip it.
 fn effective_status(status: &str, expires_at: DateTime<Utc>) -> String {
@@ -159,5 +183,19 @@ fn map_payment_request_error(
             bad_request("amount_stroops must be positive")
         }
         payment_requests::PaymentRequestError::Database(e) => internal(e),
+    }
+}
+
+fn map_expire_error(
+    err: payment_requests::ExpireError,
+) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
+    match err {
+        // Not found and "belongs to another merchant" are indistinguishable
+        // to the caller, same as every other merchant-scoped lookup here.
+        payment_requests::ExpireError::NotFound => not_found("payment request not found"),
+        payment_requests::ExpireError::NotPending => {
+            bad_request("only a pending payment request can be expired")
+        }
+        payment_requests::ExpireError::Database(e) => internal(e),
     }
 }
