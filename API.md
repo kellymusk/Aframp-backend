@@ -222,6 +222,8 @@ Query: `?limit=` (default 50, clamped 1–200).
 
 > Pagination is limit-only — there's no cursor or offset, so you can't page beyond the most recent 200.
 
+**Supports `ETag`/`If-None-Match`.** The response carries an `ETag` header hashed from the payload. Send it back as `If-None-Match` on the next poll; an unchanged result comes back as `304 Not Modified` with an empty body instead of the full array.
+
 ### `GET /payment-requests/{id}`
 **No auth** — deliberately public, so a customer's device can read a request before paying.
 
@@ -259,6 +261,8 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 
 ### `GET /transactions`
 Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200).
+
+**Supports `ETag`/`If-None-Match`.** Same as `GET /payment-requests` above — send the last `ETag` back as `If-None-Match` to get `304 Not Modified` when nothing changed.
 
 `200` →
 ```json

@@ -1,10 +1,11 @@
 use axum::extract::{Query, State};
-use axum::Json;
+use axum::http::HeaderMap;
+use axum::response::Response;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_request, internal, ApiResult};
-use crate::models::Payment;
+use crate::etag;
 use crate::services::payments;
 use crate::AppState;
 
@@ -17,7 +18,8 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<Payment>>> {
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request("no merchant associated with this account"))?;
@@ -25,5 +27,5 @@ pub async fn list(
     let payments = payments::payments_by_merchant(&state.db, merchant_id, limit)
         .await
         .map_err(internal)?;
-    Ok(Json(payments))
+    Ok(etag::conditional_json(&headers, &payments))
 }
