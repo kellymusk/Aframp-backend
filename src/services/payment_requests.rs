@@ -147,3 +147,17 @@ pub async fn mark_partial(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(),
     .await
     .map(|_| ())
 }
+
+/// A `pending` row whose expiry has passed is reported as `expired` at read
+/// time, so a request going stale needs no background job to flip it. Lives
+/// here rather than in the API layer so any caller that needs to know whether
+/// a request is effectively expired — a webhook handler, a scheduled job, a
+/// new endpoint — can call it without importing from `api::payment_requests`,
+/// an inversion of the normal API → service dependency direction.
+pub fn effective_status(status: &str, expires_at: chrono::DateTime<Utc>) -> String {
+    if status == "pending" && expires_at < Utc::now() {
+        "expired".to_string()
+    } else {
+        status.to_string()
+    }
+}
