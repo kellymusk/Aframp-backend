@@ -6,6 +6,7 @@ mod error;
 mod middleware;
 mod models;
 pub mod payments;
+pub mod rotate_key;
 pub mod services;
 mod validation;
 
