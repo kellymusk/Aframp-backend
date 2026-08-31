@@ -130,6 +130,25 @@ paths:
               schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Auth]
+      summary: Update current user's name
+      description: >
+        Updates the signed-in user's name. Also updates the merchant's name if
+        the account has a merchant profile, so the two never drift apart.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMeRequest' }
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /wallet/create:
     post:
@@ -404,6 +423,12 @@ components:
         created_at: { type: string, format: date-time }
         merchant_id: { type: string, format: uuid, nullable: true }
         merchant_name: { type: string, nullable: true }
+
+    UpdateMeRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
 
     CreateWalletRequest:
       type: object

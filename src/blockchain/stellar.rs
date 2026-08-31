@@ -171,7 +171,10 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
     let frac_stroops: i64 = frac_padded
         .parse()
         .map_err(|_| format!("invalid amount: {amount}"))?;
-    Ok(whole_stroops * 10_000_000 + frac_stroops)
+    whole_stroops
+        .checked_mul(10_000_000)
+        .and_then(|v| v.checked_add(frac_stroops))
+        .ok_or_else(|| format!("amount overflows i64 stroops: {amount}"))
 }
 
 #[cfg(test)]
