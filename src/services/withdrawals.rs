@@ -22,6 +22,9 @@ pub enum WithdrawalError {
     Database(#[from] sqlx::Error),
 }
 
+/// Postgres error code for a unique-constraint violation.
+const UNIQUE_VIOLATION: &str = "23505";
+
 pub async fn create_withdrawal(
     db: &PgPool,
     provider: &dyn PaymentProvider,
@@ -33,6 +36,18 @@ pub async fn create_withdrawal(
     if withdrawal.amount_stroops % STROOPS_PER_KOBO != 0 {
         return Err(WithdrawalError::InvalidAmountPrecision);
     }
+
+    // A resubmission with a key already used by this merchant returns the
+    // original withdrawal untouched — no new debit, no new Paystack call.
+    // This check-then-insert has a race (two concurrent requests with the
+    // same fresh key can both pass it), which the UNIQUE_VIOLATION handling
+    // below closes: the loser of that race re-reads instead of erroring.
+    if let Some(key) = &withdrawal.idempotency_key {
+        if let Some(existing) = withdrawal_by_idempotency_key(db, withdrawal.merchant_id, key).await? {
+            return Ok(existing);
+        }
+    }
+
     let amount_kobo = withdrawal.amount_stroops / STROOPS_PER_KOBO;
 
     let mut tx = db.begin().await?;
@@ -54,11 +69,11 @@ pub async fn create_withdrawal(
         return Err(WithdrawalError::InsufficientBalance);
     }
 
-    let w = sqlx::query_as::<_, Withdrawal>(
+    let inserted = sqlx::query_as::<_, Withdrawal>(
         "INSERT INTO withdrawals (
-             merchant_id, amount_stroops, asset, status, bank_code, account_number
+             merchant_id, amount_stroops, asset, status, bank_code, account_number, idempotency_key
          )
-         VALUES ($1, $2, $3, 'pending', $4, $5)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6)
          RETURNING id, merchant_id, amount_stroops, asset, status, provider,
                    provider_reference, bank_code, account_number, failure_reason,
                    created_at, updated_at",
@@ -68,8 +83,27 @@ pub async fn create_withdrawal(
     .bind(&withdrawal.asset)
     .bind(&withdrawal.bank_code)
     .bind(&withdrawal.account_number)
+    .bind(&withdrawal.idempotency_key)
     .fetch_one(&mut *tx)
-    .await?;
+    .await;
+
+    let w = match inserted {
+        Ok(w) => w,
+        Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some(UNIQUE_VIOLATION) => {
+            // Lost the race described above: another request with the same
+            // key committed first. Undo this request's debit — the other
+            // request's withdrawal is the one of record — and return it.
+            tx.rollback().await?;
+            let key = withdrawal.idempotency_key.as_deref().unwrap_or_default();
+            return withdrawal_by_idempotency_key(db, withdrawal.merchant_id, key)
+                .await?
+                .ok_or(WithdrawalError::Database(sqlx::Error::Database(db_err)));
+        }
+        Err(other) => {
+            tx.rollback().await?;
+            return Err(WithdrawalError::Database(other));
+        }
+    };
 
     // Commit the debit + pending row before ever calling out to Paystack. This
     // guarantees a durable record that the withdrawal was attempted regardless
@@ -139,6 +173,24 @@ pub async fn create_withdrawal(
             Err(WithdrawalError::PayoutFailed(err))
         }
     }
+}
+
+async fn withdrawal_by_idempotency_key(
+    db: &PgPool,
+    merchant_id: Uuid,
+    key: &str,
+) -> Result<Option<Withdrawal>, sqlx::Error> {
+    sqlx::query_as::<_, Withdrawal>(
+        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                provider_reference, bank_code, account_number, failure_reason,
+                created_at, updated_at
+           FROM withdrawals
+          WHERE merchant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(merchant_id)
+    .bind(key)
+    .fetch_optional(db)
+    .await
 }
 
 pub async fn withdrawals_by_merchant(

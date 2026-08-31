@@ -13,5 +13,5 @@ pub use merchant::{Merchant, NewMerchant};
 pub use payment::{NewPayment, Payment, UpdatePaymentStatus};
 pub use payment_request::{CreatePaymentRequestRequest, PaymentRequest};
 pub use user::{AuthResponse, LoginRequest, NewUser, SignupRequest, User};
-pub use wallet::{CreateWalletRequest, NewWallet, Wallet};
+pub use wallet::{CreateWalletRequest, NewWallet, Wallet, WalletSecretRow};
 pub use withdrawal::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};

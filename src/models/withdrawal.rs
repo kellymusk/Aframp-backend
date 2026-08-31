@@ -34,4 +34,7 @@ pub struct NewWithdrawal {
     pub asset: String,
     pub bank_code: String,
     pub account_number: String,
+    /// From the client's `Idempotency-Key` header, if sent. `None` means the
+    /// request opted out of idempotency and always creates a new withdrawal.
+    pub idempotency_key: Option<String>,
 }

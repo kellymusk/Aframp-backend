@@ -49,6 +49,12 @@ pub fn is_valid_account_number(account_number: &str) -> bool {
 
 pub const MAX_NAME_LEN: usize = 100;
 
+/// A client-generated idempotency key is arbitrary but bounded — 255 covers
+/// a UUID, a ULID, or a reasonably descriptive client-side request id with
+/// room to spare, while capping how much an unbounded header value could
+/// cost to store and index.
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
+
 /// Trims the name and validates it is non-empty and within the max length.
 pub fn validate_name(name: &str) -> Result<String, &'static str> {
     let trimmed = name.trim();

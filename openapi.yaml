@@ -273,6 +273,14 @@ paths:
         complete — Aframp's Paystack balance is unfunded, so live calls return 502.
         On failure the balance is automatically refunded and the withdrawal is
         recorded with status "failed" plus a failure_reason; nothing is lost.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 255 }
+          description: >
+            Optional client-generated key. Resubmitting the same key returns the
+            original withdrawal instead of creating and debiting a second one.
       requestBody:
         required: true
         content:
