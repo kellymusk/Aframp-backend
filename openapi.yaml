@@ -310,6 +310,27 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /withdrawals/{id}:
+    get:
+      tags: [Money]
+      summary: Read a single withdrawal's status
+      description: >
+        Lets a merchant poll one withdrawal's status and failure_reason without
+        listing every withdrawal. Scoped to the authenticated merchant.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Withdrawal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Withdrawal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:

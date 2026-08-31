@@ -331,6 +331,11 @@ Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200).
 
 `status` is `pending`, `processing`, `completed`, or `failed`. Show `failure_reason` on failed rows — it carries the provider's own wording.
 
+### `GET /withdrawals/{id}`
+Auth required. Fetches a single withdrawal so a merchant can poll status without listing every withdrawal. Scoped to the authenticated merchant — another merchant's withdrawal id returns `404`.
+
+`200` → the same withdrawal object shape as `GET /withdrawals`. `404` → `{ "error": "withdrawal not found" }`.
+
 ---
 
 ## Building the POS flow
