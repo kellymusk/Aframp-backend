@@ -1,9 +1,10 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult};
+use crate::error::{bad_gateway, bad_request, bad_request_field, internal, not_found, ApiResult};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
 use crate::services::withdrawals::{self, WithdrawalError};
 use crate::validation::{is_valid_account_number, is_valid_bank_code};
@@ -50,6 +51,21 @@ pub async fn create(
     )
     .await
     .map_err(map_withdrawal_error)?;
+    Ok(Json(withdrawal))
+}
+
+pub async fn get(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Withdrawal>> {
+    let merchant_id = auth
+        .merchant_id
+        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+    let withdrawal = withdrawals::withdrawal_by_id(&state.db, id, merchant_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found("withdrawal not found"))?;
     Ok(Json(withdrawal))
 }
 

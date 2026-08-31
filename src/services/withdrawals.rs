@@ -141,6 +141,26 @@ pub async fn create_withdrawal(
     }
 }
 
+/// Scoped to `merchant_id` so one merchant can't poll another's withdrawal
+/// by guessing its id.
+pub async fn withdrawal_by_id(
+    db: &PgPool,
+    id: Uuid,
+    merchant_id: Uuid,
+) -> Result<Option<Withdrawal>, sqlx::Error> {
+    sqlx::query_as::<_, Withdrawal>(
+        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                provider_reference, bank_code, account_number, failure_reason,
+                created_at, updated_at
+           FROM withdrawals
+          WHERE id = $1 AND merchant_id = $2",
+    )
+    .bind(id)
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
 pub async fn withdrawals_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,

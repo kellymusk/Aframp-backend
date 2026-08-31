@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = router((*state).clone())
         .layer(cors)
         .layer(TraceLayer::new_for_http())
-        .layer(RequestBodyLimitLayer::new(1024 * 1024));
+        .layer(RequestBodyLimitLayer::new(64 * 1024));
 
     let address: SocketAddr = config.bind_addr.parse()?;
     tracing::info!(%address, "aframp started");
