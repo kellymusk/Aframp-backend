@@ -19,7 +19,7 @@ pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: 
     }
 }
 
-async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
+pub async fn poll_once(db: &PgPool, listener: &impl BlockchainListener) -> Result<(), String> {
     let addresses: Vec<String> = wallets::all_wallets(db)
         .await
         .map_err(|e| e.to_string())?
