@@ -1,0 +1,32 @@
+name: Cargo.lock up to date
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  lockfile:
+    name: Cargo.lock matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-lockcheck-${{ hashFiles('**/Cargo.lock') }}
+
+      # --locked fails immediately if Cargo.lock doesn't already satisfy
+      # every constraint in Cargo.toml, instead of silently rewriting it —
+      # exactly the drift this check exists to catch (a Cargo.toml version
+      # bump committed without regenerating the lockfile, or vice versa).
+      - name: Verify Cargo.lock is up to date
+        run: cargo check --locked --all-targets

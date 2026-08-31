@@ -102,13 +102,36 @@ Fill in `.env`:
 | `JWT_SECRET` | yes | — | Secret used to sign merchant session tokens. Generate with `openssl rand -hex 32` |
 | `WEBHOOK_SECRET` | yes | — | Secret used to verify inbound provider webhooks. Generate with `openssl rand -hex 32` |
 | `WALLET_ENCRYPTION_KEY` | yes | — | AES-256-GCM key encrypting Stellar wallet secrets at rest. Generate with `openssl rand -hex 32` (must decode to exactly 32 bytes) |
+| `WALLET_ENCRYPTION_KEY_NEW` | only for `--rotate-key` | — | The key to rotate `WALLET_ENCRYPTION_KEY` to. See "Rotating `WALLET_ENCRYPTION_KEY`" below |
 | `STELLAR_SYSTEM_WALLET_ADDRESS` | yes | — | Reserved for a future platform settlement/sweep wallet. Validated at startup but not used by deposit detection today (see [Status](#status-real-progress-not-aspiration)) |
 | `STELLAR_HORIZON_URL` | no | `https://horizon-testnet.stellar.org` | Horizon endpoint to poll |
 | `STELLAR_POLL_INTERVAL_SECS` | no | `60` | How often the deposit-detection worker polls Horizon, per wallet |
 | `PAYSTACK_SECRET_KEY` | yes | — | Paystack Dashboard → Settings → API Keys & Webhooks. `sk_test_...` for dev, `sk_live_...` only once the business is verified/activated for Transfers (see `PRD.md` §9.1) |
-| `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
+| `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight. Each value is validated at startup (scheme `http`/`https`, host, no path/query, no `*` wildcard) — the app refuses to start rather than accept a malformed origin |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
 | `COOKIE_SAME_SITE` | no | `lax` | `lax` or `none`. `none` (which forces `Secure`) is only for a frontend on a different origin, and lets the session ride cross-site requests — prefer serving the frontend same-origin |
+
+### Rotating `WALLET_ENCRYPTION_KEY`
+
+```bash
+# 1. Generate the new key
+openssl rand -hex 32
+
+# 2. Re-encrypt every wallet's secret from the old key to the new one
+WALLET_ENCRYPTION_KEY=<current-key> \
+WALLET_ENCRYPTION_KEY_NEW=<new-key> \
+DATABASE_URL=<target-database> \
+  cargo run -- --rotate-key
+
+# 3. On success, update the deployment's WALLET_ENCRYPTION_KEY to <new-key>
+#    and restart. Discard the old key.
+```
+
+No downtime is required for this today: nothing in the running server decrypts a
+wallet secret (withdrawals settle through Paystack, not by signing with the
+wallet's own key), so there is no live reader for the rotation to race
+against. See the doc comment on `src/rotate_key.rs` for what would need to
+change once that's no longer true — e.g. once a sweep-wallet signer exists.
 
 ### Quick start (Docker Postgres)
 
