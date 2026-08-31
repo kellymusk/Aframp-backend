@@ -23,6 +23,7 @@ fn generate_memo() -> String {
     hex::encode(bytes)
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, wallet_id = %wallet_id, %asset))]
 pub async fn create_payment_request(
     db: &PgPool,
     merchant_id: Uuid,
@@ -76,6 +77,7 @@ pub struct PaymentRequestWithWallet {
     pub network: String,
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, limit))]
 pub async fn payment_requests_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
@@ -97,6 +99,7 @@ pub async fn payment_requests_by_merchant(
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_request_id = %id))]
 pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<PaymentRequest>, sqlx::Error> {
     sqlx::query_as::<_, PaymentRequest>(
         "SELECT id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
@@ -109,6 +112,7 @@ pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payme
 }
 
 /// Looks up the pending request a detected deposit's memo correlates to, if any.
+#[tracing::instrument(skip_all, err, fields(wallet_id = %wallet_id))]
 pub async fn find_pending_by_wallet_and_memo(
     db: &PgPool,
     wallet_id: Uuid,
@@ -126,6 +130,7 @@ pub async fn find_pending_by_wallet_and_memo(
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_request_id = %id, %payment_id))]
 pub async fn mark_paid(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE payment_requests SET status = 'paid', payment_id = $2, updated_at = now() WHERE id = $1",
@@ -137,6 +142,7 @@ pub async fn mark_paid(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sq
     .map(|_| ())
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_request_id = %id, %payment_id))]
 pub async fn mark_partial(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE payment_requests SET status = 'partial', payment_id = $2, updated_at = now() WHERE id = $1",

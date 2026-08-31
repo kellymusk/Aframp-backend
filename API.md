@@ -331,6 +331,21 @@ Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200).
 
 `status` is `pending`, `processing`, `completed`, or `failed`. Show `failure_reason` on failed rows — it carries the provider's own wording.
 
+### `GET /withdrawals/{id}`
+Auth required. Returns one withdrawal — the same object shape `POST /withdraw` and `GET /withdrawals` return.
+
+Poll this to track a payout you just created, rather than re-reading the whole list and searching it:
+
+```js
+const { id } = await post("/withdraw", { amount_stroops, bank_code, account_number });
+const poll = setInterval(async () => {
+  const w = await get(`/withdrawals/${id}`);
+  if (w.status === "completed" || w.status === "failed") clearInterval(poll);
+}, 3000);
+```
+
+`404` if the id doesn't exist **or** belongs to another merchant — the two are deliberately indistinguishable, so guessing ids reveals nothing.
+
 ---
 
 ## Building the POS flow

@@ -12,6 +12,7 @@ pub enum CreateWalletError {
     Database(#[from] sqlx::Error),
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id))]
 pub async fn create_wallet(
     db: &PgPool,
     merchant_id: Uuid,
@@ -42,6 +43,7 @@ pub async fn create_wallet(
     .map_err(CreateWalletError::from)
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id))]
 pub async fn wallet_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
@@ -58,6 +60,7 @@ pub async fn wallet_by_merchant(
     .await
 }
 
+#[tracing::instrument(skip_all, err)]
 pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
         "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE network = 'stellar'",
@@ -66,6 +69,7 @@ pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(wallet_id = %id))]
 pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
         "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE id = $1",
@@ -75,6 +79,7 @@ pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx:
     .await
 }
 
+#[tracing::instrument(skip_all, err)]
 pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
         "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE address = $1",

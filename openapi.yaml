@@ -310,6 +310,30 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /withdrawals/{id}:
+    get:
+      tags: [Money]
+      summary: Read one withdrawal
+      description: >
+        The withdrawal returned by POST /withdraw, by id — poll this instead of
+        re-reading the whole list to watch a single payout's status. Scoped to
+        the authenticated merchant: another merchant's withdrawal answers 404,
+        exactly as a nonexistent id does.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Withdrawal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Withdrawal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:
