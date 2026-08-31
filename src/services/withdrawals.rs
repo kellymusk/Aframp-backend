@@ -22,6 +22,144 @@ pub enum WithdrawalError {
     Database(#[from] sqlx::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaystackTransferOutcome {
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaystackReconciliationResult {
+    Applied,
+    Duplicate,
+    AlreadyFinal,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PaystackWebhookError {
+    #[error("withdrawal referenced by Paystack was not found")]
+    WithdrawalNotFound,
+    #[error("withdrawal balance row was not found")]
+    BalanceNotFound,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+pub struct PaystackTransferReconciliation {
+    pub external_id: String,
+    pub reference: Option<String>,
+    pub transfer_code: Option<String>,
+    pub outcome: PaystackTransferOutcome,
+    pub failure_reason: Option<String>,
+    pub payload: serde_json::Value,
+}
+
+/// Applies a terminal Paystack transfer event exactly once. The webhook event,
+/// withdrawal transition, and any compensating refund share one transaction,
+/// so a retry cannot refund the merchant twice or leave an unaudited change.
+pub async fn reconcile_paystack_transfer(
+    db: &PgPool,
+    event: PaystackTransferReconciliation,
+) -> Result<PaystackReconciliationResult, PaystackWebhookError> {
+    let withdrawal_id = event
+        .reference
+        .as_deref()
+        .and_then(|reference| reference.parse::<Uuid>().ok());
+    let mut tx = db.begin().await?;
+
+    let withdrawal = sqlx::query_as::<_, Withdrawal>(
+        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                provider_reference, bank_code, account_number, failure_reason,
+                created_at, updated_at
+           FROM withdrawals
+          WHERE ($1::uuid IS NOT NULL AND id = $1)
+             OR ($2::text IS NOT NULL AND provider_reference = $2)
+          ORDER BY CASE WHEN id = $1 THEN 0 ELSE 1 END
+          LIMIT 1
+          FOR UPDATE",
+    )
+    .bind(withdrawal_id)
+    .bind(event.transfer_code.as_deref())
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(PaystackWebhookError::WithdrawalNotFound)?;
+
+    let inserted = sqlx::query(
+        "INSERT INTO webhook_events (merchant_id, provider, external_id, payload)
+         VALUES ($1, 'paystack', $2, $3)
+         ON CONFLICT (provider, external_id) DO NOTHING",
+    )
+    .bind(withdrawal.merchant_id)
+    .bind(&event.external_id)
+    .bind(&event.payload)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    if inserted == 0 {
+        tx.commit().await?;
+        return Ok(PaystackReconciliationResult::Duplicate);
+    }
+
+    if matches!(withdrawal.status.as_str(), "completed" | "failed") {
+        tx.commit().await?;
+        return Ok(PaystackReconciliationResult::AlreadyFinal);
+    }
+
+    match event.outcome {
+        PaystackTransferOutcome::Completed => {
+            sqlx::query(
+                "UPDATE withdrawals
+                    SET status = 'completed', provider = 'paystack',
+                        provider_reference = COALESCE($2, provider_reference),
+                        failure_reason = NULL, updated_at = now()
+                  WHERE id = $1",
+            )
+            .bind(withdrawal.id)
+            .bind(event.transfer_code.as_deref())
+            .execute(&mut *tx)
+            .await?;
+        }
+        PaystackTransferOutcome::Failed => {
+            let refunded = sqlx::query(
+                "UPDATE balances
+                    SET available = available + $2, updated_at = now()
+                  WHERE merchant_id = $1 AND asset = $3",
+            )
+            .bind(withdrawal.merchant_id)
+            .bind(withdrawal.amount_stroops)
+            .bind(&withdrawal.asset)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if refunded == 0 {
+                return Err(PaystackWebhookError::BalanceNotFound);
+            }
+
+            sqlx::query(
+                "UPDATE withdrawals
+                    SET status = 'failed', provider = 'paystack',
+                        provider_reference = COALESCE($2, provider_reference),
+                        failure_reason = $3, updated_at = now()
+                  WHERE id = $1",
+            )
+            .bind(withdrawal.id)
+            .bind(event.transfer_code.as_deref())
+            .bind(
+                event
+                    .failure_reason
+                    .as_deref()
+                    .unwrap_or("Paystack reported that the transfer failed"),
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(PaystackReconciliationResult::Applied)
+}
+
 pub async fn create_withdrawal(
     db: &PgPool,
     provider: &dyn PaymentProvider,

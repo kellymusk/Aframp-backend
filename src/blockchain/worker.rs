@@ -1,20 +1,44 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
+use tracing::Instrument;
 
 use crate::blockchain::stellar::{BlockchainListener, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
 use crate::services::{balances, payment_requests, payments, wallets};
 use crate::AppState;
 
-pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
-    let listener = StellarListener { horizon_url };
+pub async fn run(
+    state: Arc<AppState>,
+    horizon_url: String,
+    poll_interval_secs: u64,
+    poll_concurrency: usize,
+) {
+    let listener = StellarListener {
+        horizon_url,
+        poll_concurrency,
+    };
 
     loop {
-        if let Err(err) = poll_once(&state.db, &listener).await {
+        let started = Instant::now();
+        let span = tracing::info_span!(
+            "stellar_deposit_poll",
+            poll_concurrency,
+            poll_cycle_duration_ms = tracing::field::Empty
+        );
+        let result = poll_once(&state.db, &listener)
+            .instrument(span.clone())
+            .await;
+        span.record(
+            "poll_cycle_duration_ms",
+            started.elapsed().as_millis() as u64,
+        );
+
+        if let Err(err) = result {
             tracing::warn!(error = %err, "deposit poll failed");
         }
+        drop(span);
         tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
     }
 }
@@ -39,8 +63,13 @@ async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String
     Ok(())
 }
 
-async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
-    let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
+async fn process_deposit(
+    db: &PgPool,
+    d: crate::blockchain::stellar::DetectedDeposit,
+) -> Result<(), String> {
+    let Some(wallet) = wallets::wallet_by_address(db, &d.destination)
+        .await
+        .map_err(|e| e.to_string())?
     else {
         return Ok(());
     };

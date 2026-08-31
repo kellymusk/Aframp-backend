@@ -1,10 +1,61 @@
 use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use sha2::Sha512;
 
 use super::{PaymentProvider, PayoutRequest, PayoutResult};
 
 const BASE_URL: &str = "https://api.paystack.co";
+
+type HmacSha512 = Hmac<Sha512>;
+
+/// Verifies Paystack's `x-paystack-signature`, which is the lowercase hex
+/// HMAC-SHA512 digest of the exact request body.
+pub fn verify_webhook_signature(secret: &str, payload: &[u8], signature: &str) -> bool {
+    let Ok(signature) = hex::decode(signature.trim()) else {
+        return false;
+    };
+    let Ok(mut mac) = HmacSha512::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(payload);
+    mac.verify_slice(&signature).is_ok()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PaystackTransferWebhook {
+    pub event: String,
+    pub data: PaystackTransferWebhookData,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PaystackTransferWebhookData {
+    #[serde(default)]
+    pub id: Option<serde_json::Value>,
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub transfer_code: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+impl PaystackTransferWebhookData {
+    pub fn external_id(&self) -> Option<String> {
+        self.id
+            .as_ref()
+            .and_then(|id| match id {
+                serde_json::Value::String(value) => Some(value.clone()),
+                serde_json::Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .or_else(|| self.transfer_code.clone())
+            .or_else(|| self.reference.clone())
+    }
+}
 
 pub struct PaystackProvider {
     secret_key: String,
@@ -123,8 +174,8 @@ impl PaymentProvider for PaystackProvider {
 
         // Test-mode transfers resolve immediately with no real processing, so the
         // status on this response is authoritative for our purposes. Live mode is
-        // genuinely async (may require OTP finalization) and would need a webhook
-        // or a follow-up "verify transfer" call to reconcile the final status.
+        // genuinely async (and may require OTP finalization), so its terminal
+        // state is reconciled by the signed Paystack webhook endpoint.
         let transfer: Transfer = self
             .post(
                 "/transfer",
@@ -143,5 +194,25 @@ impl PaymentProvider for PaystackProvider {
             provider_reference: transfer.transfer_code,
             status: transfer.status,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_webhook_signature;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha512;
+
+    #[test]
+    fn verifies_the_exact_raw_payload() {
+        let secret = "test-webhook-secret";
+        let payload = br#"{"event":"transfer.success","data":{"id":42}}"#;
+        let mut mac = Hmac::<Sha512>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(payload);
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        assert!(verify_webhook_signature(secret, payload, &signature));
+        assert!(!verify_webhook_signature(secret, b"{}", &signature));
+        assert!(!verify_webhook_signature(secret, payload, "not-hex"));
     }
 }

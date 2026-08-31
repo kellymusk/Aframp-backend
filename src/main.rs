@@ -12,8 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -24,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.clone(),
         config.stellar_horizon_url.clone(),
         config.stellar_poll_interval_secs,
+        config.stellar_poll_concurrency,
     );
     tokio::spawn(listener);
 

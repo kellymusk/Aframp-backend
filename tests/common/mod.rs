@@ -13,23 +13,18 @@ static MIGRATION_LOCK: Mutex<()> = Mutex::new(());
 static MIGRATED: AtomicBool = AtomicBool::new(false);
 
 pub async fn state() -> Option<AppState> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        return None;
-    };
+    let url = std::env::var("TEST_DATABASE_URL")
+        .expect("TEST_DATABASE_URL must be set to run integration tests — see README");
     let db = match PgPoolOptions::new().max_connections(5).connect(&url).await {
         Ok(pool) => pool,
         Err(err) => {
-            eprintln!("TEST_DATABASE_URL could not be reached: {err}");
-            return None;
+            panic!("TEST_DATABASE_URL could not be reached: {err}");
         }
     };
 
     let _guard = MIGRATION_LOCK.lock().unwrap();
     if !MIGRATED.swap(true, Ordering::SeqCst) {
-        sqlx::migrate!()
-            .run(&db)
-            .await
-            .expect("migrations failed");
+        sqlx::migrate!().run(&db).await.expect("migrations failed");
     }
     drop(_guard);
 

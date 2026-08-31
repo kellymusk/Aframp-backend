@@ -29,7 +29,8 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         .max_connections(5)
         .connect(&config.database_url)
         .await?;
-    let wallet_encryption_key = blockchain::wallet_crypto::parse_key(&config.wallet_encryption_key)?;
+    let wallet_encryption_key =
+        blockchain::wallet_crypto::parse_key(&config.wallet_encryption_key)?;
     Ok(AppState {
         db,
         jwt_secret: config.jwt_secret.clone(),
@@ -60,14 +61,19 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/withdraw", axum::routing::post(api::withdrawals::create))
         .route("/withdrawals", axum::routing::get(api::withdrawals::list))
         .route(
+            "/webhook/paystack",
+            axum::routing::post(api::webhooks::paystack),
+        )
+        .route(
             "/payment-requests",
-            axum::routing::post(api::payment_requests::create)
-                .get(api::payment_requests::list),
+            axum::routing::post(api::payment_requests::create).get(api::payment_requests::list),
         )
         .route(
             "/payment-requests/{id}",
             axum::routing::get(api::payment_requests::get),
         )
         .with_state(state)
-        .layer(axum::middleware::from_fn(middleware::require_json_content_type))
+        .layer(axum::middleware::from_fn(
+            middleware::require_json_content_type,
+        ))
 }

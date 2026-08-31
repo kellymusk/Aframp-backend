@@ -43,7 +43,7 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 | Payment request generation | ✅ Done | `POST /payment-requests` creates a request with a unique correlation memo and expiry; `GET /payment-requests/{id}` is deliberately public (no auth) so a customer's wallet can read it before paying |
 | QR-based payment (XLM) | ✅ Done | Every XLM payment request includes a SEP-0007 `web+stellar:pay` URI. Verified live: correct destination address, exact amount conversion (`25000000` stroops → `2.5000000` in the URI). Detection now correlates a specific incoming payment to its request via Stellar memo (Horizon queried with `join=transactions`), not just "something arrived" |
 | Withdrawal request + ledger accounting | ✅ Done | `/withdraw` atomically debits `available` balance and records the request; insufficient-balance and validation checks are enforced in the same DB transaction |
-| Paystack Transfers wired into `/withdraw` | ✅ Done | Real calls to Paystack's Transfers API (resolve account → create recipient → initiate transfer), live-tested against three distinct real failure modes (bad account, amount below minimum, insufficient platform balance) — every one correctly triggers a refund + `failed` audit-trail row, never a silent loss of the ledger record |
+| Paystack Transfers wired into `/withdraw` | ✅ Done | Real calls to Paystack's Transfers API (resolve account → create recipient → initiate transfer). Signed `transfer.success` and `transfer.failed` webhooks reconcile pending withdrawals, with deduplication, raw-event auditing, and exactly-once failed-transfer refunds |
 
 ### What's still a stub or missing
 
@@ -64,7 +64,7 @@ See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider cho
 
 - A merchant signs up (`/signup`) and creates a wallet (`/wallet/create`), which generates a real Stellar keypair. The public address is returned; the private key is encrypted and stored server-side — this is a **custodial** design, not "bring your own wallet."
 - A merchant creates a payment request for an amount (`/payment-requests`) and gets back a destination, a correlation memo, and — for XLM — a scannable QR payload.
-- A background worker polls Horizon for every merchant wallet's address on a timer (`STELLAR_POLL_INTERVAL_SECS`), detects incoming payments (with the transaction memo joined in), and moves them through Postgres into that merchant's balance — marking the matching payment request `paid` if the memo correlates to one.
+- A background worker polls Horizon for every merchant wallet's address on a timer (`STELLAR_POLL_INTERVAL_SECS`), with bounded concurrency controlled by `STELLAR_POLL_CONCURRENCY`. It detects incoming payments (with the transaction memo joined in) and moves them through Postgres into that merchant's balance — marking a non-expired matching payment request `paid` if the memo correlates to one.
 - Merchants can withdraw their available balance (`/withdraw`) to a Nigerian bank account. The Paystack integration itself is real and tested; what's missing is money to actually send — see gaps above.
 
 The originally-planned memo-based correlation model (one shared system wallet, deposits routed by transaction memo) was replaced with real per-merchant wallets during development — simpler to reason about and matches how a QR-code-per-merchant product actually needs to work.
@@ -100,11 +100,12 @@ Fill in `.env`:
 | `DATABASE_URL` | yes | — | Postgres connection string |
 | `APP_BIND_ADDR` | no | `127.0.0.1:3000` | Address the HTTP server binds to |
 | `JWT_SECRET` | yes | — | Secret used to sign merchant session tokens. Generate with `openssl rand -hex 32` |
-| `WEBHOOK_SECRET` | yes | — | Secret used to verify inbound provider webhooks. Generate with `openssl rand -hex 32` |
+| `WEBHOOK_SECRET` | yes | — | Paystack API secret key used to verify inbound webhook signatures; set it to the same test/live key as `PAYSTACK_SECRET_KEY` |
 | `WALLET_ENCRYPTION_KEY` | yes | — | AES-256-GCM key encrypting Stellar wallet secrets at rest. Generate with `openssl rand -hex 32` (must decode to exactly 32 bytes) |
 | `STELLAR_SYSTEM_WALLET_ADDRESS` | yes | — | Reserved for a future platform settlement/sweep wallet. Validated at startup but not used by deposit detection today (see [Status](#status-real-progress-not-aspiration)) |
 | `STELLAR_HORIZON_URL` | no | `https://horizon-testnet.stellar.org` | Horizon endpoint to poll |
 | `STELLAR_POLL_INTERVAL_SECS` | no | `60` | How often the deposit-detection worker polls Horizon, per wallet |
+| `STELLAR_POLL_CONCURRENCY` | no | `20` | Maximum Horizon wallet requests in flight during a poll cycle |
 | `PAYSTACK_SECRET_KEY` | yes | — | Paystack Dashboard → Settings → API Keys & Webhooks. `sk_test_...` for dev, `sk_live_...` only once the business is verified/activated for Transfers (see `PRD.md` §9.1) |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
@@ -169,7 +170,9 @@ The Worker has a five-minute Cron Trigger that calls `/health`. This keeps the c
 
 ### Running tests
 
-Integration tests need a separate database, and **silently skip with a false "ok" if it isn't configured** — this bit us during development (a full green `cargo test` run had actually tested nothing). Always set `TEST_DATABASE_URL` before trusting the result:
+> **Integration tests require `TEST_DATABASE_URL`.** The test setup deliberately panics when it is missing or unreachable, so a green `cargo test` can no longer hide a skipped integration suite.
+
+Use a separate database and set the variable before running the suite:
 
 ```bash
 docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;"
@@ -199,7 +202,14 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
+| `POST` | `/webhook/paystack` | Paystack signature | Reconcile `transfer.success` and `transfer.failed` events. Failed transfers refund the debited balance exactly once |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
+
+### Paystack webhook configuration
+
+In Paystack Dashboard → Settings → API Keys & Webhooks, set the webhook URL to the public HTTPS URL for `POST /webhook/paystack` (for example, `https://api.example.com/webhook/paystack`). Paystack signs events with the API secret key, so set `WEBHOOK_SECRET` to the same test/live key used by `PAYSTACK_SECRET_KEY`.
+
+The endpoint verifies the `x-paystack-signature` HMAC-SHA512 against the exact request bytes before parsing JSON. Valid `transfer.success` events mark the referenced withdrawal `completed`; valid `transfer.failed` events mark it `failed`, record the failure reason, and restore the debited balance. Raw payloads are retained in `webhook_events`, and Paystack event ids deduplicate retries.
 
 `/signup` and `/login` both return:
 
