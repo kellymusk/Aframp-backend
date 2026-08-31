@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::blockchain::{keypair, wallet_crypto};
-use crate::models::{NewWallet, Wallet};
+use crate::models::{NewWallet, Wallet, WalletSecretRow};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CreateWalletError {
@@ -80,6 +80,24 @@ pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wall
         "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE address = $1",
     )
     .bind(address)
+    .fetch_optional(db)
+    .await
+}
+
+/// Loads a wallet's row including its encrypted secret seed. This is the
+/// *only* function in the codebase that should select
+/// `secret_key_encrypted` — everything else uses the [`Wallet`] shape,
+/// which cannot carry it because that struct has no such field. Intended
+/// for the blockchain module (signing an outbound transaction); an API
+/// handler must never call this.
+pub async fn wallet_secret_by_id(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<WalletSecretRow>, sqlx::Error> {
+    sqlx::query_as::<_, WalletSecretRow>(
+        "SELECT id, merchant_id, address, network, secret_key_encrypted FROM wallets WHERE id = $1",
+    )
+    .bind(id)
     .fetch_optional(db)
     .await
 }

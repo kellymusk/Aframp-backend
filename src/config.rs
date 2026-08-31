@@ -93,18 +93,73 @@ impl AppConfig {
                 .unwrap_or(60),
             wallet_encryption_key: SecretString::new(env("WALLET_ENCRYPTION_KEY")?),
             paystack_secret_key: SecretString::new(env("PAYSTACK_SECRET_KEY")?),
-            cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
-                .unwrap_or_else(|_| "http://localhost:3001".into())
-                .split(',')
-                .map(|origin| origin.trim().to_string())
-                .filter(|origin| !origin.is_empty())
-                .collect(),
+            cors_allowed_origins: parse_cors_origins(
+                &std::env::var("CORS_ALLOWED_ORIGINS")
+                    .unwrap_or_else(|_| "http://localhost:3001".into()),
+            )?,
             cookie: CookieConfig {
                 secure: cookie_secure,
                 same_site: cookie_same_site,
             },
         })
     }
+}
+
+/// Parses `CORS_ALLOWED_ORIGINS` into a list of validated origins, failing
+/// fast with a clear message rather than letting a malformed value surface
+/// later as an opaque panic from `HeaderValue` parsing in `main.rs`, or
+/// silently reach the CORS layer as a value it doesn't handle the way the
+/// operator expects.
+fn parse_cors_origins(raw: &str) -> Result<Vec<String>, String> {
+    raw.split(',')
+        .map(|origin| origin.trim())
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            validate_origin(origin)?;
+            Ok(origin.to_string())
+        })
+        .collect()
+}
+
+/// An "origin" is scheme + host [+ port] only — no path, query, fragment, or
+/// userinfo. `http::Uri` already gives us a real URL parser without pulling
+/// in a new dependency (`http` is already required by `axum`).
+fn validate_origin(origin: &str) -> Result<(), String> {
+    if origin == "*" {
+        return Err(
+            "CORS_ALLOWED_ORIGINS: wildcard `*` is not allowed — this API sends credentials \
+             (the session cookie), and browsers reject a wildcard origin on a credentialed \
+             request anyway. List each allowed origin explicitly."
+                .into(),
+        );
+    }
+
+    let uri: http::Uri = origin
+        .parse()
+        .map_err(|_| format!("CORS_ALLOWED_ORIGINS: `{origin}` is not a valid URL"))?;
+
+    let scheme = uri.scheme_str().ok_or_else(|| {
+        format!("CORS_ALLOWED_ORIGINS: `{origin}` must include a scheme (http:// or https://)")
+    })?;
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` scheme must be http or https, got `{scheme}`"
+        ));
+    }
+    if uri.host().is_none() {
+        return Err(format!("CORS_ALLOWED_ORIGINS: `{origin}` must include a host"));
+    }
+    if !matches!(uri.path(), "" | "/") {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` must not include a path — an origin is scheme + host + port only"
+        ));
+    }
+    if uri.query().is_some() {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` must not include a query string"
+        ));
+    }
+    Ok(())
 }
 
 fn env(name: &str) -> Result<String, String> {
