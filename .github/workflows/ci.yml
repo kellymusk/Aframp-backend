@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on warnings everywhere, not only in the clippy step: a warning that
+  # only clippy sees is a warning the next contributor learns to ignore.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  ci:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Matches the Docker command in the README, so a green CI run means
+        # the same thing a green local run does.
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aframp_test
+        ports:
+          - 5432:5432
+        # Without this the first migration can race the server's own startup.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
+
+      - name: Run migrations
+        # The same loop the README documents, so the schema CI tests against is
+        # built the way a developer builds theirs.
+        run: |
+          for f in migrations/*.sql; do
+            echo "applying $f"
+            psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Test
+        # The integration tests skip themselves when TEST_DATABASE_URL is unset
+        # — which once produced a fully green run that had tested nothing. It is
+        # set in this job's env above precisely so that cannot happen here.
+        run: cargo test --all-targets

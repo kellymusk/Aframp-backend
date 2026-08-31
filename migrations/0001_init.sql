@@ -72,6 +72,13 @@ CREATE TABLE api_keys (
   revoked_at TIMESTAMPTZ
 );
 
+-- Idempotency ledger for inbound provider webhooks. The UNIQUE below is the
+-- deduplication mechanism: the handler inserts before processing, and a unique
+-- violation means "already handled, acknowledge and stop".
+-- `external_id` holds the provider's own event id (Paystack: the top-level
+-- `id`, not `data.reference`).
+-- NOTE: `merchant_id` is relaxed to nullable in 0007 — provider events are
+-- platform-level and must be recordable before they are attributed.
 CREATE TABLE webhook_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   merchant_id UUID NOT NULL REFERENCES merchants(id),

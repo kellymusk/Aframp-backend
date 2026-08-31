@@ -147,6 +147,44 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
 
 ---
 
+## API keys
+
+A JWT expires in 24 hours and has no refresh endpoint — fine for a browser session, useless for a server that has to keep working overnight. API keys are the credential for that: long-lived, merchant-scoped, and revocable one at a time without disturbing anything else.
+
+A key looks like `sk_test_a1b2c3d4<32 hex chars>`. Send it exactly where a JWT would go:
+
+```
+Authorization: Bearer sk_test_a1b2c3d4…
+```
+
+Every authenticated endpoint accepts either. The `sk_` prefix is what distinguishes them, so there is no ambiguity and no second header to learn.
+
+### `POST /api-keys`
+Auth required (**JWT only** — a key cannot mint another key, so a leaked key cannot be used to establish persistence).
+
+Body: `{ "environment": "test" }` — `test` or `live`, defaulting to `test`.
+
+`201` →
+```json
+{
+  "id": "9f0c14a6-0d5f-4b7a-9d7e-27dcbb9e5b41",
+  "key_prefix": "sk_test_a1b2c3d4",
+  "environment": "test",
+  "created_at": "2026-08-31T09:12:44.019Z",
+  "secret": "sk_test_a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+}
+```
+
+> **`secret` is shown exactly once.** Only its Argon2 hash is stored, so we cannot show it again and neither can a database dump. Store it at the moment of creation; if it is lost, revoke the key and create another.
+
+### `GET /api-keys`
+Auth required. Active (non-revoked) keys for the merchant, newest first. Returns `key_prefix`, never the secret — the prefix is what you display in a settings UI to let someone tell two keys apart.
+
+### `DELETE /api-keys/{id}`
+Auth required. Stamps `revoked_at`; the key stops authenticating immediately. `404` if the id doesn't exist, belongs to another merchant, or was already revoked — the three are deliberately indistinguishable.
+
+---
+
 ### `POST /wallet/create`
 Auth required. Generates a **real Stellar ed25519 keypair** for the merchant. The private key is AES-256-GCM encrypted server-side and never leaves it.
 

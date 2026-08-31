@@ -31,6 +31,12 @@ pub fn conflict(message: &str) -> (StatusCode, Json<ApiError>) {
     error(StatusCode::CONFLICT, message)
 }
 
+/// The caller is authenticated but this credential is not allowed to do this.
+/// Distinct from `unauthorized`, which means "prove who you are".
+pub fn forbidden(message: &str) -> (StatusCode, Json<ApiError>) {
+    error(StatusCode::FORBIDDEN, message)
+}
+
 pub fn not_found(message: &str) -> (StatusCode, Json<ApiError>) {
     error(StatusCode::NOT_FOUND, message)
 }

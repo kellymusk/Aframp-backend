@@ -1,5 +1,7 @@
 # Aframp
 
+[![CI](https://github.com/kellymusk/Aframp-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/kellymusk/Aframp-backend/actions/workflows/ci.yml)
+
 **Building the POS network for Stellar in Africa.**
 
 Aframp brings Stellar-powered payments into everyday physical commerce, starting in Nigeria. The idea is simple: Nigerians already understand the POS terminal — tap, transfer, withdraw. Aframp adds another familiar option on top of that muscle memory: **scan and pay**, settled on Stellar, without the merchant or customer ever needing to think about wallets, addresses, or blockchains.
@@ -235,6 +237,28 @@ pay.example.com {
 Caddy provisions and renews the certificate itself. With this, the frontend calls `/api/me` as a relative path, sends no `Authorization` header, and never touches the token.
 
 If the frontend genuinely must live on a separate origin, set `CORS_ALLOWED_ORIGINS` to it and `COOKIE_SAME_SITE=none` — and understand that you have then opted into cross-site cookie sending and need to think about CSRF. (Today's saving grace is that every mutating route uses the JSON extractor, so a cross-site HTML form POST can't reach one; don't rely on that if you add form-encoded endpoints.)
+
+## Secrets and logging
+
+`JWT_SECRET`, `WEBHOOK_SECRET`, `WALLET_ENCRYPTION_KEY` and `PAYSTACK_SECRET_KEY` are held as
+`SecretString`, whose `Debug` and `Display` both print `[REDACTED]`. `AppConfig` therefore stays
+safe to `{:?}`, and `PaystackProvider` has a hand-written `Debug` for the same reason — a
+`tracing` field pointing at either one cannot leak a key.
+
+The one path that still can is **not ours**: the Paystack key travels as
+`Authorization: Bearer sk_…` on every outgoing call, and `reqwest` logs request headers verbatim
+under its own targets. An unscoped filter is enough to capture a live key:
+
+```bash
+RUST_LOG=debug          # ⚠ includes reqwest — logs the Paystack key
+RUST_LOG=reqwest=debug  # ⚠ same
+RUST_LOG=aframp=debug   # ✅ this crate only, spans included
+```
+
+The client is built with `connection_verbose(false)` so reqwest's wire-level logging stays off
+whatever the filter says, but the header-level logging is the filter's call — always scope
+`RUST_LOG` to `aframp` in any environment holding an `sk_live_` key. If a key does reach a log,
+rotate it in the Paystack dashboard; the value in the log is usable as-is.
 
 ## Project layout
 

@@ -35,8 +35,11 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         jwt_secret: config.jwt_secret.clone(),
         webhook_secret: config.webhook_secret.clone(),
         wallet_encryption_key: std::sync::Arc::new(wallet_encryption_key),
-        payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::new(
-            config.paystack_secret_key.as_str().to_string(),
+        // Hand the secret over as a `SecretString` rather than unwrapping it to
+        // a bare `String` here — the plaintext never exists as a loggable value
+        // anywhere between the environment and `bearer_auth`.
+        payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::with_secret(
+            config.paystack_secret_key.clone(),
         )),
         cookie: config.cookie,
     })
@@ -53,6 +56,14 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/login", axum::routing::post(api::auth::login))
         .route("/logout", axum::routing::post(api::auth::logout))
         .route("/me", axum::routing::get(api::me::get))
+        .route(
+            "/api-keys",
+            axum::routing::post(api::api_keys::create).get(api::api_keys::list),
+        )
+        .route(
+            "/api-keys/{id}",
+            axum::routing::delete(api::api_keys::revoke),
+        )
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))
         .route("/balance", axum::routing::get(api::balances::get))

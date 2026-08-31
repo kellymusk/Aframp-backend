@@ -19,6 +19,7 @@ tags:
   - name: Wallet
   - name: Payment requests
   - name: Money
+  - name: API keys
 
 # Either authenticates. The Authorization header wins when both are sent.
 security:
@@ -128,6 +129,79 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api-keys:
+    post:
+      tags: [API keys]
+      summary: Create an API key
+      description: >
+        Mints a long-lived, merchant-scoped credential for server-to-server
+        callers, for whom a 24-hour JWT with no refresh endpoint is unusable.
+        Session-authenticated only: an API key cannot mint another API key, so
+        a leaked key cannot issue itself a replacement and survive revocation.
+        The `secret` in the response is shown exactly once — only its Argon2
+        hash is stored.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApiKeyRequest' }
+      responses:
+        '201':
+          description: Key created. Store `secret` now; it is never shown again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Authenticated with an API key; this endpoint requires a session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+    get:
+      tags: [API keys]
+      summary: List active API keys
+      description: >
+        Active (non-revoked) keys, newest first. Secrets are never returned —
+        `key_prefix` is the handle to display so two keys can be told apart.
+      responses:
+        '200':
+          description: Active keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api-keys/{id}:
+    delete:
+      tags: [API keys]
+      summary: Revoke an API key
+      description: >
+        Stamps `revoked_at`; the key stops authenticating immediately. A 404
+        covers "no such id", "another merchant's key", and "already revoked"
+        alike — the three are deliberately indistinguishable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The revoked key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -317,8 +391,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >
-        HS256, 24h expiry. No refresh endpoint — a 401 means re-login. For API
-        clients and scripts; browsers should use cookieAuth instead.
+        Two kinds of bearer travel on this header. A `sk_`-prefixed value is a
+        long-lived API key (see POST /api-keys); anything else is a session
+        JWT — HS256, 24h expiry, no refresh endpoint, so a 401 means re-login.
+        Browsers should use cookieAuth instead of either.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -393,6 +469,47 @@ components:
           format: uuid
           nullable: true
           description: Null for an account with no merchant; such accounts get 400 from merchant-scoped endpoints.
+
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        environment:
+          type: string
+          enum: [test, live]
+          default: test
+          description: Defaults to the safe half of the choice, so an omitted field cannot mint a live key.
+
+    ApiKey:
+      type: object
+      required: [id, merchant_id, key_prefix, environment, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        key_prefix:
+          type: string
+          example: sk_test_a1b2c3d4
+          description: The clear-text handle of the key. Displayable; not a credential on its own.
+        environment: { type: string, enum: [test, live] }
+        created_at: { type: string, format: date-time }
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreatedApiKey:
+      type: object
+      required: [id, key_prefix, environment, created_at, secret]
+      properties:
+        id: { type: string, format: uuid }
+        key_prefix: { type: string, example: sk_test_a1b2c3d4 }
+        environment: { type: string, enum: [test, live] }
+        created_at: { type: string, format: date-time }
+        secret:
+          type: string
+          example: sk_test_a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4
+          description: >
+            The full key, returned once and never again. Send it as
+            `Authorization: Bearer sk_...` on any authenticated endpoint.
 
     Me:
       type: object
