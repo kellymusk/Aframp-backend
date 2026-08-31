@@ -1,3 +1,42 @@
+//! Shared setup for the end-to-end flow tests in this directory
+//! (`auth_flow.rs`, `wallet_flow.rs`, `payment_request_flow.rs`,
+//! `withdrawal_flow.rs`).
+//!
+//! **Migrations, once per process.** [`state()`] runs `sqlx::migrate!()`
+//! exactly once (guarded by [`MIGRATED`]/[`MIGRATION_LOCK`]) the first time
+//! any test calls it, then hands out a pool to a database that already has
+//! the full schema. Every test file in this crate shares one `cargo test`
+//! process, so this only runs once per `cargo test` invocation, not once per
+//! test.
+//!
+//! **No per-test isolation.** There is currently no schema-per-test,
+//! transactional rollback, or truncation between tests: every test that
+//! calls [`state()`] shares one physical database and its rows persist
+//! across tests. That is why every helper that creates a merchant
+//! ([`ensure_merchant`]) generates a fresh random email — tests avoid
+//! collisions by never reusing identity, not by the database resetting
+//! itself. A test that lists or counts rows scoped to something other than
+//! its own freshly created merchant/wallet/etc. will observe leftovers from
+//! every other test that has run against the same database.
+//!
+//! **Parallelism.** Rust runs test functions concurrently by default
+//! (`cargo test -- --test-threads=N`). That is safe here specifically
+//! *because* of the point above — tests only assert against data scoped to
+//! identifiers they just created — but it means adding a test that queries
+//! unscoped state (e.g. "assert exactly one payment exists") would be a race
+//! against every other test in the suite, not a bug in the runner.
+//!
+//! **No teardown.** Nothing here deletes rows after a test runs. The target
+//! database (`TEST_DATABASE_URL`) is treated as disposable and expected to
+//! accumulate rows across runs; drop and recreate it if that accumulation
+//! ever matters (e.g. before a run that asserts on total row counts).
+//!
+//! **Silent skip.** [`state()`] returns `None` — not a panic — when
+//! `TEST_DATABASE_URL` is unset or unreachable, and every test built on it is
+//! written to pass trivially in that case. See the README's "Running tests"
+//! section: a fully green `cargo test` can mean "everything passed" or
+//! "nothing ran," and only setting `TEST_DATABASE_URL` distinguishes them.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
