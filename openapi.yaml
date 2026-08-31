@@ -195,17 +195,25 @@ paths:
     get:
       tags: [Payment requests]
       summary: List the merchant's payment requests
-      description: Newest first, scoped to the authenticated merchant.
+      description: >
+        Newest first, scoped to the authenticated merchant. Supports
+        conditional requests: send back the `ETag` from a prior response as
+        `If-None-Match` to get `304 Not Modified` when nothing changed.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IfNoneMatch'
       responses:
         '200':
           description: Payment requests
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/PaymentRequest' }
+        '304':
+          description: Not Modified — client's cached copy is still current
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -251,16 +259,25 @@ paths:
     get:
       tags: [Money]
       summary: Detected incoming payments
+      description: >
+        Supports conditional requests: send back the `ETag` from a prior
+        response as `If-None-Match` to get `304 Not Modified` when nothing
+        changed.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IfNoneMatch'
       responses:
         '200':
           description: Payments
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Payment' }
+        '304':
+          description: Not Modified — client's cached copy is still current
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -335,6 +352,19 @@ components:
       required: false
       description: Max rows to return. Clamped server-side to 1-200.
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: >
+        ETag from a prior response. If it still matches, the server returns
+        304 Not Modified instead of the full payload.
+      schema: { type: string }
+
+  headers:
+    ETag:
+      description: Hash of the response payload. Echo it back as If-None-Match to poll cheaply.
+      schema: { type: string }
 
   responses:
     BadRequest:

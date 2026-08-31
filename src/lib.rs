@@ -3,6 +3,7 @@ mod auth;
 pub mod blockchain;
 mod config;
 mod error;
+mod etag;
 mod middleware;
 mod models;
 pub mod payments;
