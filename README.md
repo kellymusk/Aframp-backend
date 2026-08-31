@@ -56,7 +56,7 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 | TLS | The server speaks plain HTTP by design and must run behind a TLS-terminating reverse proxy. Deployed without one, passwords cross the network in cleartext and no amount of hashing helps — the attacker sees the password before it is hashed. See [Deploying behind TLS](#deploying-behind-tls) |
 | Login rate limiting | Nothing throttles password guessing against `/login` yet |
 | Token revocation | `POST /logout` clears the browser cookie, but a JWT already copied elsewhere stays valid for its full 24h. No revocation list, no refresh rotation |
-| `src/stellar/mod.rs` | Vestigial stub from an earlier, abandoned design (single system wallet + memo-based correlation). Not compiled into the binary's active module tree in any meaningful way, superseded by the per-wallet design in `src/blockchain/`. Left in place as known cleanup debt rather than silently deleted. |
+| `src/stellar/mod.rs` | Vestigial stub from an earlier, abandoned design (single system wallet + memo-based correlation). Not compiled into the binary's active module tree in any meaningful way, superseded by the per-wallet design in `src/blockchain/`. Left in place as known cleanup debt rather than silently deleted — tracked for removal in [#970](https://github.com/kellymusk/Aframp-backend/issues/970), and marked `#[deprecated]` in the source so the debt is visible at the call site rather than only here. |
 
 See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider choice, cNGN issuer sourcing, confirmation policy) and roadmap.
 
@@ -175,6 +175,30 @@ Integration tests need a separate database, and **silently skip with a false "ok
 docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;"
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test cargo test
 ```
+
+### Structured logging
+
+Every service function and the deposit worker's `poll_once` / `process_deposit` carry a
+[`tracing`](https://docs.rs/tracing) span, so a slow withdrawal is distinguishable from a slow
+deposit and an API call can be correlated with the database work it caused. Turn the spans on with
+`RUST_LOG`:
+
+```bash
+# The whole app at debug, spans included.
+RUST_LOG=aframp=debug cargo run
+
+# Just the deposit worker and the withdrawal service.
+RUST_LOG=aframp::blockchain=debug,aframp::services::withdrawals=debug cargo run
+```
+
+Spans use `skip_all`, so no argument is recorded unless it is named explicitly in `fields(...)`.
+Only identifiers, amounts and asset codes are named there — bank account numbers, passwords, and
+wallet secret seeds are never recorded on a span, even at `trace` level.
+
+> `RUST_LOG=debug` (with no target filter) also turns on `reqwest`'s own logging, which prints
+> outgoing request headers — including the `Authorization: Bearer sk_live_…` header carrying the
+> Paystack secret key. Prefer a target-scoped filter such as `aframp=debug` in any environment
+> holding a live key.
 
 ## API reference
 

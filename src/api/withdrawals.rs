@@ -1,9 +1,10 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult};
+use crate::error::{bad_gateway, bad_request, bad_request_field, internal, not_found, ApiResult};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
 use crate::services::withdrawals::{self, WithdrawalError};
 use crate::validation::{is_valid_account_number, is_valid_bank_code};
@@ -66,6 +67,26 @@ pub async fn list(
         .await
         .map_err(internal)?;
     Ok(Json(withdrawals))
+}
+
+/// A single withdrawal by id, so a frontend polling the status of the row it
+/// just created doesn't have to pull the whole list and search it.
+pub async fn get(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Withdrawal>> {
+    let merchant_id = auth
+        .merchant_id
+        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+    let withdrawal = withdrawals::withdrawal_by_id_for_merchant(&state.db, id, merchant_id)
+        .await
+        .map_err(internal)?
+        // Someone else's withdrawal answers the same way a nonexistent one
+        // does, so an id guessed at random reveals nothing about whether it
+        // exists.
+        .ok_or_else(|| not_found("withdrawal not found"))?;
+    Ok(Json(withdrawal))
 }
 
 fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {

@@ -19,6 +19,7 @@ pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: 
     }
 }
 
+#[tracing::instrument(skip_all, err)]
 async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
     let addresses: Vec<String> = wallets::all_wallets(db)
         .await
@@ -39,6 +40,7 @@ async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String
     Ok(())
 }
 
+#[tracing::instrument(skip_all, err, fields(tx_hash = %d.tx_hash, destination = %d.destination, amount_stroops = d.amount_stroops, asset = %d.asset))]
 async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
     let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
     else {

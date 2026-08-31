@@ -15,6 +15,7 @@ pub enum UserError {
     Hash,
 }
 
+#[tracing::instrument(skip_all, err)]
 pub async fn signup(
     db: &PgPool,
     email: &str,
@@ -65,6 +66,7 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
     )
 }
 
+#[tracing::instrument(skip_all, err)]
 pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
     let user = sqlx::query_as::<_, User>(
         "SELECT id, email, password_hash, name, created_at, updated_at FROM users WHERE email = $1",
@@ -88,6 +90,7 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     Ok((user, merchant))
 }
 
+#[tracing::instrument(skip_all, err, fields(%user_id))]
 pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>(
         "SELECT id, email, password_hash, name, created_at, updated_at FROM users WHERE id = $1",
@@ -97,6 +100,7 @@ pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(%user_id))]
 pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
@@ -106,6 +110,7 @@ pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(%merchant_id))]
 pub async fn merchant_by_id(db: &PgPool, merchant_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, created_at FROM merchants WHERE id = $1",

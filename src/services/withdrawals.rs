@@ -22,6 +22,7 @@ pub enum WithdrawalError {
     Database(#[from] sqlx::Error),
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %withdrawal.merchant_id, amount_stroops = withdrawal.amount_stroops, asset = %withdrawal.asset))]
 pub async fn create_withdrawal(
     db: &PgPool,
     provider: &dyn PaymentProvider,
@@ -141,6 +142,30 @@ pub async fn create_withdrawal(
     }
 }
 
+/// One withdrawal, scoped to the merchant that owns it. The `merchant_id`
+/// is part of the query rather than checked afterwards so another merchant's
+/// row is indistinguishable from a row that does not exist — an IDOR probe
+/// learns nothing from the 404.
+#[tracing::instrument(skip_all, err, fields(withdrawal_id = %id, merchant_id = %merchant_id))]
+pub async fn withdrawal_by_id_for_merchant(
+    db: &PgPool,
+    id: Uuid,
+    merchant_id: Uuid,
+) -> Result<Option<Withdrawal>, sqlx::Error> {
+    sqlx::query_as::<_, Withdrawal>(
+        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
+                provider_reference, bank_code, account_number, failure_reason,
+                created_at, updated_at
+           FROM withdrawals
+          WHERE id = $1 AND merchant_id = $2",
+    )
+    .bind(id)
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, limit))]
 pub async fn withdrawals_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
