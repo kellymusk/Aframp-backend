@@ -145,6 +145,17 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
 
 `merchant_id` and `merchant_name` are `null` for an account with no merchant. The password hash is never serialized.
 
+### `PATCH /me`
+Auth required. Updates the signed-in user's name. Also updates the merchant's name if the account has a merchant profile, so the two never drift apart.
+
+```json
+{ "name": "New Shop Name" }
+```
+
+`200` → same shape as `GET /me`, reflecting the update.
+
+Errors: `400 "name": "must be provided"` if omitted; `400 "name": "..."` if it fails `validate_name` (empty or over 100 characters).
+
 ---
 
 ### `POST /wallet/create`

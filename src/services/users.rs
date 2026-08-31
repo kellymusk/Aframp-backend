@@ -39,7 +39,7 @@ pub async fn signup(
     let merchant = sqlx::query_as::<_, Merchant>(
         "INSERT INTO merchants (user_id, name)
          VALUES ($1, $2)
-         RETURNING id, user_id, name, created_at",
+         RETURNING id, user_id, name, created_at, updated_at",
     )
     .bind(user.id)
     .bind(name)
@@ -79,7 +79,7 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     }
 
     let merchant = sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
+        "SELECT id, user_id, name, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
     .bind(user.id)
     .fetch_optional(db)
@@ -99,7 +99,7 @@ pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>
 
 pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
+        "SELECT id, user_id, name, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
     .bind(user_id)
     .fetch_optional(db)
@@ -108,9 +108,42 @@ pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option
 
 pub async fn merchant_by_id(db: &PgPool, merchant_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at FROM merchants WHERE id = $1",
+        "SELECT id, user_id, name, created_at, updated_at FROM merchants WHERE id = $1",
     )
     .bind(merchant_id)
     .fetch_optional(db)
     .await
+}
+
+/// Updates the user's name and, if they have a merchant profile, the
+/// merchant's name too, in a single transaction so the two never drift apart.
+pub async fn update_name(
+    db: &PgPool,
+    user_id: uuid::Uuid,
+    name: &str,
+) -> Result<(User, Option<Merchant>), sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    let user = sqlx::query_as::<_, User>(
+        "UPDATE users SET name = $1, updated_at = now()
+         WHERE id = $2
+         RETURNING id, email, password_hash, name, created_at, updated_at",
+    )
+    .bind(name)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let merchant = sqlx::query_as::<_, Merchant>(
+        "UPDATE merchants SET name = $1, updated_at = now()
+         WHERE user_id = $2
+         RETURNING id, user_id, name, created_at, updated_at",
+    )
+    .bind(name)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((user, merchant))
 }

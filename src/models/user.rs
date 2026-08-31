@@ -22,6 +22,11 @@ pub struct SignupRequest {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct UpdateMeRequest {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,

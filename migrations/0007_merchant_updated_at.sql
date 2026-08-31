@@ -1,0 +1,2 @@
+ALTER TABLE merchants
+ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
