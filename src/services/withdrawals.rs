@@ -8,6 +8,12 @@ use crate::payments::{PaymentProvider, PayoutRequest};
 /// cNGN is pegged 1:1 to NGN, so 1 kobo = 100,000 stroops.
 const STROOPS_PER_KOBO: i64 = 100_000;
 
+/// Paystack flat fee in kobo (₦100 = 10,000 kobo)
+const PAYSTACK_FLAT_FEE_KOBO: i64 = 10_000;
+
+/// Paystack flat fee in stroops
+const PAYSTACK_FEE_STROOPS: i64 = PAYSTACK_FLAT_FEE_KOBO * STROOPS_PER_KOBO;
+
 #[derive(Debug, thiserror::Error)]
 pub enum WithdrawalError {
     #[error("insufficient available balance")]
@@ -20,6 +26,15 @@ pub enum WithdrawalError {
     PayoutFailed(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+}
+
+/// Calculate withdrawal fee and net amount.
+/// Returns (fee_stroops, net_amount_stroops).
+/// Fee is Paystack's flat ₦100 fee.
+pub fn calculate_withdrawal_fee(amount_stroops: i64) -> (i64, i64) {
+    let fee = PAYSTACK_FEE_STROOPS;
+    let net = amount_stroops.saturating_sub(fee).max(0);
+    (fee, net)
 }
 
 pub async fn create_withdrawal(

@@ -14,6 +14,37 @@ pub struct ListParams {
     pub limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct WithdrawalFeeParams {
+    pub amount_stroops: i64,
+}
+
+#[derive(serde::Serialize)]
+pub struct WithdrawalFeeResponse {
+    pub amount_stroops: i64,
+    pub fee_stroops: i64,
+    pub net_amount_stroops: i64,
+}
+
+pub async fn withdrawal_fee(
+    Query(params): Query<WithdrawalFeeParams>,
+) -> ApiResult<Json<WithdrawalFeeResponse>> {
+    if params.amount_stroops <= 0 {
+        return Err(bad_request_field(
+            "amount_stroops",
+            "must be a positive number",
+        ));
+    }
+    
+    let (fee_stroops, net_amount_stroops) = withdrawals::calculate_withdrawal_fee(params.amount_stroops);
+    
+    Ok(Json(WithdrawalFeeResponse {
+        amount_stroops: params.amount_stroops,
+        fee_stroops,
+        net_amount_stroops,
+    }))
+}
+
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
