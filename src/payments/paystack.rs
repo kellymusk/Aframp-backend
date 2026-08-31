@@ -3,18 +3,44 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use super::{PaymentProvider, PayoutRequest, PayoutResult};
+use crate::config::SecretString;
 
 const BASE_URL: &str = "https://api.paystack.co";
 
 pub struct PaystackProvider {
-    secret_key: String,
+    /// Held as a [`SecretString`] so the key cannot reach a log through the
+    /// ordinary routes — `{:?}` on this struct, a `tracing` field, a
+    /// `serde` round-trip — all of which print `[REDACTED]`. Only
+    /// [`SecretString::as_str`] yields the real value, and the sole caller of
+    /// it is `bearer_auth` below.
+    secret_key: SecretString,
     http: reqwest::Client,
+}
+
+/// Derived `Debug` would print the client's configuration and, more to the
+/// point, invite the key into a log line the first time someone adds
+/// `?provider` to a `tracing` macro. This impl makes that impossible.
+impl std::fmt::Debug for PaystackProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaystackProvider")
+            .field("secret_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl PaystackProvider {
     pub fn new(secret_key: String) -> Self {
+        Self::with_secret(SecretString::new(secret_key))
+    }
+
+    pub fn with_secret(secret_key: SecretString) -> Self {
+        // `connection_verbose(false)` is the default, but state it: with it on,
+        // reqwest's own `trace`-level wire logging prints request headers
+        // verbatim — including `Authorization: Bearer sk_live_…`. Nothing in
+        // this process should be able to turn that on by raising RUST_LOG.
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
+            .connection_verbose(false)
             .build()
             .expect("failed to build Paystack HTTP client");
         Self { secret_key, http }
@@ -24,7 +50,7 @@ impl PaystackProvider {
         let response = self
             .http
             .get(format!("{BASE_URL}{path}"))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .query(query)
             .send()
             .await
@@ -36,7 +62,7 @@ impl PaystackProvider {
         let response = self
             .http
             .post(format!("{BASE_URL}{path}"))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .json(body)
             .send()
             .await

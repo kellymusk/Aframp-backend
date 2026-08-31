@@ -52,6 +52,7 @@ dependencies = [
  "hmac",
  "http",
  "jsonwebtoken",
+ "mime",
  "rand 0.8.7",
  "reqwest",
  "serde",
