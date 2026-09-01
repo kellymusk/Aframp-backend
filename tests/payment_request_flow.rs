@@ -123,6 +123,84 @@ async fn payment_request_reports_expired_past_its_expiry() {
 }
 
 #[tokio::test]
+async fn expired_payment_request_is_not_correlated_to_a_late_deposit() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "pr_late_deposit").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app,
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 5_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+
+    let request_id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let memo = created["memo"].as_str().unwrap();
+    let wallet_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT wallet_id FROM payment_requests WHERE id = $1",
+    )
+    .bind(request_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "UPDATE payment_requests
+            SET expires_at = now() - interval '1 minute'
+          WHERE id = $1",
+    )
+    .bind(request_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let payment_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO payments (id, merchant_id, wallet_id, wallet_address, tx_hash,
+                               amount_stroops, asset, network, status)
+         VALUES ($1, $2::uuid, $3, 'PLACEHOLDER', $4, 5000000, 'XLM', 'stellar', 'confirmed')",
+    )
+    .bind(payment_id)
+    .bind(merchant_id)
+    .bind(wallet_id)
+    .bind(format!("late_deposit_{}", uuid::Uuid::new_v4().simple()))
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    // Follow the worker's correlation path after recording the late deposit.
+    // The expiry-aware lookup must prevent the subsequent mark_paid call.
+    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(
+        &state.db, wallet_id, memo,
+    )
+    .await
+    .unwrap();
+    if let Some(request) = pending.as_ref() {
+        aframp::services::payment_requests::mark_paid(&state.db, request.id, payment_id)
+            .await
+            .unwrap();
+    }
+    assert!(pending.is_none(), "an expired request must not be marked paid");
+
+    let (stored_status, stored_payment_id): (String, Option<uuid::Uuid>) = sqlx::query_as(
+        "SELECT status, payment_id FROM payment_requests WHERE id = $1",
+    )
+    .bind(request_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(stored_status, "pending");
+    assert!(stored_payment_id.is_none());
+}
+
+#[tokio::test]
 async fn payment_request_list_is_scoped_to_the_authenticated_merchant() {
     let Some(state) = state().await else {
         return;

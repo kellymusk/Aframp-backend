@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aframp::AppState;
+use aframp::{AppState, SecretString};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
@@ -13,30 +13,25 @@ static MIGRATION_LOCK: Mutex<()> = Mutex::new(());
 static MIGRATED: AtomicBool = AtomicBool::new(false);
 
 pub async fn state() -> Option<AppState> {
-    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-        return None;
-    };
+    let url = std::env::var("TEST_DATABASE_URL")
+        .expect("TEST_DATABASE_URL must be set to run integration tests — see README");
     let db = match PgPoolOptions::new().max_connections(5).connect(&url).await {
         Ok(pool) => pool,
         Err(err) => {
-            eprintln!("TEST_DATABASE_URL could not be reached: {err}");
-            return None;
+            panic!("TEST_DATABASE_URL could not be reached: {err}");
         }
     };
 
     let _guard = MIGRATION_LOCK.lock().unwrap();
     if !MIGRATED.swap(true, Ordering::SeqCst) {
-        sqlx::migrate!()
-            .run(&db)
-            .await
-            .expect("migrations failed");
+        sqlx::migrate!().run(&db).await.expect("migrations failed");
     }
     drop(_guard);
 
     Some(AppState {
         db,
-        jwt_secret: Arc::new("integration-test-secret".into()),
-        webhook_secret: Arc::new("integration-test-webhook".into()),
+        jwt_secret: SecretString::new("integration-test-secret".to_string()),
+        webhook_secret: SecretString::new("integration-test-webhook".to_string()),
         wallet_encryption_key: Arc::new([7u8; 32]),
         payment_provider: Arc::new(aframp::payments::mock::MockProvider),
         cookie: aframp::CookieConfig {

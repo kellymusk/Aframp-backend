@@ -51,6 +51,7 @@ pub struct AppConfig {
     pub stellar_system_wallet: Arc<String>,
     pub stellar_horizon_url: String,
     pub stellar_poll_interval_secs: u64,
+    pub stellar_poll_concurrency: usize,
     pub wallet_encryption_key: SecretString,
     pub paystack_secret_key: SecretString,
     /// Browser origins allowed to call this API. The merchant frontend is a
@@ -73,7 +74,11 @@ impl AppConfig {
         {
             "lax" => SameSite::Lax,
             "none" => SameSite::None,
-            other => return Err(format!("COOKIE_SAME_SITE must be `lax` or `none`, got `{other}`")),
+            other => {
+                return Err(format!(
+                    "COOKIE_SAME_SITE must be `lax` or `none`, got `{other}`"
+                ))
+            }
         };
         if cookie_same_site == SameSite::None && !cookie_secure {
             return Err("COOKIE_SAME_SITE=none requires COOKIE_SECURE=true; browsers reject a SameSite=None cookie that is not Secure".into());
@@ -91,6 +96,11 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(60),
+            stellar_poll_concurrency: std::env::var("STELLAR_POLL_CONCURRENCY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(20),
             wallet_encryption_key: SecretString::new(env("WALLET_ENCRYPTION_KEY")?),
             paystack_secret_key: SecretString::new(env("PAYSTACK_SECRET_KEY")?),
             cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
@@ -154,6 +164,7 @@ mod tests {
                 stellar_system_wallet: Arc::new("GXXXXXXX".to_string()),
                 stellar_horizon_url: "https://horizon.stellar.org".to_string(),
                 stellar_poll_interval_secs: 60,
+                stellar_poll_concurrency: 20,
                 wallet_encryption_key: SecretString::new("encryption-key".to_string()),
                 paystack_secret_key: SecretString::new("paystack-key".to_string()),
                 cors_allowed_origins: vec!["http://localhost:3001".to_string()],

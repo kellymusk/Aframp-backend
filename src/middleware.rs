@@ -117,8 +117,8 @@ mod tests {
     #[tokio::test]
     async fn wrong_content_type_with_a_body_is_415() {
         let app = app();
-        let (status, body) = status(&app, request("POST", "/post", Some("text/plain"), "hello")).await;
-        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let (post_status, body) = status(&app, request("POST", "/post", Some("text/plain"), "hello")).await;
+        assert_eq!(post_status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert_eq!(body["error"], "content-type must be application/json");
 
         let (status, _) = status(&app, request("PUT", "/put", Some("application/xml"), "<x/>")).await;

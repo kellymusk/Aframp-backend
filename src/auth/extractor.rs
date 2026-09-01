@@ -28,9 +28,15 @@ impl FromRequestParts<AppState> for AuthUser {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .or_else(|| cookie::from_headers(&parts.headers))
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { error: "missing session cookie or bearer token".into() })))?;
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError {
+                error: "missing session cookie or bearer token".into(),
+                field: None,
+            })))?;
         let claims = jwt::verify(&state.jwt_secret, token)
-            .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid or expired token".into() })))?;
+            .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError {
+                error: "invalid or expired token".into(),
+                field: None,
+            })))?;
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,
