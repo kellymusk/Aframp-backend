@@ -98,6 +98,8 @@ struct OperationRecord {
     #[serde(default)]
     amount: Option<String>,
     #[serde(default)]
+    amount_sent: Option<String>,
+    #[serde(default)]
     starting_balance: Option<String>,
     #[serde(default)]
     asset_type: Option<String>,
@@ -150,10 +152,13 @@ async fn fetch_for_address(
             "create_account" if record.account.as_deref() == Some(address) => {
                 record.starting_balance.as_deref()
             }
-            "payment" | "path_payment_strict_receive" | "path_payment_strict_send"
+            "payment" | "path_payment_strict_receive"
                 if record.to.as_deref() == Some(address) =>
             {
                 record.amount.as_deref()
+            }
+            "path_payment_strict_send" if record.to.as_deref() == Some(address) => {
+                record.amount_sent.as_deref()
             }
             _ => None,
         };
@@ -215,7 +220,9 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fetch_deposits_bounded, parse_amount_to_stroops};
+    use super::{
+        fetch_deposits_bounded, parse_amount_to_stroops, EmbeddedTransaction, OperationRecord,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -265,5 +272,32 @@ mod tests {
 
         assert!(maximum.load(Ordering::SeqCst) > 1);
         assert!(maximum.load(Ordering::SeqCst) <= limit);
+    }
+
+    #[test]
+    fn path_payment_strict_send_uses_amount_sent_field() {
+        let record = OperationRecord {
+            op_type: "path_payment_strict_send".to_string(),
+            transaction_successful: true,
+            transaction_hash: "tx123".to_string(),
+            to: Some("GXXXXXXXXX".to_string()),
+            account: None,
+            amount: Some("100.0000000".to_string()),
+            amount_sent: Some("50.0000000".to_string()),
+            starting_balance: None,
+            asset_type: Some("native".to_string()),
+            asset_code: None,
+            transaction: Some(EmbeddedTransaction { memo: None }),
+        };
+
+        let address = "GXXXXXXXXX";
+        let amount_str: Option<&str> = match record.op_type.as_str() {
+            "path_payment_strict_send" if record.to.as_deref() == Some(address) => {
+                record.amount_sent.as_deref()
+            }
+            _ => None,
+        };
+
+        assert_eq!(amount_str, Some("50.0000000"));
     }
 }

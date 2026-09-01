@@ -76,8 +76,8 @@ async fn withdrawal_success_decrements_balance() {
 
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)
-         ON CONFLICT (merchant_id, asset) DO UPDATE SET available = 5_000_000, pending = 0",
+         VALUES ($1::uuid, 'cNGN', 5000000, 0)
+         ON CONFLICT (merchant_id, asset) DO UPDATE SET available = 5000000, pending = 0",
     )
     .bind(&merchant_id)
     .execute(&state.db)
@@ -125,7 +125,7 @@ async fn withdrawal_full_balance_then_insufficient() {
 
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1::uuid, 'cNGN', 1_000_000, 0)",
+         VALUES ($1::uuid, 'cNGN', 1000000, 0)",
     )
     .bind(&merchant_id)
     .execute(&state.db)
@@ -171,7 +171,7 @@ async fn withdrawal_unsupported_asset_rejected() {
 
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1::uuid, 'XLM', 5_000_000, 0)",
+         VALUES ($1::uuid, 'XLM', 5000000, 0)",
     )
     .bind(&merchant_id)
     .execute(&state.db)
@@ -207,7 +207,7 @@ async fn withdrawal_rejects_sub_kobo_precision() {
     // this is rejected — isolates the precision check specifically.
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1::uuid, 'cNGN', 10_000_000, 0)",
+         VALUES ($1::uuid, 'cNGN', 10000000, 0)",
     )
     .bind(&merchant_id)
     .execute(&state.db)
@@ -244,7 +244,7 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
 
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+         VALUES ($1::uuid, 'cNGN', 5000000, 0)",
     )
     .bind(&merchant_id)
     .execute(&state.db)

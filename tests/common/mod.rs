@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use aframp::AppState;
+use aframp::{AppState, SecretString};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
@@ -30,8 +30,8 @@ pub async fn state() -> Option<AppState> {
 
     Some(AppState {
         db,
-        jwt_secret: Arc::new("integration-test-secret".into()),
-        webhook_secret: Arc::new("integration-test-webhook".into()),
+        jwt_secret: SecretString::new("integration-test-secret".to_string()),
+        webhook_secret: SecretString::new("integration-test-webhook".to_string()),
         wallet_encryption_key: Arc::new([7u8; 32]),
         payment_provider: Arc::new(aframp::payments::mock::MockProvider),
         cookie: aframp::CookieConfig {

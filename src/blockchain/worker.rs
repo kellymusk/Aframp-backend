@@ -131,17 +131,21 @@ async fn process_deposit(
             .await
             .map_err(|e| e.to_string())?
         {
-            if pr.amount_stroops != payment.amount_stroops {
+            if payment.amount_stroops >= pr.amount_stroops {
+                payment_requests::mark_paid(db, pr.id, payment.id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            } else {
                 tracing::warn!(
                     expected = pr.amount_stroops,
                     actual = payment.amount_stroops,
                     request_id = %pr.id,
-                    "payment request amount mismatch — marking paid anyway"
+                    "payment request underpaid — marking partial"
                 );
+                payment_requests::mark_partial(db, pr.id, payment.id)
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
-            payment_requests::mark_paid(db, pr.id, payment.id)
-                .await
-                .map_err(|e| e.to_string())?;
         }
     }
 

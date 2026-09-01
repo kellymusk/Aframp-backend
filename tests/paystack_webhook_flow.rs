@@ -21,7 +21,7 @@ async fn pending_withdrawal(
     let merchant_id = merchant_id.parse().unwrap();
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1, 'cNGN', 5_000_000, 0)",
+         VALUES ($1, 'cNGN', 5000000, 0)",
     )
     .bind(merchant_id)
     .execute(&state.db)
