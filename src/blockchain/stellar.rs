@@ -143,6 +143,8 @@ struct OperationRecord {
     #[serde(default)]
     amount: Option<String>,
     #[serde(default)]
+    amount_sent: Option<String>,
+    #[serde(default)]
     starting_balance: Option<String>,
     #[serde(default)]
     asset_type: Option<String>,

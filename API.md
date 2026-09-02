@@ -60,6 +60,7 @@ Every error returns the same shape:
 | Status | Meaning | Frontend handling |
 |---|---|---|
 | `400` | Validation failed, or the account has no merchant | Show the `error` string; it's written for humans |
+| `415` | `Content-Type` isn't `application/json` on a POST/PUT with a body | Send `Content-Type: application/json` and retry |
 | `401` | Missing, malformed, or expired token | Redirect to login |
 | `404` | Resource not found | — |
 | `409` | Email already registered | Show on the signup form |

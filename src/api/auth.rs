@@ -4,19 +4,27 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use crate::auth::jwt;
-use crate::error::{bad_request, internal, ApiResult};
+use crate::error::{bad_request_field, internal, ApiResult};
 use crate::models::{AuthResponse, LoginRequest, SignupRequest};
 use crate::services::users::{self, UserError};
+use crate::validation::{is_valid_email, validate_name};
 use crate::AppState;
 
 pub async fn signup(
     State(state): State<AppState>,
     Json(req): Json<SignupRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    if req.email.is_empty() || req.password.len() < 8 || req.name.is_empty() {
-        return Err(bad_request("email, a password of at least 8 characters, and name are required"));
+    if !is_valid_email(&req.email) {
+        return Err(bad_request_field("email", "must be a valid email address"));
     }
-    let (user, merchant) = users::signup(&state.db, &req.email, &req.password, &req.name)
+    if req.password.len() < 8 {
+        return Err(bad_request_field(
+            "password",
+            "must be at least 8 characters",
+        ));
+    }
+    let name = validate_name(&req.name).map_err(|msg| bad_request_field("name", msg))?;
+    let (user, merchant) = users::signup(&state.db, &req.email, &req.password, &name)
         .await
         .map_err(map_user_error)?;
     let token = jwt::sign(&state.jwt_secret, user.id, Some(merchant.id))
@@ -35,6 +43,9 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    if !is_valid_email(&req.email) {
+        return Err(bad_request_field("email", "must be a valid email address"));
+    }
     let (user, merchant) = users::login(&state.db, &req.email, &req.password)
         .await
         .map_err(map_user_error)?;

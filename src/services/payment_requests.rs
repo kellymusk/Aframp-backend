@@ -136,3 +136,14 @@ pub async fn mark_paid(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sq
     .await
     .map(|_| ())
 }
+
+pub async fn mark_partial(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE payment_requests SET status = 'partial', payment_id = $2, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(payment_id)
+    .execute(db)
+    .await
+    .map(|_| ())
+}
