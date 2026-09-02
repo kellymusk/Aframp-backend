@@ -363,9 +363,13 @@ components:
   schemas:
     ApiError:
       type: object
-      required: [error]
+      required: [error, code]
       properties:
         error: { type: string, example: insufficient available balance }
+        code:
+          type: string
+          example: INSUFFICIENT_BALANCE
+          description: Machine-readable error code. Full catalog: INVALID_PARAMETERS, INVALID_AMOUNT, INSUFFICIENT_BALANCE, UNSUPPORTED_ASSET, PAYOUT_FAILED, EMAIL_TAKEN, INVALID_CREDENTIALS, USER_NOT_FOUND, MERCHANT_NOT_FOUND, WALLET_NOT_FOUND, PAYMENT_REQUEST_NOT_FOUND, INTERNAL_ERROR
 
     SignupRequest:
       type: object

@@ -5,7 +5,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{internal, not_found, ApiResult};
+use crate::error::{internal, not_found, ApiResult, ErrorCode};
 use crate::services::users;
 use crate::AppState;
 
@@ -26,7 +26,7 @@ pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Jso
     let user = users::user_by_id(&state.db, auth.user_id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found("user not found"))?;
+        .ok_or_else(|| not_found(ErrorCode::UserNotFound, "user not found"))?;
 
     let merchant = users::merchant_by_user(&state.db, auth.user_id)
         .await

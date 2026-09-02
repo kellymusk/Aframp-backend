@@ -39,7 +39,7 @@ Tokens are **HS256, valid for 24 hours** either way. Claims are `sub` (user id),
 Two things worth building for up front:
 
 - **`merchant_id` is nullable.** `AuthResponse.merchant_id` and the JWT claim are both optional. Today signup always creates a merchant so it's always present, but the type allows `null` — an account without a merchant gets `400` from every merchant-scoped endpoint, not `401`. Don't assume non-null.
-- **Expiry is silent.** There's no refresh endpoint. When a token expires, calls start returning `401` with `{"error":"invalid or expired token"}` — treat any `401` on a previously-working call as "send the user back to login."
+- **Expiry is silent.** There's no refresh endpoint. When a token expires, calls start returning `401` with `{"error":"invalid or expired token","code":"INVALID_CREDENTIALS"}` — treat any `401` on a previously-working call as "send the user back to login."
 
 ### CORS
 
@@ -51,11 +51,13 @@ The supported deployment is **same-origin**: serve the frontend and this API beh
 
 ## Errors
 
-Every error returns the same shape:
+Every error returns the same shape — a human-readable `error` string plus a stable, machine-readable `code` you can branch on:
 
 ```json
-{ "error": "human readable message" }
+{ "error": "insufficient available balance", "code": "INSUFFICIENT_BALANCE" }
 ```
+
+`code` is stable and never changes wording; `error` is written for humans. Match on `code`, never on the `error` string.
 
 | Status | Meaning | Frontend handling |
 |---|---|---|
@@ -65,7 +67,24 @@ Every error returns the same shape:
 | `404` | Resource not found | — |
 | `409` | Email already registered | Show on the signup form |
 | `502` | Upstream payment provider failed | Transient — the `error` carries the provider's own message |
-| `500` | Internal error | Generic message only; details stay in server logs |
+| `500` | Internal error | Generic `INTERNAL_ERROR`; details stay in server logs |
+
+### Error code catalog
+
+| Code | Status | When it's returned |
+|---|---|---|
+| `INVALID_PARAMETERS` | `400` | A required field is missing/malformed (e.g. short password, bad account_number/bank_code) |
+| `INVALID_AMOUNT` | `400` | Amount is not positive, or not a whole number of kobo |
+| `INSUFFICIENT_BALANCE` | `400` | Withdrawal exceeds the available balance |
+| `UNSUPPORTED_ASSET` | `400` | Withdrawal asset isn't cNGN |
+| `EMAIL_TAKEN` | `409` | Signup email already registered |
+| `INVALID_CREDENTIALS` | `401` | Wrong password or unknown email on login |
+| `USER_NOT_FOUND` | `404` | Authenticated user no longer exists |
+| `MERCHANT_NOT_FOUND` | `400` | Account has no merchant (visit onboarding) |
+| `WALLET_NOT_FOUND` | `400` | No wallet yet, or none created before a payment-request call |
+| `PAYMENT_REQUEST_NOT_FOUND` | `404` | Payment request id doesn't exist |
+| `PAYOUT_FAILED` | `502` | Upstream payment provider rejected the payout |
+| `INTERNAL_ERROR` | `500` | Unexpected server error; generic message only |
 
 ---
 

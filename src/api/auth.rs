@@ -76,8 +76,10 @@ fn authenticated(state: &AppState, body: AuthResponse) -> ApiResult<impl IntoRes
 
 fn map_user_error(err: UserError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
     match err {
-        UserError::EmailTaken => crate::error::conflict("email already registered"),
-        UserError::InvalidCredentials => crate::error::unauthorized("invalid email or password"),
+        UserError::EmailTaken => crate::error::conflict(ErrorCode::EmailTaken, "email already registered"),
+        UserError::InvalidCredentials => {
+            crate::error::unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
+        }
         _ => internal(err),
     }
 }
