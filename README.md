@@ -98,6 +98,7 @@ Fill in `.env`:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | Postgres connection string |
+| `APP_ENV` | no | `development` | Set to `production` in production deployments. When `production`, startup refuses to run with `COOKIE_SECURE=false` — see [Deploying behind TLS](#deploying-behind-tls) |
 | `APP_BIND_ADDR` | no | `127.0.0.1:3000` | Address the HTTP server binds to |
 | `JWT_SECRET` | yes | — | Secret used to sign merchant session tokens. Generate with `openssl rand -hex 32` |
 | `WEBHOOK_SECRET` | yes | — | Secret used to verify inbound provider webhooks. Generate with `openssl rand -hex 32` |
@@ -211,9 +212,35 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 
 ## Deploying behind TLS
 
-The server intentionally does not terminate TLS. It binds to `127.0.0.1:3000` by default and expects a reverse proxy in front of it — which is also what makes the `Secure` session cookie meaningful, since browsers won't send a `Secure` cookie over plain HTTP to a non-localhost host.
+The server intentionally does not terminate TLS — it speaks plain HTTP and **must** run behind a TLS-terminating reverse proxy such as Caddy or nginx. It binds to `127.0.0.1:3000` by default, which only accepts connections from the same host, so the proxy is not optional in production. This is also what makes the `Secure` session cookie meaningful, since browsers won't send a `Secure` cookie over plain HTTP to a non-localhost host.
 
-Serve the frontend and the API from **one origin**. Then browser requests are same-origin, CORS stops applying entirely, and the `SameSite=Lax` cookie works without the cross-site relaxation that reintroduces CSRF. A minimal Caddy config:
+Set `APP_ENV=production` in production. At startup, if `APP_ENV=production` and `COOKIE_SECURE=false`, the server logs a loud error and **refuses to start** — this catches the case where the reverse proxy/TLS setup is missing or misconfigured and the session cookie would otherwise be sent unencrypted. Leave `COOKIE_SECURE` at its default (`true`) once TLS is terminated in front of the app.
+
+An equivalent nginx `server` block, if you'd rather not use Caddy:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name pay.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/pay.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pay.example.com/privkey.pem;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        root /srv/aframp-frontend;
+        try_files $uri /index.html;
+    }
+}
+```
+
+Or, with Caddy, which provisions and renews the certificate itself. Either way, serve the frontend and the API from **one origin**: then browser requests are same-origin, CORS stops applying entirely, and the `SameSite=Lax` cookie works without the cross-site relaxation that reintroduces CSRF. A minimal Caddy config:
 
 ```caddyfile
 pay.example.com {
