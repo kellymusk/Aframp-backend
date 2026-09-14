@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod middleware;
 mod models;
+mod pagination;
 pub mod payments;
 pub mod services;
 mod validation;
