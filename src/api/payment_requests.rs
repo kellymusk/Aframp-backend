@@ -5,8 +5,9 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, internal, not_found, ApiResult};
+use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
+use crate::pagination::{Cursor, Page};
 use crate::services::{payment_requests, wallets};
 use crate::AppState;
 
@@ -35,12 +36,12 @@ pub async fn create(
 ) -> ApiResult<Json<PaymentRequestView>> {
     let merchant_id = auth
         .merchant_id
-        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
 
     let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| bad_request("create a wallet before generating payment requests"))?;
+        .ok_or_else(|| bad_request(ErrorCode::WalletNotFound, "create a wallet before generating payment requests"))?;
 
     // Defaults to XLM, not cNGN like withdrawals: XLM is what's actually
     // scannable/testable today (no cNGN issuer address configured yet).
@@ -67,7 +68,7 @@ pub async fn get(
     let pr = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found("payment request not found"))?;
+        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
 
     let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
         .await
@@ -81,22 +82,35 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<PaymentRequestView>>> {
+) -> ApiResult<Json<Page<PaymentRequestView>>> {
     let merchant_id = auth
         .merchant_id
-        .ok_or_else(|| bad_request("no merchant associated with this account"))?;
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
 
-    let rows = payment_requests::payment_requests_by_merchant(&state.db, merchant_id, limit)
-        .await
-        .map_err(internal)?;
+    let rows =
+        payment_requests::payment_requests_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
+            .await
+            .map_err(internal)?;
 
-    Ok(Json(rows.iter().map(row_to_view).collect()))
+    Ok(Json(Page::new(
+        rows.iter().map(row_to_view).collect(),
+        limit,
+        |v: &PaymentRequestView| Cursor {
+            created_at: v.created_at,
+            id: v.id,
+        },
+    )))
 }
 
 #[derive(serde::Deserialize)]
 pub struct ListParams {
     pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 /// A `pending` row whose expiry has passed is reported as `expired` at read
@@ -156,7 +170,7 @@ fn map_payment_request_error(
 ) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
     match err {
         payment_requests::PaymentRequestError::InvalidAmount => {
-            bad_request("amount_stroops must be positive")
+            bad_request(ErrorCode::InvalidAmount, "amount_stroops must be positive")
         }
         payment_requests::PaymentRequestError::Database(e) => internal(e),
     }

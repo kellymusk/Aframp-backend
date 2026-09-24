@@ -39,7 +39,7 @@ Tokens are **HS256, valid for 24 hours** either way. Claims are `sub` (user id),
 Two things worth building for up front:
 
 - **`merchant_id` is nullable.** `AuthResponse.merchant_id` and the JWT claim are both optional. Today signup always creates a merchant so it's always present, but the type allows `null` — an account without a merchant gets `400` from every merchant-scoped endpoint, not `401`. Don't assume non-null.
-- **Expiry is silent.** There's no refresh endpoint. When a token expires, calls start returning `401` with `{"error":"invalid or expired token"}` — treat any `401` on a previously-working call as "send the user back to login."
+- **Expiry is silent.** There's no refresh endpoint. When a token expires, calls start returning `401` with `{"error":"invalid or expired token","code":"INVALID_CREDENTIALS"}` — treat any `401` on a previously-working call as "send the user back to login."
 
 ### CORS
 
@@ -51,11 +51,13 @@ The supported deployment is **same-origin**: serve the frontend and this API beh
 
 ## Errors
 
-Every error returns the same shape:
+Every error returns the same shape — a human-readable `error` string plus a stable, machine-readable `code` you can branch on:
 
 ```json
-{ "error": "human readable message" }
+{ "error": "insufficient available balance", "code": "INSUFFICIENT_BALANCE" }
 ```
+
+`code` is stable and never changes wording; `error` is written for humans. Match on `code`, never on the `error` string.
 
 | Status | Meaning | Frontend handling |
 |---|---|---|
@@ -63,9 +65,35 @@ Every error returns the same shape:
 | `415` | `Content-Type` isn't `application/json` on a POST/PUT with a body | Send `Content-Type: application/json` and retry |
 | `401` | Missing, malformed, or expired token | Redirect to login |
 | `404` | Resource not found | — |
-| `409` | Email already registered | Show on the signup form |
+| `409` | Email or phone already registered | Show on the signup form |
+| `403` | Authenticated, but not an admin (`/admin/*` only) | Not applicable to merchant-facing routes |
+| `429` | OTP resent too soon, or too many times this hour | Show the wait; don't auto-retry |
 | `502` | Upstream payment provider failed | Transient — the `error` carries the provider's own message |
-| `500` | Internal error | Generic message only; details stay in server logs |
+| `500` | Internal error | Generic `INTERNAL_ERROR`; details stay in server logs |
+
+### Error code catalog
+
+| Code | Status | When it's returned |
+|---|---|---|
+| `INVALID_PARAMETERS` | `400` | A required field is missing/malformed (e.g. short password, bad account_number/bank_code) |
+| `INVALID_AMOUNT` | `400` | Amount is not positive, or not a whole number of kobo |
+| `INSUFFICIENT_BALANCE` | `400` | Withdrawal exceeds the available balance |
+| `UNSUPPORTED_ASSET` | `400` | Withdrawal asset isn't cNGN |
+| `EMAIL_TAKEN` | `409` | Signup email already registered (to a verified account) |
+| `PHONE_TAKEN` | `409` | Signup phone already registered (to a verified account) |
+| `INVALID_CREDENTIALS` | `401` | Wrong password or unknown email on login |
+| `USER_NOT_FOUND` | `404` | Authenticated user no longer exists |
+| `MERCHANT_NOT_FOUND` | `400` | Account has no merchant (visit onboarding) |
+| `WALLET_NOT_FOUND` | `400` | No wallet yet, or none created before a payment-request call |
+| `PAYMENT_REQUEST_NOT_FOUND` | `404` | Payment request id doesn't exist |
+| `PAYOUT_FAILED` | `502` | Upstream payment provider rejected the payout |
+| `FORBIDDEN` | `403` | Authenticated but not an admin, on an `/admin/*` route |
+| `OTP_INVALID` | `400` | Wrong code submitted to `/verify-otp` |
+| `OTP_EXPIRED` | `400` | Code submitted after its 10-minute window |
+| `OTP_LOCKED` | `400` | 5 wrong attempts on this challenge — request a new one |
+| `OTP_CHALLENGE_NOT_FOUND` | `404` | Unknown or already-consumed `challenge_id` |
+| `TOO_MANY_REQUESTS` | `429` | OTP resent inside the 60s cooldown, or 5th+ send this hour |
+| `INTERNAL_ERROR` | `500` | Unexpected server error; generic message only |
 
 ---
 
@@ -97,10 +125,37 @@ Returns the literal string `aframp` (not JSON). Useful as a smoke test.
 ---
 
 ### `POST /signup`
-No auth. Creates a user **and** their merchant in one transaction.
+No auth. **Does not create the account.** Validates the credentials, sends an OTP to `phone_number`, and returns a challenge — the user + merchant only get inserted once `POST /verify-otp` succeeds with the right code. This means the same email can be re-submitted freely (it's the resend path) as long as no prior attempt for it was ever verified.
 
 ```json
-{ "email": "merchant@example.com", "password": "at-least-8-chars", "name": "Shop Name" }
+{ "email": "merchant@example.com", "password": "at-least-8-chars", "name": "Shop Name", "phone_number": "08011122233" }
+```
+
+`phone_number` accepts any common Nigerian mobile format (`0801...`, `801...`, `+234801...`, `234801...`) and is normalized to E.164 before storage/sending.
+
+`200` →
+```json
+{ "challenge_id": "b6b54b1e-...", "expires_in_secs": 600 }
+```
+
+Errors: `400` if email is empty, password is under 8 characters, name is empty, or the phone doesn't parse. `409` (`EMAIL_TAKEN`/`PHONE_TAKEN`) if either is already registered to a *verified* account. `429` (`TOO_MANY_REQUESTS`) if resent within 60s of the last send, or 5 times inside an hour.
+
+### `POST /login`
+No auth. Verifies the password. If the account has a verified phone number, this returns a **fresh OTP challenge** (identical shape to `/signup`'s) instead of a session — full two-factor, every login, no exception for a returning session. Only an account with no phone on file (impossible to create anymore; a relic of accounts made before this existed) logs in synchronously with the old one-step response.
+
+```json
+{ "email": "merchant@example.com", "password": "at-least-8-chars" }
+```
+
+`200` → either `{ "challenge_id": "...", "expires_in_secs": 600 }` (the normal case) or the full session response described under `/verify-otp` below (legacy accounts only).
+
+Errors: `401` for both a wrong password and an unknown email — deliberately indistinguishable, so don't build a "no such account" message from it. `429` on the same resend rules as signup.
+
+### `POST /verify-otp`
+No auth. The **only** endpoint that ever issues a session, reached from either a signup or a login challenge.
+
+```json
+{ "challenge_id": "b6b54b1e-...", "code": "482913" }
 ```
 
 `200` →
@@ -111,17 +166,9 @@ No auth. Creates a user **and** their merchant in one transaction.
   "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a"
 }
 ```
+…with the same `Set-Cookie: aframp_session=...` as before. For a signup challenge, the user and merchant are created transactionally at this exact moment, not before.
 
-Errors: `400` if email is empty, password is under 8 characters, or name is empty. `409` if the email is already registered.
-
-### `POST /login`
-No auth. Same response shape as signup.
-
-```json
-{ "email": "merchant@example.com", "password": "at-least-8-chars" }
-```
-
-Errors: `401` for both a wrong password and an unknown email — deliberately indistinguishable, so don't build a "no such account" message from it.
+Errors: `400` `OTP_INVALID` (wrong code — 5 wrong guesses and the challenge is dead, not just that attempt), `OTP_EXPIRED` (codes last 10 minutes), `OTP_LOCKED` (attempts exhausted — restart via `/signup` or `/login` for a new one). `404` `OTP_CHALLENGE_NOT_FOUND` for an unknown or already-consumed `challenge_id`.
 
 ### `POST /logout`
 No auth — a browser holding an expired or malformed session still needs to clear it. Returns `204` and a `Set-Cookie` that expires `aframp_session` immediately.
@@ -365,7 +412,7 @@ Worth knowing before you design around them:
 - **No websockets / SSE.** Payment status is poll-only.
 - **No refresh tokens.** A 24h expiry means a re-login, not a silent refresh.
 - **No token revocation.** `POST /logout` clears the browser's cookie; it cannot invalidate a JWT that has already been copied somewhere else.
-- **No rate limiting on `/login`.** Nothing throttles password guessing yet.
+- **No rate limiting on the password check itself.** OTP sends are throttled (60s cooldown, 5/hour per phone), but nothing yet stops repeated wrong-password guesses against `/login` before it ever gets to that step.
 - **No cursor pagination.** `limit` only, capped at 200.
 - **No cancel/delete on payment requests.** They can only expire naturally.
 - **No `PATCH`/`DELETE` anywhere** — and CORS only allows `GET`/`POST`, so adding one needs a server change too.

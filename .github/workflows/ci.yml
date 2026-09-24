@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: ["dev-backend"]
+  pull_request:
+    branches: ["dev-backend"]
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GUARD: Fail if a contributor touches any file that belongs to the main/master
+  # backend source tree. Contributors work only in the dev-backend branch and
+  # should not modify the production source under src/, migrations/, examples/,
+  # the Dockerfile, or other root-level production files.
+  # ─────────────────────────────────────────────────────────────────────────────
+  guard-main-source:
+    name: "Guard — no touches to main backend source"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for forbidden file changes
+        run: |
+          # Get the list of files changed in this push/PR compared to master.
+          # For a PR, compare against the base; for a push, compare last two commits.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          # If BASE is all zeros (first push), skip the diff check.
+          if [[ "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "First push to branch — skipping diff guard."
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "${{ github.sha }}" 2>/dev/null || true)
+
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # Protected paths — contributors must NOT touch these.
+          FORBIDDEN_PATTERNS=(
+            "^src/"
+            "^migrations/"
+            "^examples/"
+            "^Dockerfile$"
+            "^Cargo\.toml$"
+            "^Cargo\.lock$"
+            "^wrangler\.jsonc$"
+            "^cloudflare/"
+          )
+
+          VIOLATIONS=""
+          while IFS= read -r file; do
+            for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+              if echo "$file" | grep -qE "$pattern"; then
+                VIOLATIONS="${VIOLATIONS}\n  ❌  $file  (matches protected pattern: $pattern)"
+                break
+              fi
+            done
+          done <<< "$CHANGED"
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🚫  CONTRIBUTOR GUARD FAILED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "The following files belong to the main backend source tree and"
+            echo "must NOT be modified on the dev-backend branch:"
+            echo -e "$VIOLATIONS"
+            echo ""
+            echo "Contributors should only add or modify files outside the"
+            echo "protected paths listed above (e.g. tests/, docs/, scripts/,"
+            echo ".github/workflows/ for new workflows, etc.)."
+            echo ""
+            echo "If you believe this is wrong, open a discussion with a"
+            echo "maintainer before changing production source files."
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 1
+          fi
+
+          echo "✅  No protected files touched. Guard passed."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # BUILD + TEST: Compile and run the test suite.
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: "Build & Test"
+    runs-on: ubuntu-latest
+    needs: guard-main-source
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aframp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+        run: |
+          for f in migrations/*.sql; do
+            psql "$DATABASE_URL" < "$f"
+          done
+
+      - name: Run tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+          JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          WEBHOOK_SECRET: test-webhook-secret-at-least-32chars
+          WALLET_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          STELLAR_SYSTEM_WALLET_ADDRESS: GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBV3VDGMRPYW
+          PAYSTACK_SECRET_KEY: sk_test_placeholder
+          OTP_HMAC_SECRET: test-otp-hmac-secret-at-least-32chars
+          OTP_PROVIDER: mock
+        run: cargo test --all
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # LINT: clippy + fmt
+  # ─────────────────────────────────────────────────────────────────────────────
+  lint:
+    name: "Lint (clippy + fmt)"
+    runs-on: ubuntu-latest
+    needs: guard-main-source
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (with clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings

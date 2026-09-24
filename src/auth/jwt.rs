@@ -7,17 +7,25 @@ use uuid::Uuid;
 pub struct Claims {
     pub sub: Uuid,
     pub merchant_id: Option<Uuid>,
+    #[serde(default)]
+    pub is_admin: bool,
     pub exp: usize,
     pub iat: usize,
 }
 
 pub const TOKEN_TTL_HOURS: i64 = 24;
 
-pub fn sign(secret: &str, user_id: Uuid, merchant_id: Option<Uuid>) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn sign(
+    secret: &str,
+    user_id: Uuid,
+    merchant_id: Option<Uuid>,
+    is_admin: bool,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let now = Utc::now();
     let claims = Claims {
         sub: user_id,
         merchant_id,
+        is_admin,
         iat: now.timestamp() as usize,
         exp: (now + Duration::hours(TOKEN_TTL_HOURS)).timestamp() as usize,
     };

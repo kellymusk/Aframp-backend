@@ -4,13 +4,35 @@ use axum::http::StatusCode;
 use axum::Json;
 
 use crate::auth::{cookie, jwt};
-use crate::error::ApiError;
+use crate::auth::jwt::Claims;
+use crate::error::{forbidden, ApiError, ErrorCode};
 use crate::AppState;
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: uuid::Uuid,
     pub merchant_id: Option<uuid::Uuid>,
+}
+
+/// Same session proof as [`AuthUser`], but additionally requires the `is_admin`
+/// JWT claim. The claim is baked in at login and not re-checked against the
+/// database, so revoking admin access takes up to [`jwt::TOKEN_TTL_HOURS`] to
+/// take effect on outstanding tokens.
+#[derive(Debug, Clone)]
+pub struct AdminUser;
+
+fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, Json<ApiError>)> {
+    // API clients send a bearer token; browsers send the HttpOnly session
+    // cookie, which JS on the page cannot read. Either proves the session.
+    let token = parts
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .or_else(|| cookie::from_headers(&parts.headers))
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "missing session cookie or bearer token".into(), field: None })))?;
+    jwt::verify(&state.jwt_secret, token)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })))
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -20,20 +42,26 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // API clients send a bearer token; browsers send the HttpOnly session
-        // cookie, which JS on the page cannot read. Either proves the session.
-        let token = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .or_else(|| cookie::from_headers(&parts.headers))
-            .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { error: "missing session cookie or bearer token".into() })))?;
-        let claims = jwt::verify(&state.jwt_secret, token)
-            .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid or expired token".into() })))?;
+        let claims = authenticate(parts, state)?;
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,
         })
+    }
+}
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = (StatusCode, Json<ApiError>);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let claims = authenticate(parts, state)?;
+        if !claims.is_admin {
+            return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
+        }
+        tracing::info!(admin_user_id = %claims.sub, path = %parts.uri.path(), "admin access");
+        Ok(AdminUser)
     }
 }

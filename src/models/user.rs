@@ -10,6 +10,12 @@ pub struct User {
     #[serde(skip_serializing)]
     pub password_hash: String,
     pub name: String,
+    pub is_admin: bool,
+    /// `None` only for accounts created before phone/OTP verification
+    /// existed — they keep logging in without a challenge. Every account
+    /// created since always has one.
+    pub phone_number: Option<String>,
+    pub phone_verified: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -19,6 +25,7 @@ pub struct SignupRequest {
     pub email: String,
     pub password: String,
     pub name: String,
+    pub phone_number: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

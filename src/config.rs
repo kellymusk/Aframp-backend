@@ -42,6 +42,15 @@ impl AsRef<str> for SecretString {
     }
 }
 
+/// Which SMS backend delivers OTP codes. `Mock` logs the code instead of
+/// sending it (see `otp::mock`), so local dev never needs live Termii
+/// credentials — the walkthrough in the OTP plan runs entirely on `Mock`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OtpProviderKind {
+    Mock,
+    Termii,
+}
+
 #[derive(Clone, Debug)]
 pub struct AppConfig {
     pub database_url: String,
@@ -53,6 +62,15 @@ pub struct AppConfig {
     pub stellar_poll_interval_secs: u64,
     pub wallet_encryption_key: SecretString,
     pub paystack_secret_key: SecretString,
+    /// Keys the HMAC that OTP codes are stored under. A bare hash of a
+    /// 6-digit code is trivially reversible by anyone with DB read access
+    /// (only ~1M possible values) — this secret is what makes the digest
+    /// unrecoverable without it. Never reused for anything else.
+    pub otp_hmac_secret: SecretString,
+    pub otp_provider: OtpProviderKind,
+    /// Required when `otp_provider` is `Termii`; absent when it's `Mock`.
+    pub termii_api_key: Option<SecretString>,
+    pub termii_sender_id: Option<String>,
     /// Browser origins allowed to call this API. The merchant frontend is a
     /// separate origin, so without this every request fails CORS preflight.
     pub cors_allowed_origins: Vec<String>,
@@ -79,6 +97,25 @@ impl AppConfig {
             return Err("COOKIE_SAME_SITE=none requires COOKIE_SECURE=true; browsers reject a SameSite=None cookie that is not Secure".into());
         }
 
+        let otp_provider = match std::env::var("OTP_PROVIDER")
+            .unwrap_or_else(|_| "termii".into())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "termii" => OtpProviderKind::Termii,
+            "mock" => OtpProviderKind::Mock,
+            other => return Err(format!("OTP_PROVIDER must be `termii` or `mock`, got `{other}`")),
+        };
+        let (termii_api_key, termii_sender_id) = if otp_provider == OtpProviderKind::Termii {
+            (
+                Some(SecretString::new(env("TERMII_API_KEY")?)),
+                Some(env("TERMII_SENDER_ID")?),
+            )
+        } else {
+            (None, None)
+        };
+
         Ok(Self {
             database_url: env("DATABASE_URL")?,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
@@ -93,6 +130,10 @@ impl AppConfig {
                 .unwrap_or(60),
             wallet_encryption_key: SecretString::new(env("WALLET_ENCRYPTION_KEY")?),
             paystack_secret_key: SecretString::new(env("PAYSTACK_SECRET_KEY")?),
+            otp_hmac_secret: SecretString::new(env("OTP_HMAC_SECRET")?),
+            otp_provider,
+            termii_api_key,
+            termii_sender_id,
             cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
                 .unwrap_or_else(|_| "http://localhost:3001".into())
                 .split(',')
@@ -156,6 +197,10 @@ mod tests {
                 stellar_poll_interval_secs: 60,
                 wallet_encryption_key: SecretString::new("encryption-key".to_string()),
                 paystack_secret_key: SecretString::new("paystack-key".to_string()),
+                otp_hmac_secret: SecretString::new("otp-hmac-secret-value".to_string()),
+                otp_provider: OtpProviderKind::Termii,
+                termii_api_key: Some(SecretString::new("termii-key".to_string())),
+                termii_sender_id: Some("Aframp".to_string()),
                 cors_allowed_origins: vec!["http://localhost:3001".to_string()],
                 cookie: CookieConfig {
                     secure: true,
@@ -167,5 +212,7 @@ mod tests {
         assert!(!config_debug.contains("webhook-secret-value"));
         assert!(!config_debug.contains("encryption-key"));
         assert!(!config_debug.contains("paystack-key"));
+        assert!(!config_debug.contains("otp-hmac-secret-value"));
+        assert!(!config_debug.contains("termii-key"));
     }
 }

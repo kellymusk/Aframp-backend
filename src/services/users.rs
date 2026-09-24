@@ -5,36 +5,35 @@ use crate::models::{Merchant, User};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UserError {
-    #[error("email already registered")]
-    EmailTaken,
     #[error("invalid email or password")]
     InvalidCredentials,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
-    #[error("password hashing failed")]
-    Hash,
 }
 
-pub async fn signup(
+/// Materializes a brand-new account. The only caller is
+/// `services::otp::verify`, once a signup's OTP challenge passes — never
+/// called speculatively, so an unverified phone can never end up attached
+/// to a real, loggable-in account. `password_hash` must already be hashed.
+pub async fn create_verified(
     db: &PgPool,
     email: &str,
-    password_raw: &str,
+    password_hash: &str,
     name: &str,
-) -> Result<(User, Merchant), UserError> {
-    let password_hash = password::hash(password_raw).map_err(|_| UserError::Hash)?;
-
+    phone_number: &str,
+) -> Result<(User, Merchant), sqlx::Error> {
     let mut tx = db.begin().await?;
     let user = sqlx::query_as::<_, User>(
-        "INSERT INTO users (email, password_hash, name)
-         VALUES ($1, $2, $3)
-         RETURNING id, email, password_hash, name, created_at, updated_at",
+        "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
+         VALUES ($1, $2, $3, $4, true)
+         RETURNING id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at",
     )
     .bind(email)
-    .bind(&password_hash)
+    .bind(password_hash)
     .bind(name)
+    .bind(phone_number)
     .fetch_one(&mut *tx)
-    .await
-    .map_err(map_insert_error)?;
+    .await?;
 
     let merchant = sqlx::query_as::<_, Merchant>(
         "INSERT INTO merchants (user_id, name)
@@ -50,24 +49,19 @@ pub async fn signup(
     Ok((user, merchant))
 }
 
-fn map_insert_error(err: sqlx::Error) -> UserError {
-    if is_unique_violation(&err) {
-        UserError::EmailTaken
-    } else {
-        UserError::Database(err)
+/// Which unique constraint a `23505` violation hit, if any — lets a caller
+/// distinguish "email taken" from "phone taken" from an unrelated conflict.
+pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
+    match err {
+        sqlx::Error::Database(db) if db.code().as_deref() == Some("23505") => db.constraint(),
+        _ => None,
     }
-}
-
-fn is_unique_violation(err: &sqlx::Error) -> bool {
-    matches!(
-        err,
-        sqlx::Error::Database(db) if db.code().as_deref() == Some("23505")
-    )
 }
 
 pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, name, created_at, updated_at FROM users WHERE email = $1",
+        "SELECT id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at
+           FROM users WHERE email = $1",
     )
     .bind(email)
     .fetch_optional(db)
@@ -90,7 +84,8 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
 
 pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, name, created_at, updated_at FROM users WHERE id = $1",
+        "SELECT id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at
+           FROM users WHERE id = $1",
     )
     .bind(user_id)
     .fetch_optional(db)

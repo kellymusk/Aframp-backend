@@ -50,11 +50,12 @@ paths:
   /signup:
     post:
       tags: [Auth]
-      summary: Create a user and merchant
+      summary: Start signup — sends an OTP
       description: >
-        Sets the aframp_session HttpOnly cookie and echoes the same JWT in the
-        body for API clients. Browsers should rely on the cookie and ignore the
-        token field — storing it in localStorage exposes the session to XSS.
+        Does NOT create the account. Validates the credentials, sends an OTP
+        to phone_number, and returns a challenge; the user and merchant are
+        only inserted once POST /verify-otp succeeds. Re-submitting the same
+        email before it's ever verified is the resend path, not a conflict.
       security: []
       requestBody:
         required: true
@@ -63,26 +64,34 @@ paths:
             schema: { $ref: '#/components/schemas/SignupRequest' }
       responses:
         '200':
-          description: Account created
+          description: OTP sent
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AuthResponse' }
+              schema: { $ref: '#/components/schemas/OtpChallengeResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409':
-          description: Email already registered
+          description: Email or phone already registered to a verified account
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429':
+          description: OTP resend cooldown or hourly cap hit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
 
   /login:
     post:
       tags: [Auth]
-      summary: Authenticate
+      summary: Authenticate — sends an OTP if the phone is verified
       description: >
         Returns 401 for both a wrong password and an unknown email — deliberately
         indistinguishable, so do not derive a "no such account" message from it.
-        Sets the aframp_session HttpOnly cookie on success.
+        On success, a phone-verified account gets a fresh OTP challenge (same
+        shape as /signup) instead of a session — two-factor on every login.
+        Only an account with no phone on file (pre-OTP-rollout only) gets the
+        session directly, same as before.
       security: []
       requestBody:
         required: true
@@ -91,11 +100,58 @@ paths:
             schema: { $ref: '#/components/schemas/LoginRequest' }
       responses:
         '200':
-          description: Authenticated
+          description: Either an OTP challenge (normal case) or a session (legacy account only)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OtpChallengeResponse'
+                  - $ref: '#/components/schemas/AuthResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429':
+          description: OTP resend cooldown or hourly cap hit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /verify-otp:
+    post:
+      tags: [Auth]
+      summary: Complete a signup or login challenge
+      description: >
+        The only endpoint that ever issues a session. For a signup challenge,
+        the user and merchant are created transactionally here, not before.
+        Sets the aframp_session HttpOnly cookie and echoes the same JWT in the
+        body for API clients. Browsers should rely on the cookie and ignore the
+        token field — storing it in localStorage exposes the session to XSS.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyOtpRequest' }
+      responses:
+        '200':
+          description: Session issued
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '400':
+          description: OTP_INVALID, OTP_EXPIRED, or OTP_LOCKED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404':
+          description: OTP_CHALLENGE_NOT_FOUND — unknown or already-consumed challenge_id
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: Email or phone was taken by someone else between signup and verification
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
 
   /logout:
@@ -363,17 +419,24 @@ components:
   schemas:
     ApiError:
       type: object
-      required: [error]
+      required: [error, code]
       properties:
         error: { type: string, example: insufficient available balance }
+        code:
+          type: string
+          example: INSUFFICIENT_BALANCE
+          description: "Machine-readable error code. Full catalog: INVALID_PARAMETERS, INVALID_AMOUNT, INSUFFICIENT_BALANCE, UNSUPPORTED_ASSET, PAYOUT_FAILED, EMAIL_TAKEN, PHONE_TAKEN, INVALID_CREDENTIALS, USER_NOT_FOUND, MERCHANT_NOT_FOUND, WALLET_NOT_FOUND, PAYMENT_REQUEST_NOT_FOUND, FORBIDDEN, OTP_INVALID, OTP_EXPIRED, OTP_LOCKED, OTP_CHALLENGE_NOT_FOUND, TOO_MANY_REQUESTS, INTERNAL_ERROR"
 
     SignupRequest:
       type: object
-      required: [email, password, name]
+      required: [email, password, name, phone_number]
       properties:
         email: { type: string, format: email }
         password: { type: string, minLength: 8 }
         name: { type: string, minLength: 1 }
+        phone_number:
+          type: string
+          description: Nigerian mobile, any common format (0801..., 801..., +234801..., 234801...); normalized to E.164 server-side.
 
     LoginRequest:
       type: object
@@ -381,6 +444,20 @@ components:
       properties:
         email: { type: string, format: email }
         password: { type: string }
+
+    VerifyOtpRequest:
+      type: object
+      required: [challenge_id, code]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        code: { type: string, description: 6-digit code. }
+
+    OtpChallengeResponse:
+      type: object
+      required: [challenge_id, expires_in_secs]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        expires_in_secs: { type: integer, example: 600 }
 
     AuthResponse:
       type: object

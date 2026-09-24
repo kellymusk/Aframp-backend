@@ -35,10 +35,12 @@ pub async fn state() -> Option<AppState> {
 
     Some(AppState {
         db,
-        jwt_secret: Arc::new("integration-test-secret".into()),
-        webhook_secret: Arc::new("integration-test-webhook".into()),
+        jwt_secret: aframp::SecretString::new("integration-test-secret".into()),
+        webhook_secret: aframp::SecretString::new("integration-test-webhook".into()),
         wallet_encryption_key: Arc::new([7u8; 32]),
         payment_provider: Arc::new(aframp::payments::mock::MockProvider),
+        otp_provider: Arc::new(aframp::otp::mock::MockOtpProvider),
+        otp_hmac_secret: aframp::SecretString::new("integration-test-otp-secret".into()),
         cookie: aframp::CookieConfig {
             secure: true,
             same_site: aframp::SameSite::Lax,
@@ -111,8 +113,18 @@ pub async fn send_with_cookie(
     (status, json, set_cookie)
 }
 
+/// Signs up, pulls the OTP the mock provider "sent" back out, and verifies
+/// it — the full round trip, since signup alone no longer returns a
+/// session. Every caller of `ensure_merchant` keeps working unchanged.
 pub async fn ensure_merchant(app: &Router, seed: &str) -> (String, String) {
-    let email = format!("{seed}+{}@example.com", uuid::Uuid::new_v4().simple());
+    let unique = uuid::Uuid::new_v4();
+    let email = format!("{seed}+{}@example.com", unique.simple());
+    // A fresh, all-digits local number per call — collision-free across the
+    // whole test suite the same way the email's uuid suffix already is.
+    let local_digits = (unique.as_u128() as u64) % 10_000_000_000;
+    let phone_number = format!("0{local_digits:010}");
+    let normalized_phone = format!("+234{:010}", local_digits);
+
     let (status, json) = send(
         app.clone(),
         "POST",
@@ -121,13 +133,43 @@ pub async fn ensure_merchant(app: &Router, seed: &str) -> (String, String) {
         Some(serde_json::json!({
             "email": email,
             "password": "password123",
-            "name": "Test Merchant"
+            "name": "Test Merchant",
+            "phone_number": phone_number,
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "signup failed: {json}");
+    let challenge_id = json["challenge_id"]
+        .as_str()
+        .expect("signup should return a challenge_id")
+        .to_string();
+
+    let message = aframp::otp::mock::last_message_for(&normalized_phone)
+        .expect("mock otp provider should have recorded a message for this phone");
+    let code = extract_otp_code(&message);
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/verify-otp",
+        None,
+        Some(serde_json::json!({ "challenge_id": challenge_id, "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify-otp failed: {json}");
     (
         json["token"].as_str().unwrap().to_string(),
         json["merchant_id"].as_str().unwrap().to_string(),
     )
+}
+
+/// Pulls the 6-digit code out of a mock-provider message body, ignoring
+/// surrounding punctuation (e.g. the trailing period after the code).
+pub fn extract_otp_code(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_ascii_digit()))
+        .find(|word| word.len() == 6 && word.chars().all(|c| c.is_ascii_digit()))
+        .expect("message should contain a 6-digit code")
+        .to_string()
 }

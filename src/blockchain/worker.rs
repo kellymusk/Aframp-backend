@@ -9,7 +9,7 @@ use crate::services::{balances, payment_requests, payments, wallets};
 use crate::AppState;
 
 pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
-    let listener = StellarListener { horizon_url };
+    let listener = StellarListener::new(horizon_url);
 
     loop {
         if let Err(err) = poll_once(&state.db, &listener).await {

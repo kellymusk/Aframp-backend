@@ -47,6 +47,30 @@ pub fn is_valid_account_number(account_number: &str) -> bool {
     account_number.len() == 10 && account_number.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Accepts a Nigerian mobile number in any of the common input shapes
+/// (`0801...`, `801...`, `+234801...`, `234801...`, with optional spaces or
+/// dashes) and normalizes it to E.164 (`+234801...`) — the shape Termii and
+/// every other SMS API expect. Ten digits after the country code, matching
+/// the standard Nigerian mobile numbering plan (leading 0 dropped, not part
+/// of the subscriber number).
+pub fn normalize_ng_phone_number(input: &str) -> Result<String, &'static str> {
+    let digits: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    let local = if let Some(rest) = digits.strip_prefix("234") {
+        rest
+    } else if let Some(rest) = digits.strip_prefix('0') {
+        rest
+    } else {
+        digits.as_str()
+    };
+
+    if local.len() != 10 || !local.chars().all(|c| c.is_ascii_digit()) {
+        return Err("phone_number must be a 10-digit Nigerian mobile number (e.g. 0801..., +234801...)");
+    }
+
+    Ok(format!("+234{local}"))
+}
+
 pub const MAX_NAME_LEN: usize = 100;
 
 /// Trims the name and validates it is non-empty and within the max length.
@@ -59,4 +83,24 @@ pub fn validate_name(name: &str) -> Result<String, &'static str> {
         return Err("name must be at most 100 characters");
     }
     Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_every_common_input_shape_to_e164() {
+        for input in ["08011122233", "8011122233", "+2348011122233", "2348011122233", "0801-112-2233"] {
+            assert_eq!(normalize_ng_phone_number(input).unwrap(), "+2348011122233", "input: {input}");
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_length_and_non_digit_input() {
+        assert!(normalize_ng_phone_number("080111222").is_err()); // too short
+        assert!(normalize_ng_phone_number("080111222333").is_err()); // too long
+        assert!(normalize_ng_phone_number("not-a-phone").is_err());
+        assert!(normalize_ng_phone_number("").is_err());
+    }
 }

@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aframp Admin</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --border: #e2e2e6;
+    --text: #1c1c1f;
+    --muted: #6b6b76;
+    --accent: #4f46e5;
+    --accent-text: #ffffff;
+    --danger: #b91c1c;
+    --danger-bg: #fee2e2;
+    --ok: #15803d;
+    --ok-bg: #dcfce7;
+    --warn: #b45309;
+    --warn-bg: #fef3c7;
+    --info: #1d4ed8;
+    --info-bg: #dbeafe;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15151a;
+      --panel: #1e1e24;
+      --border: #33333a;
+      --text: #e9e9ee;
+      --muted: #9a9aa5;
+      --accent: #818cf8;
+      --accent-text: #15151a;
+      --danger: #f87171;
+      --danger-bg: #3a1a1a;
+      --ok: #4ade80;
+      --ok-bg: #14301f;
+      --warn: #fbbf24;
+      --warn-bg: #3a2b0f;
+      --info: #93c5fd;
+      --info-bg: #14213a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    padding-bottom: 3rem;
+  }
+  a { color: var(--accent); }
+
+  /* ---- login screen ---- */
+  #login-view {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 360px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+  }
+  .login-card h1 {
+    font-size: 1.15rem;
+    margin: 0 0 4px;
+  }
+  .login-card p.sub {
+    color: var(--muted);
+    margin: 0 0 20px;
+    font-size: 0.85rem;
+  }
+  label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  input[type=email], input[type=password], input[type=number] {
+    width: 100%;
+    padding: 9px 10px;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.9rem;
+  }
+  button {
+    cursor: pointer;
+    font-size: 0.85rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    padding: 8px 14px;
+  }
+  button.primary {
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: transparent;
+    width: 100%;
+  }
+  #login-error, #app-error {
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 0.8rem;
+    margin-bottom: 12px;
+  }
+  [hidden] { display: none !important; }
+
+  /* ---- app shell ---- */
+  header.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  header.topbar .brand {
+    font-weight: 600;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  header.topbar .brand span.tag {
+    font-size: 0.7rem;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  header.topbar .who {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  nav.tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 20px 0;
+    overflow-x: auto;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.tabs button {
+    border: none;
+    background: transparent;
+    padding: 8px 14px;
+    border-radius: 8px 8px 0 0;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  nav.tabs button.active {
+    color: var(--text);
+    background: var(--bg);
+    font-weight: 600;
+  }
+  main {
+    padding: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+    overflow-x: auto;
+  }
+  .panel h2 {
+    margin: 0 0 12px;
+    font-size: 0.95rem;
+  }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .stat-card .n {
+    font-size: 1.6rem;
+    font-weight: 700;
+  }
+  .stat-card .l {
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 2px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  tbody tr:hover { background: var(--bg); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8em; }
+  .muted { color: var(--muted); }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: capitalize;
+  }
+  .empty {
+    color: var(--muted);
+    font-size: 0.85rem;
+    padding: 12px 0;
+  }
+  .refresh {
+    float: right;
+  }
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="login-view">
+  <form class="login-card" id="login-form">
+    <h1>Aframp Admin</h1>
+    <p class="sub">Sign in with an admin account to view system activity.</p>
+    <div id="login-error" hidden></div>
+    <label for="email">Email</label>
+    <input type="email" id="email" required autocomplete="username">
+    <label for="password">Password</label>
+    <input type="password" id="password" required autocomplete="current-password">
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="app-view" hidden>
+  <header class="topbar">
+    <div class="brand">Aframp <span class="tag">admin</span></div>
+    <div class="who">
+      <span id="who-email"></span>
+      <button id="logout-btn">Log out</button>
+    </div>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="merchants">Merchants</button>
+    <button data-tab="users">Users</button>
+    <button data-tab="wallets">Wallets</button>
+    <button data-tab="transactions">Transactions</button>
+    <button data-tab="withdrawals">Withdrawals</button>
+    <button data-tab="payment-requests">Payment Requests</button>
+  </nav>
+  <main>
+    <div id="app-error" hidden></div>
+    <div id="tab-content"></div>
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const loginView = document.getElementById("login-view");
+  const appView = document.getElementById("app-view");
+  const loginForm = document.getElementById("login-form");
+  const loginError = document.getElementById("login-error");
+  const appError = document.getElementById("app-error");
+  const whoEmail = document.getElementById("who-email");
+  const tabsNav = document.getElementById("tabs");
+  const tabContent = document.getElementById("tab-content");
+  const logoutBtn = document.getElementById("logout-btn");
+
+  let activeTab = "overview";
+
+  function showLogin(message) {
+    appView.hidden = true;
+    loginView.hidden = false;
+    if (message) {
+      loginError.textContent = message;
+      loginError.hidden = false;
+    } else {
+      loginError.hidden = true;
+    }
+  }
+
+  function showApp(me) {
+    loginView.hidden = true;
+    appView.hidden = false;
+    whoEmail.textContent = me.email;
+    renderTab(activeTab);
+  }
+
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* no body */ }
+    if (!res.ok) {
+      const err = new Error((body && body.error) || res.statusText);
+      err.status = res.status;
+      err.code = body && body.code;
+      throw err;
+    }
+    return body;
+  }
+
+  function fmtAmount(stroops, asset) {
+    if (stroops === null || stroops === undefined) return "—";
+    const n = Number(stroops) / 10000000;
+    return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 }) + " " + (asset || "");
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString();
+  }
+
+  const STATUS_COLORS = {
+    completed: "ok", confirmed: "ok", paid: "ok",
+    pending: "warn", processing: "warn", partial: "warn", detected: "warn",
+    failed: "danger", expired: "danger",
+    verified: "info",
+  };
+
+  function badge(status) {
+    const kind = STATUS_COLORS[status] || "info";
+    return `<span class="badge" style="color:var(--${kind});background:var(--${kind}-bg)">${escapeHtml(status)}</span>`;
+  }
+
+  function boolBadge(value, trueLabel, falseLabel) {
+    if (!value) return `<span class="muted">${falseLabel}</span>`;
+    return `<span class="badge" style="color:var(--ok);background:var(--ok-bg)">${trueLabel}</span>`;
+  }
+
+  function escapeHtml(v) {
+    return String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function short(v, n) {
+    if (!v) return "—";
+    return v.length > n ? v.slice(0, n) + "…" : v;
+  }
+
+  function table(rows, columns) {
+    if (!rows || rows.length === 0) {
+      return '<p class="empty">Nothing here yet.</p>';
+    }
+    const head = columns.map((c) => `<th>${c.label}</th>`).join("");
+    const body = rows
+      .map((row) => "<tr>" + columns.map((c) => `<td>${c.render ? c.render(row) : escapeHtml(row[c.key] ?? "—")}</td>`).join("") + "</tr>")
+      .join("");
+    return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  function panel(title, bodyHtml, refreshable) {
+    return `<div class="panel"><div class="toolbar"><h2>${title}</h2>${refreshable ? '<button data-refresh="1">Refresh</button>' : ""}</div>${bodyHtml}</div>`;
+  }
+
+  const TABS = {
+    overview: {
+      label: "Overview",
+      async load() {
+        const o = await api("/admin/overview");
+        const cards = [
+          ["Users", o.total_users],
+          ["Merchants", o.total_merchants],
+          ["Wallets", o.total_wallets],
+        ].map(([l, n]) => `<div class="stat-card"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+
+        const balances = table(o.balances_by_asset, [
+          { label: "Asset", key: "asset" },
+          { label: "Available", render: (r) => fmtAmount(r.available, r.asset) },
+          { label: "Pending", render: (r) => fmtAmount(r.pending, r.asset) },
+        ]);
+
+        const statusTable = (rows) => table(rows, [
+          { label: "Status", render: (r) => badge(r.status) },
+          { label: "Count", key: "count" },
+        ]);
+
+        return `
+          <div class="stat-grid">${cards}</div>
+          ${panel("Balances by asset (across all merchants)", balances)}
+          <div class="stat-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
+            ${panel("Transactions by status", statusTable(o.payments_by_status))}
+            ${panel("Withdrawals by status", statusTable(o.withdrawals_by_status))}
+            ${panel("Payment requests by status", statusTable(o.payment_requests_by_status))}
+          </div>
+        `;
+      },
+    },
+    merchants: {
+      label: "Merchants",
+      async load() {
+        const rows = await api("/admin/merchants");
+        return panel("Merchants", table(rows, [
+          { label: "Name", key: "name" },
+          { label: "Owner email", key: "owner_email" },
+          { label: "Wallet", render: (r) => r.wallet_address ? `<span class="mono">${short(r.wallet_address, 16)}</span>` : '<span class="muted">none</span>' },
+          { label: "Created", render: (r) => fmtDate(r.created_at) },
+          { label: "Merchant ID", render: (r) => `<span class="mono">${short(r.id, 12)}</span>` },
+        ]), true);
+      },
+    },
+    users: {
+      label: "Users",
+      async load() {
+        const rows = await api("/admin/users");
+        return panel("Users", table(rows, [
+          { label: "Email", key: "email" },
+          { label: "Name", key: "name" },
+          { label: "Admin", render: (r) => boolBadge(r.is_admin, "yes", "no") },
+          { label: "Merchant", render: (r) => r.merchant_name || '<span class="muted">none</span>' },
+          { label: "Joined", render: (r) => fmtDate(r.created_at) },
+        ]), true);
+      },
+    },
+    wallets: {
+      label: "Wallets",
+      async load() {
+        const rows = await api("/admin/wallets");
+        return panel("Wallets", table(rows, [
+          { label: "Merchant", key: "merchant_name" },
+          { label: "Address", render: (r) => `<span class="mono">${short(r.address, 20)}</span>` },
+          { label: "Network", key: "network" },
+          { label: "Created", render: (r) => fmtDate(r.created_at) },
+        ]), true);
+      },
+    },
+    transactions: {
+      label: "Transactions",
+      async load() {
+        const rows = await api("/admin/transactions");
+        return panel("Deposits / transactions", table(rows, [
+          { label: "Merchant", key: "merchant_name" },
+          { label: "Amount", render: (r) => fmtAmount(r.amount_stroops, r.asset) },
+          { label: "Status", render: (r) => badge(r.status) },
+          { label: "Confirmations", key: "confirmations" },
+          { label: "Tx hash", render: (r) => `<span class="mono">${short(r.tx_hash, 16)}</span>` },
+          { label: "Created", render: (r) => fmtDate(r.created_at) },
+        ]), true);
+      },
+    },
+    withdrawals: {
+      label: "Withdrawals",
+      async load() {
+        const rows = await api("/admin/withdrawals");
+        return panel("Withdrawals", table(rows, [
+          { label: "Merchant", key: "merchant_name" },
+          { label: "Amount", render: (r) => fmtAmount(r.amount_stroops, r.asset) },
+          { label: "Status", render: (r) => badge(r.status) },
+          { label: "Bank", render: (r) => r.bank_code || "—" },
+          { label: "Account", render: (r) => r.account_number || "—" },
+          { label: "Failure reason", render: (r) => r.failure_reason ? `<span style="color:var(--danger)">${escapeHtml(r.failure_reason)}</span>` : "—" },
+          { label: "Created", render: (r) => fmtDate(r.created_at) },
+        ]), true);
+      },
+    },
+    "payment-requests": {
+      label: "Payment Requests",
+      async load() {
+        const rows = await api("/admin/payment-requests");
+        return panel("Payment requests", table(rows, [
+          { label: "Merchant", key: "merchant_name" },
+          { label: "Amount", render: (r) => fmtAmount(r.amount_stroops, r.asset) },
+          { label: "Status", render: (r) => badge(r.status) },
+          { label: "Memo", render: (r) => `<span class="mono">${escapeHtml(r.memo)}</span>` },
+          { label: "Expires", render: (r) => fmtDate(r.expires_at) },
+          { label: "Created", render: (r) => fmtDate(r.created_at) },
+        ]), true);
+      },
+    },
+  };
+
+  async function renderTab(name) {
+    activeTab = name;
+    [...tabsNav.querySelectorAll("button")].forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+    tabContent.innerHTML = '<p class="empty">Loading…</p>';
+    appError.hidden = true;
+    try {
+      tabContent.innerHTML = await TABS[name].load();
+    } catch (err) {
+      if (err.status === 401) {
+        showLogin("Your session expired. Please sign in again.");
+        return;
+      }
+      appError.textContent = "Failed to load " + TABS[name].label + ": " + err.message;
+      appError.hidden = false;
+      tabContent.innerHTML = "";
+    }
+  }
+
+  tabsNav.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-tab]");
+    if (btn) renderTab(btn.dataset.tab);
+  });
+
+  tabContent.addEventListener("click", (e) => {
+    if (e.target.matches("button[data-refresh]")) renderTab(activeTab);
+  });
+
+  loginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    loginError.hidden = true;
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    try {
+      await api("/login", { method: "POST", body: JSON.stringify({ email, password }) });
+      await checkSession();
+    } catch (err) {
+      loginError.textContent = err.message || "Login failed";
+      loginError.hidden = false;
+    }
+  });
+
+  logoutBtn.addEventListener("click", async () => {
+    try { await fetch("/logout", { method: "POST" }); } catch (_) { /* best effort */ }
+    showLogin();
+  });
+
+  async function checkSession() {
+    try {
+      const me = await api("/me");
+      if (!me.is_admin) {
+        showLogin("This account is not an admin.");
+        return;
+      }
+      showApp(me);
+    } catch (_) {
+      showLogin();
+    }
+  }
+
+  checkSession();
+})();
+</script>
+</body>
+</html>

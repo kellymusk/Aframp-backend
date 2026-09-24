@@ -186,8 +186,9 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/signup` | — | Create a user + merchant account. Body: `{ email, password (min 8 chars), name }` |
-| `POST` | `/login` | — | Authenticate. Body: `{ email, password }` |
+| `POST` | `/signup` | — | Validates credentials and sends an OTP — **does not create the account yet**. Body: `{ email, password (min 8 chars), name, phone_number }` (Nigerian mobile, any common format). Returns `{ challenge_id, expires_in_secs }`. The account is only materialized once `/verify-otp` succeeds |
+| `POST` | `/login` | — | Verifies the password; a phone-verified account gets a fresh OTP challenge (same response shape as signup) instead of a session — full 2FA, every login. An account with no phone on file (only possible pre-OTP-rollout) logs in synchronously, unchanged |
+| `POST` | `/verify-otp` | — | `{ challenge_id, code }` → on success, the only place a session is ever issued: same response as the old `/signup`/`/login`, `Set-Cookie` included. Codes expire in 10 minutes, lock after 5 wrong attempts, and re-`POST`ing `/signup` or `/login` (not a separate endpoint) is the resend path — rate-limited to one send per 60s and 5 per hour per phone |
 | `POST` | `/logout` | — | Expire the session cookie. Ends the browser session; does not revoke the JWT |
 | `GET` | `/me` | ✅ | Current user + merchant profile. The JWT carries only ids, so a reloaded frontend needs this to render identity |
 | `POST` | `/wallet/create` | ✅ | Generate a real Stellar wallet for the authenticated merchant. Body: `{ network? }` (defaults to `stellar`) |
@@ -200,14 +201,38 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
+| `GET` | `/admin` | — | Static admin dashboard shell (see [Admin access](#admin-access) below) |
+| `GET` | `/admin/overview` | 🔒 admin | Counts + balances/status breakdowns across every merchant |
+| `GET` | `/admin/merchants`, `/admin/users`, `/admin/wallets`, `/admin/transactions`, `/admin/withdrawals`, `/admin/payment-requests` | 🔒 admin | System-wide list views (`?limit=`, default 100, max 500), each joined with owner/merchant context |
+| `POST` | `/webhooks/termii` | 🔏 signed | Termii's SMS delivery-status callback — not for merchant/admin use, see [Termii webhook](#termii-webhook) below |
 
-`/signup` and `/login` both return:
+`/verify-otp` — the only endpoint that ever issues a session — returns:
 
 ```json
 { "token": "...", "user_id": "...", "merchant_id": "..." }
 ```
 
-…alongside a `Set-Cookie: aframp_session=<jwt>; HttpOnly; Path=/; SameSite=Lax; Max-Age=86400; Secure`. A browser frontend should use the cookie and ignore the `token` field — copying it into `localStorage` puts the session within reach of any XSS on the page.
+…alongside a `Set-Cookie: aframp_session=<jwt>; HttpOnly; Path=/; SameSite=Lax; Max-Age=86400; Secure`. A browser frontend should use the cookie and ignore the `token` field — copying it into `localStorage` puts the session within reach of any XSS on the page. `/signup` and `/login` themselves return only `{ challenge_id, expires_in_secs }` — no cookie, nothing to store, until the code is verified.
+
+Local dev never needs a real Termii account: set `OTP_PROVIDER=mock` (see `.env.example`) and the code is logged via `tracing::info!` instead of sent, so you can read it straight out of `cargo run`'s stdout.
+
+### Admin access
+
+There's no self-service way to become an admin — flag a user directly in Postgres:
+
+```sql
+UPDATE users SET is_admin = true WHERE email = 'you@example.com';
+```
+
+The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
+
+### Termii webhook
+
+Register `https://<your-deployed-host>/webhooks/termii` at [termii.com/account/webhook/config](https://termii.com/account/webhook/config) — it's one account-wide setting, not something passed per API call. Termii POSTs SMS delivery-status events (`Delivered`, `Message Failed`, `Rejected`, etc. — see [their docs](https://developers.termii.com/events-and-reports)) there, signed with `X-Termii-Signature` (HMAC-SHA512). This endpoint verifies that signature and logs the event; it doesn't yet correlate a delivery status back to the `otp_challenges` row that sent it — that'd need the provider's `message_id` captured at send time and a column to hold it, which nothing does today.
+
+**Their docs don't say which secret signs the header** — "your secret key," unspecified. This verifies against `TERMII_API_KEY`, the only secret both sides are known to share. If real Termii traffic starts failing signature checks, that assumption is the first thing to check against the dashboard.
+
+**Known gap since OTP shipped:** the `/admin` page's login form only knows the old one-step `/login` → cookie flow. An admin account created *before* OTP existed (no `phone_number` on the row) still logs in through it fine. An admin account with a phone number now gets a challenge response back instead of a session, and the dashboard has no code-entry step to handle that — it'll appear to fail to log in. Until the dashboard is updated, keep your admin account phone-less, or drive `/login` → `/verify-otp` manually with `curl`/Postman and paste the resulting cookie in by hand.
 
 ## Deploying behind TLS
 
