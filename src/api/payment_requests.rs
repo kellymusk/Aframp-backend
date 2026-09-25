@@ -147,8 +147,26 @@ fn build_sep7_uri(address: &str, amount_stroops: i64, asset: &str, memo: &str) -
     }
     let amount = format!("{}.{:07}", amount_stroops / 10_000_000, amount_stroops % 10_000_000);
     Some(format!(
-        "web+stellar:pay?destination={address}&amount={amount}&memo={memo}&memo_type=MEMO_TEXT"
+        "web+stellar:pay?destination={}&amount={}&memo={}&memo_type=MEMO_TEXT",
+        percent_encode(address),
+        percent_encode(&amount),
+        percent_encode(memo),
     ))
+}
+
+/// Percent-encode a SEP-7 query value (RFC 3986): everything except
+/// unreserved characters is escaped, so a value can never inject `&`, `=`
+/// or `#` into the URI.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn map_payment_request_error(
@@ -159,5 +177,77 @@ fn map_payment_request_error(
             bad_request(ErrorCode::InvalidAmount, "amount_stroops must be positive")
         }
         payment_requests::PaymentRequestError::Database(e) => internal(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query_params(uri: &str) -> Vec<(String, String)> {
+        let query = uri.split_once('?').unwrap().1;
+        query
+            .split('&')
+            .map(|pair| {
+                let (k, v) = pair.split_once('=').unwrap();
+                (k.to_string(), percent_decode(v))
+            })
+            .collect()
+    }
+
+    fn percent_decode(value: &str) -> String {
+        let bytes = value.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                out.push(u8::from_str_radix(&value[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn sep7_uri_encodes_special_characters_in_memo() {
+        let uri = build_sep7_uri("GABC", 10_000_000, "XLM", "a&b=c#d e").unwrap();
+        assert_eq!(
+            uri,
+            "web+stellar:pay?destination=GABC&amount=1.0000000&memo=a%26b%3Dc%23d%20e&memo_type=MEMO_TEXT"
+        );
+        assert!(!uri.contains('#'));
+    }
+
+    #[test]
+    fn sep7_uri_cannot_gain_injected_params() {
+        let uri = build_sep7_uri("GABC", 1, "native", "x&destination=GEVIL").unwrap();
+        let params = query_params(&uri);
+        let keys: Vec<&str> = params.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["destination", "amount", "memo", "memo_type"]);
+        assert_eq!(params[0].1, "GABC");
+    }
+
+    #[test]
+    fn sep7_uri_round_trips_through_a_parser() {
+        let memo = "pay #42 & tip = 5%";
+        let uri = build_sep7_uri("GDEST", 25_000_000, "XLM", memo).unwrap();
+        let params = query_params(&uri);
+        assert_eq!(
+            params,
+            [
+                ("destination".to_string(), "GDEST".to_string()),
+                ("amount".to_string(), "2.5000000".to_string()),
+                ("memo".to_string(), memo.to_string()),
+                ("memo_type".to_string(), "MEMO_TEXT".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn sep7_uri_is_none_for_non_native_assets() {
+        assert!(build_sep7_uri("GABC", 1, "cNGN", "m").is_none());
     }
 }

@@ -244,3 +244,48 @@ async fn payment_request_marked_paid_on_memo_correlated_deposit() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["status"], "paid");
 }
+
+#[tokio::test]
+async fn expired_payment_request_is_not_matched_by_deposit_memo() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_expired_deposit").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 25_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let memo = created["memo"].as_str().unwrap();
+
+    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // This is the lookup blockchain::worker::process_deposit uses to decide
+    // which request a memo-matched deposit pays — an expired one must not match.
+    let wallet_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT wallet_id FROM payment_requests WHERE id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(&state.db, wallet_id, memo)
+        .await
+        .unwrap();
+    assert!(pending.is_none(), "an expired request must not be matched to a deposit");
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["status"], "expired");
+}
