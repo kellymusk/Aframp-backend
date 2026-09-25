@@ -105,3 +105,59 @@ pub fn router(state: AppState) -> axum::Router {
         .with_state(state)
         .layer(axum::middleware::from_fn(middleware::require_json_content_type))
 }
+
+#[cfg(test)]
+mod cors_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Method, Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn test_state() -> AppState {
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgres://user:pass@localhost:5432/aframp")
+            .expect("lazy pool");
+        AppState {
+            db,
+            jwt_secret: SecretString::new("test-jwt-secret".to_string()),
+            webhook_secret: SecretString::new("test-webhook-secret".to_string()),
+            wallet_encryption_key: std::sync::Arc::new([0u8; 32]),
+            payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::new(
+                "test-paystack-key".to_string(),
+            )),
+            otp_provider: std::sync::Arc::new(otp::mock::MockOtpProvider),
+            otp_hmac_secret: SecretString::new("test-otp-hmac-secret".to_string()),
+            cookie: CookieConfig::default(),
+        }
+    }
+
+    async fn preflight(method: Method) -> StatusCode {
+        let app = router(test_state());
+        let request = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/me")
+            .header(header::ORIGIN, "https://app.aframp.com")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, method.as_str())
+            .body(Body::empty())
+            .expect("request");
+        app.oneshot(request).await.expect("response").status()
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_patch() {
+        let status = preflight(Method::PATCH).await;
+        assert!(
+            status.is_success(),
+            "PATCH preflight should be allowed, got {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_delete() {
+        let status = preflight(Method::DELETE).await;
+        assert!(
+            status.is_success(),
+            "DELETE preflight should be allowed, got {status}"
+        );
+    }
+}
