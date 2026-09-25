@@ -18,6 +18,26 @@ impl PaymentProvider for FailingProvider {
     }
 }
 
+/// Succeeds at the provider but removes the pending row first, so recording
+/// the payout can never succeed — a stand-in for a persistent DB failure.
+struct RowVanishingProvider(sqlx::PgPool);
+
+#[async_trait]
+impl PaymentProvider for RowVanishingProvider {
+    async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
+        sqlx::query("DELETE FROM withdrawals WHERE id = $1::uuid")
+            .bind(&req.reference)
+            .execute(&self.0)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(PayoutResult {
+            provider: "paystack".into(),
+            provider_reference: "TRF_vanished".into(),
+            status: "processing".into(),
+        })
+    }
+}
+
 #[tokio::test]
 async fn withdrawal_insufficient_balance_rejected() {
     let Some(state) = state().await else {
@@ -282,4 +302,52 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     assert_eq!(withdrawals.len(), 1, "the failed attempt should still leave an audit-trail row");
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "simulated provider failure");
+}
+
+#[tokio::test]
+async fn withdrawal_payout_record_failure_is_surfaced_not_refunded() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.payment_provider = Arc::new(RowVanishingProvider(state.db.clone()));
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "payout_record_fail").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a payout that could not be recorded must surface as an error: {json}"
+    );
+
+    // The transfer went out, so the debit must stand — no refund.
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 3_000_000);
 }
