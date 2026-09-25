@@ -17,6 +17,13 @@ pub async fn get_balances(
     .await
 }
 
+/// Unconditionally adds `delta` to a balance row, creating it if needed.
+///
+/// Only for credits and for moving funds `pending -> available` (the deposit
+/// worker is the sole caller). Debits of `available` must go through the
+/// guarded `available >= amount` update in `services::withdrawals`; the
+/// `balances_available_non_negative` constraint rejects any write that would
+/// take `available` below zero.
 pub async fn apply_delta(db: &PgPool, delta: &UpdateBalance) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
