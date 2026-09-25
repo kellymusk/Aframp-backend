@@ -1,10 +1,12 @@
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
 use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
+use crate::pagination::{Cursor, Page};
 use crate::services::withdrawals::{self, WithdrawalError};
 use crate::validation::{is_valid_account_number, is_valid_bank_code};
 use crate::AppState;
@@ -12,11 +14,13 @@ use crate::AppState;
 #[derive(Deserialize)]
 pub struct ListParams {
     pub limit: Option<i64>,
+    pub cursor: Option<String>,
 }
 
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
+    headers: HeaderMap,
     Json(req): Json<CreateWithdrawalRequest>,
 ) -> ApiResult<Json<Withdrawal>> {
     let merchant_id = auth
@@ -37,6 +41,12 @@ pub async fn create(
             "must be a 10-digit NUBAN account number",
         ));
     }
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_owned);
     let withdrawal = withdrawals::create_withdrawal(
         &state.db,
         state.payment_provider.as_ref(),
@@ -46,6 +56,7 @@ pub async fn create(
             asset: req.asset.unwrap_or_else(|| "cNGN".into()),
             bank_code: req.bank_code,
             account_number: req.account_number,
+            idempotency_key,
         },
     )
     .await
@@ -57,15 +68,23 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<Withdrawal>>> {
+) -> ApiResult<Json<Page<Withdrawal>>> {
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let withdrawals = withdrawals::withdrawals_by_merchant(&state.db, merchant_id, limit)
-        .await
-        .map_err(internal)?;
-    Ok(Json(withdrawals))
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let withdrawals =
+        withdrawals::withdrawals_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
+            .await
+            .map_err(internal)?;
+    Ok(Json(Page::new(withdrawals, limit, |w| Cursor {
+        created_at: w.created_at,
+        id: w.id,
+    })))
 }
 
 fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
