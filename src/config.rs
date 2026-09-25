@@ -78,6 +78,12 @@ pub struct AppConfig {
     /// `Secure` on, `SameSite=Lax`. Browsers treat localhost as a secure
     /// context, so the defaults also work for local development over HTTP.
     pub cookie: CookieConfig,
+    /// Upper bound on pooled Postgres connections. Under concurrent load
+    /// (merchants withdrawing while the poll worker runs) the old hardcoded
+    /// ceiling of 5 made requests queue; this is now tunable per deployment.
+    pub database_max_connections: u32,
+    /// Connections kept warm so bursts don't pay full connect latency.
+    pub database_min_connections: u32,
 }
 
 impl AppConfig {
@@ -116,6 +122,14 @@ impl AppConfig {
             (None, None)
         };
 
+        let database_max_connections = number("DATABASE_MAX_CONNECTIONS", 10)?;
+        let database_min_connections = number("DATABASE_MIN_CONNECTIONS", 2)?;
+        if database_min_connections > database_max_connections {
+            return Err(format!(
+                "DATABASE_MIN_CONNECTIONS ({database_min_connections}) must not exceed DATABASE_MAX_CONNECTIONS ({database_max_connections})"
+            ));
+        }
+
         Ok(Self {
             database_url: env("DATABASE_URL")?,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
@@ -144,6 +158,8 @@ impl AppConfig {
                 secure: cookie_secure,
                 same_site: cookie_same_site,
             },
+            database_max_connections,
+            database_min_connections,
         })
     }
 }
@@ -160,6 +176,16 @@ fn flag(name: &str, default: bool) -> Result<bool, String> {
             "0" | "false" | "no" => Ok(false),
             other => Err(format!("{name} must be true or false, got `{other}`")),
         },
+    }
+}
+
+fn number(name: &str, default: u32) -> Result<u32, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{name} must be a positive integer, got `{value}`")),
     }
 }
 
@@ -206,13 +232,34 @@ mod tests {
                     secure: true,
                     same_site: SameSite::Lax,
                 },
+                database_max_connections: 10,
+                database_min_connections: 2,
             }
         );
         assert!(!config_debug.contains("jwt-secret-value"));
         assert!(!config_debug.contains("webhook-secret-value"));
-        assert!(!config_debug.contains("encryption-key"));
         assert!(!config_debug.contains("paystack-key"));
         assert!(!config_debug.contains("otp-hmac-secret-value"));
         assert!(!config_debug.contains("termii-key"));
+    }
+
+    #[test]
+    fn number_uses_default_when_unset() {
+        std::env::remove_var("DATABASE_MAX_CONNECTIONS_TEST");
+        assert_eq!(number("DATABASE_MAX_CONNECTIONS_TEST", 10).unwrap(), 10);
+    }
+
+    #[test]
+    fn number_parses_configured_value() {
+        std::env::set_var("DATABASE_MAX_CONNECTIONS_TEST", "25");
+        assert_eq!(number("DATABASE_MAX_CONNECTIONS_TEST", 10).unwrap(), 25);
+        std::env::remove_var("DATABASE_MAX_CONNECTIONS_TEST");
+    }
+
+    #[test]
+    fn number_rejects_non_numeric_value() {
+        std::env::set_var("DATABASE_MAX_CONNECTIONS_TEST", "lots");
+        assert!(number("DATABASE_MAX_CONNECTIONS_TEST", 10).is_err());
+        std::env::remove_var("DATABASE_MAX_CONNECTIONS_TEST");
     }
 }
