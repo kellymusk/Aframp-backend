@@ -696,3 +696,60 @@ async fn login_rate_limit_resets_after_successful_login() {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
+
+/// Creates a legacy (no-phone) account, which `/login` answers with a session
+/// directly, and returns its email.
+async fn legacy_account(db: &sqlx::PgPool, seed: &str) -> String {
+    let email = format!("{seed}+{}@example.com", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO users (email, password_hash, name) VALUES ($1, $2, 'Legacy User')")
+        .bind(&email)
+        .bind(aframp_password_hash_for_tests())
+        .execute(db)
+        .await
+        .unwrap();
+    email
+}
+
+async fn legacy_login(app: &axum::Router, email: &str) -> String {
+    let (status, body, _) = login_from(app, email, "legacy-password-123", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn logout_revokes_the_token_for_reuse() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let email = legacy_account(&db, "revoke").await;
+    let token = legacy_login(&app, &email).await;
+
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(app.clone(), "POST", "/logout", Some(&token), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A copy of the token held elsewhere no longer works.
+    let (status, body) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}
+
+#[tokio::test]
+async fn logout_revokes_only_the_presented_session() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let email = legacy_account(&db, "revoke_one").await;
+    let first = legacy_login(&app, &email).await;
+    let second = legacy_login(&app, &email).await;
+    assert_ne!(first, second, "each login must carry its own jti");
+
+    let (status, _) = send(app.clone(), "POST", "/logout", Some(&first), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&first), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&second), None).await;
+    assert_eq!(status, StatusCode::OK, "the other session stays valid");
+}

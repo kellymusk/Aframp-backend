@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, State};
-use axum::http::{header, Extensions, StatusCode};
+use axum::http::{header, Extensions, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
@@ -152,9 +152,19 @@ pub async fn verify_otp(
     )
 }
 
-/// Drops the session cookie. Deliberately unauthenticated: a browser holding an
-/// expired or malformed session still needs a way to clear it.
-pub async fn logout(State(state): State<AppState>) -> ApiResult<impl IntoResponse> {
+/// Drops the session cookie and revokes the presented token (bearer header or
+/// cookie), so a copy of it held elsewhere stops working too. Deliberately
+/// unauthenticated: a browser holding an expired or malformed session still
+/// needs a way to clear it.
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    if let Some(token) = crate::auth::extractor::session_token(&headers) {
+        if let Ok(claims) = jwt::verify(&state.jwt_secret, token) {
+            jwt::revoke(&state.db, &claims).await.map_err(internal)?;
+        }
+    }
     let cookie = state.cookie.clear().map_err(internal)?;
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
 }

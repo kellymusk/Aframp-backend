@@ -182,7 +182,7 @@ Errors: `400` `OTP_INVALID` (wrong code — 5 wrong guesses and the challenge is
 ### `POST /logout`
 No auth — a browser holding an expired or malformed session still needs to clear it. Returns `204` and a `Set-Cookie` that expires `aframp_session` immediately.
 
-Note this clears the browser's session, it does not revoke the JWT: a token already copied elsewhere stays valid until it expires. There's no server-side revocation list yet.
+It also revokes the presented token (the `Authorization: Bearer` header, or the session cookie if no header is sent): the token's `jti` goes on a server-side revocation list until the token would have expired, so a copy of it held elsewhere is rejected with `401` from then on. Other sessions of the same user are unaffected.
 
 ### `GET /me`
 Auth required. The signed-in user's profile. The JWT carries only ids, so call this after a reload to render anything human-readable without forcing a re-login.
