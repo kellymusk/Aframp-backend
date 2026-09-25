@@ -20,7 +20,8 @@ pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: 
 }
 
 async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
-    let addresses: Vec<String> = wallets::all_wallets(db)
+    let skip = listener.skipped_addresses();
+    let addresses: Vec<String> = wallets::pollable_wallets(db, &skip)
         .await
         .map_err(|e| e.to_string())?
         .into_iter()

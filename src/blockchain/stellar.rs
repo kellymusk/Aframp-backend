@@ -57,6 +57,18 @@ impl StellarListener {
             .is_some_and(|s| s.next_poll_at > Instant::now())
     }
 
+    /// Addresses currently inside their unfunded backoff window. The worker
+    /// excludes these before loading wallets so they are neither read from the
+    /// DB nor sent to Horizon this cycle.
+    pub fn skipped_addresses(&self) -> Vec<String> {
+        let now = Instant::now();
+        let map = self.unfunded_backoff.lock().unwrap();
+        map.iter()
+            .filter(|(_, s)| s.next_poll_at > now)
+            .map(|(addr, _)| addr.clone())
+            .collect()
+    }
+
     /// Record a consecutive 404 for the address and compute the next allowed
     /// poll time using exponential backoff:  base * 2^n  capped at MAX_BACKOFF.
     fn record_unfunded(&self, address: &str) {
@@ -503,6 +515,35 @@ mod tests {
 
         listener.clear_backoff(addr_a);
         assert!(!listener.should_skip(addr_a));
+    }
+
+    #[test]
+    fn skipped_addresses_lists_only_wallets_in_backoff() {
+        let listener = StellarListener::new("https://horizon-testnet.stellar.org".into());
+        listener.record_unfunded("GADDR...A");
+        listener.record_unfunded("GADDR...B");
+        listener.clear_backoff("GADDR...B");
+
+        assert_eq!(listener.skipped_addresses(), vec!["GADDR...A".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn wallet_in_backoff_is_not_requeried_from_horizon() {
+        // A local socket stands in for Horizon so any request would be seen.
+        let horizon = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        horizon.set_nonblocking(true).unwrap();
+        let listener = StellarListener::new(format!("http://{}", horizon.local_addr().unwrap()));
+        let addr = "GUNFUNDED...ADDRESS";
+        listener.record_unfunded(addr);
+
+        let deposits = listener.fetch_deposits(&[addr.to_string()]).await.unwrap();
+
+        assert!(deposits.is_empty());
+        assert_eq!(
+            horizon.accept().map_err(|e| e.kind()).err(),
+            Some(std::io::ErrorKind::WouldBlock),
+            "Horizon must not be contacted for a wallet in backoff"
+        );
     }
 
     #[test]

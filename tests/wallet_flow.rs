@@ -87,3 +87,37 @@ async fn wallet_address_is_stable_per_merchant() {
     let (_, json_b) = send(app.clone(), "GET", "/wallet", Some(&token_b), None).await;
     assert_ne!(json_a["address"], json_b["address"]);
 }
+
+#[tokio::test]
+async fn backed_off_wallet_is_excluded_from_poll_query() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "wallet_backoff").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create wallet failed: {json}");
+    let address = json["address"].as_str().unwrap().to_string();
+
+    let polled = aframp::services::wallets::pollable_wallets(&state.db, &[])
+        .await
+        .unwrap();
+    assert!(polled.iter().any(|w| w.address == address));
+
+    let polled =
+        aframp::services::wallets::pollable_wallets(&state.db, std::slice::from_ref(&address))
+            .await
+            .unwrap();
+    assert!(
+        !polled.iter().any(|w| w.address == address),
+        "a wallet in backoff must not be loaded for polling"
+    );
+}

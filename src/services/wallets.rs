@@ -66,6 +66,18 @@ pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
     .await
 }
 
+/// Stellar wallets to poll this cycle, leaving out addresses the listener is
+/// currently backing off so they are not loaded at all.
+pub async fn pollable_wallets(db: &PgPool, skip: &[String]) -> Result<Vec<Wallet>, sqlx::Error> {
+    sqlx::query_as::<_, Wallet>(
+        "SELECT id, merchant_id, address, network, created_at FROM wallets
+          WHERE network = 'stellar' AND NOT (address = ANY($1))",
+    )
+    .bind(skip)
+    .fetch_all(db)
+    .await
+}
+
 pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
         "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE id = $1",
