@@ -8,18 +8,27 @@ use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
 use crate::services::{balances, payment_requests, payments, wallets};
 use crate::AppState;
 
-pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
+pub async fn run(
+    state: Arc<AppState>,
+    horizon_url: String,
+    poll_interval_secs: u64,
+    min_confirmations: i32,
+) {
     let listener = StellarListener::new(horizon_url);
 
     loop {
-        if let Err(err) = poll_once(&state.db, &listener).await {
+        if let Err(err) = poll_once(&state.db, &listener, min_confirmations).await {
             tracing::warn!(error = %err, "deposit poll failed");
         }
         tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
     }
 }
 
-async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
+async fn poll_once(
+    db: &PgPool,
+    listener: &StellarListener,
+    min_confirmations: i32,
+) -> Result<(), String> {
     let addresses: Vec<String> = wallets::all_wallets(db)
         .await
         .map_err(|e| e.to_string())?
@@ -36,10 +45,26 @@ async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String
             tracing::warn!(error = %err, "failed to process deposit");
         }
     }
+    promote_confirmed_deposits(db, min_confirmations).await
+}
+
+/// Second pass: deposits seen in at least `min_confirmations` poll passes move
+/// from `pending` to `available` and become `confirmed`.
+pub async fn promote_confirmed_deposits(db: &PgPool, min_confirmations: i32) -> Result<(), String> {
+    let promoted = payments::promote_confirmed(db, min_confirmations)
+        .await
+        .map_err(|e| e.to_string())?;
+    if promoted > 0 {
+        tracing::info!(promoted, min_confirmations, "deposits confirmed");
+    }
     Ok(())
 }
 
-async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
+/// First pass for one detected deposit: a new one is recorded as `verified`
+/// with its amount credited to `pending` (one confirmation); one seen again on
+/// a later pass gains a confirmation. Funds only become `available` in
+/// [`promote_confirmed_deposits`].
+pub async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
     let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
     else {
         return Ok(());
@@ -62,10 +87,15 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
     .map_err(|e| e.to_string())?;
 
     if payment.status != "detected" {
-        return Ok(());
+        return payments::bump_confirmations(db, payment.id)
+            .await
+            .map_err(|e| e.to_string());
     }
 
     payments::set_status(db, payment.id, UpdatePaymentStatus::Verified)
+        .await
+        .map_err(|e| e.to_string())?;
+    payments::bump_confirmations(db, payment.id)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -76,22 +106,6 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
             asset: d.asset.clone(),
             available_delta: 0,
             pending_delta: d.amount_stroops,
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // TODO: move pending → available after Stellar confirmations threshold.
-    payments::set_status(db, payment.id, UpdatePaymentStatus::Confirmed)
-        .await
-        .map_err(|e| e.to_string())?;
-    balances::apply_delta(
-        db,
-        &UpdateBalance {
-            merchant_id: wallet.merchant_id,
-            asset: d.asset.clone(),
-            available_delta: d.amount_stroops,
-            pending_delta: -d.amount_stroops,
         },
     )
     .await
