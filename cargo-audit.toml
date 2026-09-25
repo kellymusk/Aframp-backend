@@ -1,0 +1,25 @@
+# cargo-audit configuration
+#
+# This file configures `cargo audit` (https://github.com/rustsec/rustsec).
+# It is consumed by the `cargo-audit` CI job defined in .github/workflows/ci.yml,
+# which runs `cargo audit --deny warnings` so that any unignored advisory
+# (including high/critical severity) fails the build.
+#
+# The `ignore` list below is for KNOWN FALSE POSITIVES only. Every entry MUST
+# include a justification comment explaining why the advisory does not affect
+# this project, and SHOULD reference a tracking issue for removal.
+#
+# See https://rustsec.org/ for the advisory database.
+
+[advisories]
+# Fail the audit on any unignored advisory. The CI job also passes
+# `--deny warnings` on the command line; keeping it here makes local runs
+# behave the same as CI.
+deny = ["warnings"]
+
+# Advisories that are known false positives or otherwise not exploitable in
+# this project. Each entry must be justified.
+ignore = [
+    # Example (kept commented out so the list starts empty and CI stays strict):
+    # "RUSTSEC-0000-0000", # <crate>: <why this does not affect us>; tracked in #<issue>
+]
