@@ -593,3 +593,106 @@ async fn me_requires_a_valid_token() {
     let (status, _) = send(app.clone(), "GET", "/me", Some("not-a-real-token"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// Sends a `/login` request, optionally as if it came from `peer` (the
+/// connection info the server attaches in production), and returns the
+/// status, body and `Retry-After` header.
+async fn login_from(
+    app: &axum::Router,
+    email: &str,
+    password: &str,
+    peer: Option<std::net::SocketAddr>,
+) -> (StatusCode, serde_json::Value, Option<String>) {
+    use tower::ServiceExt;
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&json!({ "email": email, "password": password })).unwrap(),
+        ))
+        .unwrap();
+    if let Some(peer) = peer {
+        request.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+    }
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default(), retry_after)
+}
+
+#[tokio::test]
+async fn login_rate_limited_per_email_with_retry_after() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let email = format!("ratelimit+{}@example.com", Uuid::new_v4().simple());
+
+    for attempt in 1..=aframp::services::login_rate_limit::EMAIL_LIMIT {
+        let (status, body, _) = login_from(&app, &email, "wrong-password", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {attempt}: {body}");
+    }
+
+    let (status, body, retry_after) = login_from(&app, &email, "wrong-password", None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["code"], "TOO_MANY_REQUESTS");
+    let retry_after: i64 = retry_after.expect("Retry-After header").parse().unwrap();
+    assert!(retry_after > 0 && retry_after <= aframp::services::login_rate_limit::WINDOW_SECS);
+}
+
+#[tokio::test]
+async fn login_rate_limited_per_ip_across_emails() {
+    let Some(app) = app().await else {
+        return;
+    };
+    // A random loopback address keeps this test's IP counter to itself.
+    let octets = Uuid::new_v4().as_bytes()[..3].to_vec();
+    let peer: std::net::SocketAddr = (
+        std::net::Ipv4Addr::new(127, octets[0], octets[1], octets[2]),
+        40_000,
+    )
+        .into();
+
+    for _ in 0..aframp::services::login_rate_limit::IP_LIMIT {
+        let email = format!("iplimit+{}@example.com", Uuid::new_v4().simple());
+        let (status, body, _) = login_from(&app, &email, "wrong-password", Some(peer)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+
+    let email = format!("iplimit+{}@example.com", Uuid::new_v4().simple());
+    let (status, _, retry_after) = login_from(&app, &email, "wrong-password", Some(peer)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(retry_after.is_some());
+}
+
+#[tokio::test]
+async fn login_rate_limit_resets_after_successful_login() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let email = format!("ratereset+{}@example.com", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO users (email, password_hash, name) VALUES ($1, $2, 'Reset User')")
+        .bind(&email)
+        .bind(aframp_password_hash_for_tests())
+        .execute(&db)
+        .await
+        .unwrap();
+
+    for _ in 1..aframp::services::login_rate_limit::EMAIL_LIMIT {
+        let (status, _, _) = login_from(&app, &email, "wrong-password", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, body, _) = login_from(&app, &email, "legacy-password-123", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The success cleared the counter, so a fresh run of failures is allowed.
+    for _ in 1..=aframp::services::login_rate_limit::EMAIL_LIMIT {
+        let (status, _, _) = login_from(&app, &email, "wrong-password", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}

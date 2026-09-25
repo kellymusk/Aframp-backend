@@ -56,6 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let address: SocketAddr = config.bind_addr.parse()?;
     tracing::info!(%address, "aframp started");
-    axum::serve(tokio::net::TcpListener::bind(address).await?, app).await?;
+    // Connection info gives `/login` the peer IP for per-IP rate limiting.
+    axum::serve(
+        tokio::net::TcpListener::bind(address).await?,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

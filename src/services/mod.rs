@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod balances;
+pub mod login_rate_limit;
 pub mod otp;
 pub mod payment_requests;
 pub mod payments;

@@ -1,5 +1,7 @@
-use axum::extract::State;
-use axum::http::{header, StatusCode};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, State};
+use axum::http::{header, Extensions, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
@@ -7,9 +9,10 @@ use crate::auth::jwt;
 use crate::auth::password;
 use crate::error::{
     bad_request, bad_request_field, conflict, internal, not_found, too_many_requests, unauthorized,
-    ApiResult, ErrorCode,
+    ApiError, ApiResult, ErrorCode,
 };
 use crate::models::{AuthResponse, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
+use crate::services::login_rate_limit;
 use crate::services::otp::{self, OtpError, VerifiedOutcome};
 use crate::services::users::{self, UserError};
 use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name};
@@ -55,16 +58,39 @@ pub async fn signup(
 /// OTP challenge instead of a session. An account with no phone on file
 /// (only possible pre-migration — every signup requires one now) logs in
 /// exactly as it always has, untouched by this rollout.
+///
+/// Attempts are rate limited per client IP and per email address (see
+/// `services::login_rate_limit`); over the limit returns `429` with
+/// `Retry-After`. A successful password check resets the email's counter.
 pub async fn login(
     State(state): State<AppState>,
+    extensions: Extensions,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Response> {
     if !is_valid_email(&req.email) {
         return Err(bad_request_field("email", "must be a valid email address"));
     }
+
+    let email_key = login_rate_limit::email_key(&req.email);
+    let mut keys = vec![(email_key.clone(), login_rate_limit::EMAIL_LIMIT)];
+    if let Some(ConnectInfo(addr)) = extensions.get::<ConnectInfo<SocketAddr>>() {
+        keys.push((login_rate_limit::ip_key(addr.ip()), login_rate_limit::IP_LIMIT));
+    }
+    for (key, limit) in &keys {
+        if let Some(retry_after) = login_rate_limit::hit(&state.db, key, *limit)
+            .await
+            .map_err(internal)?
+        {
+            return Ok(login_rate_limited(retry_after));
+        }
+    }
+
     let (user, merchant) = users::login(&state.db, &req.email, &req.password)
         .await
         .map_err(map_user_error)?;
+    login_rate_limit::reset(&state.db, &email_key)
+        .await
+        .map_err(internal)?;
 
     if user.phone_number.is_some() {
         let challenge = otp::start_login_challenge(
@@ -131,6 +157,19 @@ pub async fn verify_otp(
 pub async fn logout(State(state): State<AppState>) -> ApiResult<impl IntoResponse> {
     let cookie = state.cookie.clear().map_err(internal)?;
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
+}
+
+fn login_rate_limited(retry_after_secs: i64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+        Json(ApiError {
+            error: "too many login attempts, please try again later".into(),
+            code: ErrorCode::TooManyRequests,
+            field: None,
+        }),
+    )
+        .into_response()
 }
 
 /// Sets the session cookie for browsers and echoes the token for API clients.

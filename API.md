@@ -151,6 +151,15 @@ No auth. Verifies the password. If the account has a verified phone number, this
 
 Errors: `401` for both a wrong password and an unknown email — deliberately indistinguishable, so don't build a "no such account" message from it. `429` on the same resend rules as signup.
 
+**Rate limit.** Every `/login` attempt counts against two fixed 15-minute windows, stored in Postgres (`login_attempts`) so they hold across restarts and instances:
+
+| Key | Limit per 15 min |
+|---|---|
+| Email address (case-insensitive) | 5 attempts |
+| Client IP (TCP peer address) | 20 attempts |
+
+Going over either returns `429` with `code: "TOO_MANY_REQUESTS"` and a `Retry-After` header giving the seconds until the window resets. A correct password resets that email's counter. Counters expire on their own when their window ends. Behind a reverse proxy the peer address is the proxy's, so the per-IP limit then applies to all traffic through it; the per-email limit still applies.
+
 ### `POST /verify-otp`
 No auth. The **only** endpoint that ever issues a session, reached from either a signup or a login challenge.
 
