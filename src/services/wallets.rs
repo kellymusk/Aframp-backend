@@ -8,6 +8,8 @@ use crate::models::{NewWallet, Wallet};
 pub enum CreateWalletError {
     #[error("failed to encrypt wallet secret: {0}")]
     Encryption(String),
+    #[error("merchant already has a wallet for network '{0}'")]
+    DuplicateNetwork(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -18,6 +20,10 @@ pub async fn create_wallet(
     network: &str,
     encryption_key: &[u8; 32],
 ) -> Result<Wallet, CreateWalletError> {
+    if wallet_by_merchant(db, merchant_id, network).await?.is_some() {
+        return Err(CreateWalletError::DuplicateNetwork(network.to_string()));
+    }
+
     let generated = keypair::generate_keypair();
     let secret_key_encrypted = wallet_crypto::encrypt(encryption_key, &generated.secret_seed)
         .map_err(CreateWalletError::Encryption)?;
@@ -45,15 +51,17 @@ pub async fn create_wallet(
 pub async fn wallet_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
+    network: &str,
 ) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
         "SELECT id, merchant_id, address, network, created_at
            FROM wallets
-          WHERE merchant_id = $1
+          WHERE merchant_id = $1 AND network = $2
           ORDER BY created_at DESC
           LIMIT 1",
     )
     .bind(merchant_id)
+    .bind(network)
     .fetch_optional(db)
     .await
 }

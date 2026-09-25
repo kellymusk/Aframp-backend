@@ -13,6 +13,8 @@ const MAX_EXPIRY_SECS: i64 = 24 * 60 * 60;
 pub enum PaymentRequestError {
     #[error("amount_stroops must be positive")]
     InvalidAmount,
+    #[error("no wallet found for merchant on network {0}")]
+    WalletNotFound(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -21,6 +23,28 @@ fn generate_memo() -> String {
     let mut bytes = [0u8; 8];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+/// Resolves the wallet a payment request should be routed to for a given
+/// merchant and network. Merchants may hold multiple wallets (one per asset /
+/// network), so we select the wallet matching the requested network rather than
+/// blindly returning the newest wallet by `created_at`.
+pub async fn wallet_by_merchant_and_network(
+    db: &PgPool,
+    merchant_id: Uuid,
+    network: &str,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id
+           FROM wallets
+          WHERE merchant_id = $1 AND network = $2
+          ORDER BY created_at DESC
+          LIMIT 1",
+    )
+    .bind(merchant_id)
+    .bind(network)
+    .fetch_optional(db)
+    .await
 }
 
 pub async fn create_payment_request(
@@ -55,6 +79,24 @@ pub async fn create_payment_request(
     .fetch_one(db)
     .await
     .map_err(PaymentRequestError::from)
+}
+
+/// Creates a payment request, routing it to the merchant's wallet that matches
+/// the request's asset/network. This lets a merchant hold separate wallets per
+/// asset (e.g. XLM and cNGN) and have each request use the correct one.
+pub async fn create_payment_request_for_network(
+    db: &PgPool,
+    merchant_id: Uuid,
+    amount_stroops: i64,
+    asset: String,
+    network: String,
+    expires_in_secs: Option<i64>,
+) -> Result<PaymentRequest, PaymentRequestError> {
+    let wallet_id = wallet_by_merchant_and_network(db, merchant_id, &network)
+        .await?
+        .ok_or_else(|| PaymentRequestError::WalletNotFound(network.clone()))?;
+
+    create_payment_request(db, merchant_id, wallet_id, amount_stroops, asset, expires_in_secs).await
 }
 
 /// A payment request joined with its wallet's address, so listing many doesn't
@@ -95,6 +137,54 @@ pub async fn payment_requests_by_merchant(
     .bind(limit)
     .fetch_all(db)
     .await
+}
+
+/// Keyset-paginated variant of [`payment_requests_by_merchant`]. Orders by
+/// `(created_at, id)` DESC so concurrent inserts can't shift rows across
+/// pages the way an OFFSET-based scan can.
+pub async fn payment_requests_by_merchant_cursor(
+    db: &PgPool,
+    merchant_id: Uuid,
+    limit: i64,
+    cursor: Option<crate::pagination::Cursor>,
+) -> Result<Vec<PaymentRequestWithWallet>, sqlx::Error> {
+    match cursor {
+        Some(c) => {
+            sqlx::query_as::<_, PaymentRequestWithWallet>(
+                "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
+                        pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                        w.address, w.network
+                   FROM payment_requests pr
+                   JOIN wallets w ON w.id = pr.wallet_id
+                  WHERE pr.merchant_id = $1
+                    AND (pr.created_at, pr.id) < ($2, $3)
+                  ORDER BY pr.created_at DESC, pr.id DESC
+                  LIMIT $4",
+            )
+            .bind(merchant_id)
+            .bind(c.created_at)
+            .bind(c.id)
+            .bind(limit + 1)
+            .fetch_all(db)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, PaymentRequestWithWallet>(
+                "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
+                        pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                        w.address, w.network
+                   FROM payment_requests pr
+                   JOIN wallets w ON w.id = pr.wallet_id
+                  WHERE pr.merchant_id = $1
+                  ORDER BY pr.created_at DESC, pr.id DESC
+                  LIMIT $2",
+            )
+            .bind(merchant_id)
+            .bind(limit + 1)
+            .fetch_all(db)
+            .await
+        }
+    }
 }
 
 pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<PaymentRequest>, sqlx::Error> {
