@@ -25,6 +25,7 @@ pub enum ErrorCode {
     OtpChallengeNotFound,
     OtpLocked,
     TooManyRequests,
+    PayloadTooLarge,
     InternalError,
 }
 
@@ -55,6 +56,7 @@ impl ErrorCode {
             ErrorCode::OtpChallengeNotFound => "OTP_CHALLENGE_NOT_FOUND",
             ErrorCode::OtpLocked => "OTP_LOCKED",
             ErrorCode::TooManyRequests => "TOO_MANY_REQUESTS",
+            ErrorCode::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             ErrorCode::InternalError => "INTERNAL_ERROR",
         }
     }
@@ -113,6 +115,13 @@ pub fn bad_gateway(code: ErrorCode, message: &str) -> (StatusCode, Json<ApiError
 
 pub fn too_many_requests(code: ErrorCode, message: &str) -> (StatusCode, Json<ApiError>) {
     error(StatusCode::TOO_MANY_REQUESTS, code, message)
+}
+
+/// Returned when a request body exceeds the configured `MAX_REQUEST_BODY_BYTES`
+/// limit. Uses the same JSON error shape as every other API error so clients can
+/// handle it uniformly.
+pub fn payload_too_large(message: &str) -> (StatusCode, Json<ApiError>) {
+    error(StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge, message)
 }
 
 pub fn internal<E: std::fmt::Display>(err: E) -> (StatusCode, Json<ApiError>) {
