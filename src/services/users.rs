@@ -3,10 +3,17 @@ use sqlx::PgPool;
 use crate::auth::password;
 use crate::models::{Merchant, User};
 
+/// Number of consecutive failed password attempts before an account is locked.
+const MAX_FAILED_LOGIN_ATTEMPTS: i32 = 10;
+/// How long an account stays locked after exceeding the failed attempt limit.
+const LOCKOUT_DURATION_MINUTES: i64 = 30;
+
 #[derive(Debug, thiserror::Error)]
 pub enum UserError {
     #[error("invalid email or password")]
     InvalidCredentials,
+    #[error("account locked due to too many failed login attempts; try again later")]
+    AccountLocked,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -68,9 +75,51 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     .await?
     .ok_or(UserError::InvalidCredentials)?;
 
+    // Reject attempts against an account that is still locked. A lock whose
+    // `locked_until` has elapsed is treated as expired and cleared below.
+    let locked: bool = sqlx::query_scalar(
+        "SELECT locked_until IS NOT NULL AND locked_until > now() FROM users WHERE id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(db)
+    .await?;
+
+    if locked {
+        return Err(UserError::AccountLocked);
+    }
+
     if !password::verify(password_raw, &user.password_hash) {
+        // Increment the consecutive-failure counter and lock the account once
+        // the threshold is reached. A successful login resets the counter.
+        sqlx::query(
+            "UPDATE users
+                SET failed_login_count = failed_login_count + 1,
+                    locked_until = CASE
+                        WHEN failed_login_count + 1 >= $2
+                        THEN now() + make_interval(mins => $3)
+                        ELSE locked_until
+                    END,
+                    updated_at = now()
+              WHERE id = $1",
+        )
+        .bind(user.id)
+        .bind(MAX_FAILED_LOGIN_ATTEMPTS)
+        .bind(LOCKOUT_DURATION_MINUTES as i32)
+        .execute(db)
+        .await?;
+
         return Err(UserError::InvalidCredentials);
     }
+
+    // Successful authentication: clear any accumulated failures and expired lock.
+    sqlx::query(
+        "UPDATE users
+            SET failed_login_count = 0, locked_until = NULL, updated_at = now()
+          WHERE id = $1 AND (failed_login_count <> 0 OR locked_until IS NOT NULL)",
+    )
+    .bind(user.id)
+    .execute(db)
+    .await?;
 
     let merchant = sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
@@ -80,6 +129,21 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     .await?;
 
     Ok((user, merchant))
+}
+
+/// Clears the lockout state for an account so it can log in again. Intended
+/// for the admin unlock endpoint; returns `true` when a user row was updated.
+pub async fn unlock_account(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users
+            SET failed_login_count = 0, locked_until = NULL, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(db)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>, sqlx::Error> {

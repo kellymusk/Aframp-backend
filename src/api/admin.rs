@@ -1,4 +1,4 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Html;
 use axum::Json;
 use serde::Deserialize;
@@ -36,6 +36,17 @@ pub async fn users(
 ) -> ApiResult<Json<Vec<AdminUserRow>>> {
     let rows = admin::users(&state.db, limit(&params)).await.map_err(internal)?;
     Ok(Json(rows))
+}
+
+/// Manually clear a lockout on a user account. Resets the failed-login counter
+/// and clears `locked_until` so the user can attempt to log in again.
+pub async fn unlock_user(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(user_id): Path<i64>,
+) -> ApiResult<Json<AdminUserRow>> {
+    let row = admin::unlock_user(&state.db, user_id).await.map_err(internal)?;
+    Ok(Json(row))
 }
 
 pub async fn merchants(
