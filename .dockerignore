@@ -2,5 +2,5 @@
 .git
 .wrangler
 node_modules
-target
+target/
 log.txt
