@@ -16,6 +16,7 @@ hmac = "0.12"
 http = "1"
 jsonwebtoken = "9"
 mime = "0.3"
+qrcode = "0.14"
 rand = "0.8"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "query", "rustls"] }
 serde = { version = "1", features = ["derive"] }
@@ -31,5 +32,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+httpmock = "0.7"
+proptest = "1"
 stellar-base = "0.7.0"
 tower = { version = "0.5", features = ["util"] }
