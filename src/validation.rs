@@ -88,6 +88,7 @@ pub fn validate_name(name: &str) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn normalizes_every_common_input_shape_to_e164() {
@@ -102,5 +103,80 @@ mod tests {
         assert!(normalize_ng_phone_number("080111222333").is_err()); // too long
         assert!(normalize_ng_phone_number("not-a-phone").is_err());
         assert!(normalize_ng_phone_number("").is_err());
+    }
+
+    /// A 10-digit Nigerian subscriber number (the part after the country code).
+    fn subscriber_number() -> impl Strategy<Value = String> {
+        proptest::collection::vec(0u8..10, 10)
+            .prop_map(|digits| digits.into_iter().map(|d| (b'0' + d) as char).collect())
+    }
+
+    /// Wraps a subscriber number in one of the supported input shapes, with
+    /// arbitrary separators (spaces and/or dashes) inserted between digits.
+    fn any_supported_format() -> impl Strategy<Value = String> {
+        (subscriber_number(), 0usize..4, any::<bool>(), any::<bool>()).prop_map(
+            |(local, shape, use_dash, spaced)| {
+                let sep = if use_dash { '-' } else { ' ' };
+                let body: String = if spaced {
+                    local
+                        .chars()
+                        .enumerate()
+                        .flat_map(|(i, c)| {
+                            if i == 0 {
+                                vec![c]
+                            } else {
+                                vec![sep, c]
+                            }
+                        })
+                        .collect()
+                } else {
+                    local.clone()
+                };
+                match shape {
+                    0 => format!("0{body}"),
+                    1 => body,
+                    2 => format!("+234{body}"),
+                    _ => format!("234{body}"),
+                }
+            },
+        )
+    }
+
+    proptest! {
+        /// Any valid Nigerian number, in any supported format, normalizes to
+        /// the same E.164 result.
+        #[test]
+        fn any_format_normalizes_to_same_e164(input in any_supported_format()) {
+            let normalized = normalize_ng_phone_number(&input)
+                .expect("valid Nigerian number should normalize");
+            prop_assert!(normalized.starts_with("+234"));
+            prop_assert_eq!(normalized.len(), 14);
+            let local = &normalized[4..];
+            prop_assert!(local.chars().all(|c| c.is_ascii_digit()));
+            prop_assert_eq!(local.len(), 10);
+        }
+
+        /// All valid E.164 Nigerian numbers round-trip through normalization
+        /// unchanged.
+        #[test]
+        fn e164_round_trips_unchanged(local in subscriber_number()) {
+            let e164 = format!("+234{local}");
+            prop_assert_eq!(normalize_ng_phone_number(&e164).unwrap(), e164);
+        }
+
+        /// The same subscriber number expressed in different shapes always
+        /// yields the identical E.164 output.
+        #[test]
+        fn equivalent_shapes_agree(local in subscriber_number()) {
+            let expected = format!("+234{local}");
+            for input in [
+                format!("0{local}"),
+                local.clone(),
+                format!("+234{local}"),
+                format!("234{local}"),
+            ] {
+                prop_assert_eq!(normalize_ng_phone_number(&input).unwrap(), expected.clone());
+            }
+        }
     }
 }
