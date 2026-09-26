@@ -29,19 +29,64 @@ openssl rand -hex 32
 curl -sS http://127.0.0.1:3000/health -w "\nHTTP:%{http_code}\n"
 curl -sS http://127.0.0.1:3000/
 
-## Auth
+## Auth — OTP 2FA flow
+#
+# All signups and logins use a two-step OTP challenge flow.
+# For local dev, set OTP_PROVIDER=mock in .env — the 6-digit code is logged
+# to stdout by `cargo run` instead of being sent via Termii:
+#
+#   INFO aframp::otp::mock: OTP code for +2348012345678 (signup): 491823
+#
+# Step 1 — /signup: validates credentials, sends OTP, returns challenge_id.
+# The account is NOT created yet; it is only materialised after /verify-otp.
 curl -sS -X POST http://127.0.0.1:3000/signup \
   -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","password":"at-least-8-chars","name":"Your Name"}'
+  -d '{"email":"you@example.com","password":"at-least-8-chars","name":"Your Name","phone_number":"+2348012345678"}'
+# Response: {"challenge_id":"<uuid>","expires_in_secs":600}
 
+# Extract challenge_id into a shell var:
+CHALLENGE_ID=$(curl -sS -X POST http://127.0.0.1:3000/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"at-least-8-chars","name":"Your Name","phone_number":"+2348012345678"}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['challenge_id'])")
+
+# Step 2 — /verify-otp: submit the 6-digit code from the SMS (or stdout in mock mode).
+# This is the ONLY endpoint that issues a session token + Set-Cookie.
+curl -sS -X POST http://127.0.0.1:3000/verify-otp \
+  -H "Content-Type: application/json" \
+  -d "{\"challenge_id\":\"$CHALLENGE_ID\",\"code\":\"491823\"}"
+# Response: {"token":"<jwt>","user_id":"<uuid>","merchant_id":"<uuid>"}
+# Also sets: Set-Cookie: aframp_session=<jwt>; HttpOnly; Path=/; SameSite=Lax
+
+# Save token to a shell var for the calls below:
+TOKEN=$(curl -sS -X POST http://127.0.0.1:3000/verify-otp \
+  -H "Content-Type: application/json" \
+  -d "{\"challenge_id\":\"$CHALLENGE_ID\",\"code\":\"491823\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+# Resend: re-POST /signup or /login with the same credentials.
+# Rate-limited: 1 resend per 60 s, max 5 per phone per hour. No separate endpoint.
+
+## Auth — login with OTP 2FA
+# Step 1 — /login: verifies password, sends fresh OTP, returns challenge_id.
 curl -sS -X POST http://127.0.0.1:3000/login \
   -H "Content-Type: application/json" \
   -d '{"email":"you@example.com","password":"at-least-8-chars"}'
+# Response: {"challenge_id":"<uuid>","expires_in_secs":600}
 
-# Save token to a shell var for the calls below:
-TOKEN=$(curl -sS -X POST http://127.0.0.1:3000/login \
+CHALLENGE_ID=$(curl -sS -X POST http://127.0.0.1:3000/login \
   -H "Content-Type: application/json" \
   -d '{"email":"you@example.com","password":"at-least-8-chars"}' \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['challenge_id'])")
+
+# Step 2 — same /verify-otp call:
+curl -sS -X POST http://127.0.0.1:3000/verify-otp \
+  -H "Content-Type: application/json" \
+  -d "{\"challenge_id\":\"$CHALLENGE_ID\",\"code\":\"491823\"}"
+
+TOKEN=$(curl -sS -X POST http://127.0.0.1:3000/verify-otp \
+  -H "Content-Type: application/json" \
+  -d "{\"challenge_id\":\"$CHALLENGE_ID\",\"code\":\"491823\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 
 ## Wallet (requires TOKEN)
