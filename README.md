@@ -49,7 +49,7 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 
 | Gap | What's actually there today |
 |---|---|
-| QR-based payment (cNGN) | `sep7_uri` is `null` for cNGN payment requests — there's no real cNGN issuer Stellar address configured, and a guessed one would silently misdirect a customer's payment. Works for XLM today; cNGN needs a real issuer address sourced first |
+| QR-based payment (cNGN) | cNGN payment requests get a `sep7_uri` naming the issuer once `CNGNX_ISSUER_ADDRESS` is set; until then it's `null`, because a guessed issuer would silently misdirect a customer's payment. The real issuer address still has to be sourced from the cNGN issuer / Stellar Asset List and configured per deployment |
 | Real payout funding ("Stage A") | Paystack Transfers are wired and code-correct (see above), but Paystack's own business-account balance is ₦0 — `source: "balance"` transfers have nothing to draw from. Confirmed live: a real bank account + valid amount still failed with *"Your balance is not enough to fulfil this request."* Nothing pays out until there's a real crypto→fiat funding pipeline (e.g. cNGN issuer redemption) |
 | Confirmation-depth threshold | Deposits move `detected → verified → confirmed` immediately on detection — there's no real "wait N ledger confirmations" logic yet (Stellar has fast finality, so this matters less than on Bitcoin, but it's still an open TODO in `blockchain/worker.rs`) |
 | Settlement/sweep wallet | Each merchant's Stellar secret is held (encrypted) by the platform, but nothing yet sweeps funds from individual merchant wallets into a platform settlement wallet. `STELLAR_SYSTEM_WALLET_ADDRESS` is still validated at startup and reserved for this, but isn't used by anything yet |
@@ -105,6 +105,7 @@ Fill in `.env`:
 | `STELLAR_SYSTEM_WALLET_ADDRESS` | yes | — | Reserved for a future platform settlement/sweep wallet. Validated at startup but not used by deposit detection today (see [Status](#status-real-progress-not-aspiration)) |
 | `STELLAR_HORIZON_URL` | no | `https://horizon-testnet.stellar.org` | Horizon endpoint to poll |
 | `STELLAR_POLL_INTERVAL_SECS` | no | `60` | How often the deposit-detection worker polls Horizon, per wallet |
+| `CNGNX_ISSUER_ADDRESS` | no | — | Stellar account ID (`G...`) that issues cNGN. Source it from the cNGN issuer's own `stellar.toml` / the Stellar Asset List entry for cNGN — never guess it. When set, cNGN payment requests get a `sep7_uri` with `asset_code=cNGN&asset_issuer=...`; when unset, their `sep7_uri` is `null`. Startup fails if the value isn't a valid account ID |
 | `PAYSTACK_SECRET_KEY` | yes | — | Paystack Dashboard → Settings → API Keys & Webhooks. `sk_test_...` for dev, `sk_live_...` only once the business is verified/activated for Transfers (see `PRD.md` §9.1) |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
@@ -197,7 +198,7 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `GET` | `/transactions?limit=` | ✅ | List the merchant's detected payments (default limit 50, max 200) |
 | `POST` | `/payment-requests` | ✅ | Create a payment request for the authenticated merchant's wallet. Body: `{ amount_stroops, asset? (default XLM), expires_in_secs? (60–86400, default 900) }` |
 | `GET` | `/payment-requests?limit=` | ✅ | List the merchant's own requests, newest first (default 50, max 200) |
-| `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
+| `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests, and for cNGN requests when `CNGNX_ISSUER_ADDRESS` is configured (`null` otherwise) |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
@@ -205,6 +206,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `GET` | `/admin/overview` | 🔒 admin | Counts + balances/status breakdowns across every merchant |
 | `GET` | `/admin/merchants`, `/admin/users`, `/admin/wallets`, `/admin/transactions`, `/admin/withdrawals`, `/admin/payment-requests` | 🔒 admin | System-wide list views (`?limit=`, default 100, max 500), each joined with owner/merchant context |
 | `POST` | `/webhooks/termii` | 🔏 signed | Termii's SMS delivery-status callback — not for merchant/admin use, see [Termii webhook](#termii-webhook) below |
+| `POST` | `/webhooks` | ✅ | Register a URL to receive this merchant's outbound events. Body: `{ url }` (absolute `http`/`https`). `409` if already registered. See [Merchant webhooks](#merchant-webhooks) below |
+| `GET` | `/webhooks` | ✅ | List this merchant's registered webhook URLs |
 
 `/verify-otp` — the only endpoint that ever issues a session — returns:
 
@@ -226,13 +229,61 @@ UPDATE users SET is_admin = true WHERE email = 'you@example.com';
 
 The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
 
+### Merchant webhooks
+
+Once a deposit is credited to a merchant's balance, Aframp POSTs a `payment.confirmed` event to every URL the merchant registered with `POST /webhooks`:
+
+```json
+{
+  "type": "payment.confirmed",
+  "created_at": "2026-09-26T12:00:00Z",
+  "data": { "payment_id": "...", "merchant_id": "...", "wallet_address": "G...", "tx_hash": "...", "amount_stroops": 10000000, "asset": "cNGN", "network": "stellar" }
+}
+```
+
+Each request carries `X-Aframp-Event: payment.confirmed` and `X-Aframp-Signature`: the hex HMAC-SHA256 of the raw request body keyed with `WEBHOOK_SECRET`. Receivers should recompute it over the exact bytes received and compare in constant time. A delivery that doesn't get a `2xx` is retried with exponential backoff (5 attempts, 1s → 2s → 4s → 8s); every attempt's outcome is recorded in `webhook_deliveries` (`status` `pending` / `delivered` / `failed`, `attempts`, `last_error`).
+
 ### Termii webhook
 
 Register `https://<your-deployed-host>/webhooks/termii` at [termii.com/account/webhook/config](https://termii.com/account/webhook/config) — it's one account-wide setting, not something passed per API call. Termii POSTs SMS delivery-status events (`Delivered`, `Message Failed`, `Rejected`, etc. — see [their docs](https://developers.termii.com/events-and-reports)) there, signed with `X-Termii-Signature` (HMAC-SHA512). This endpoint verifies that signature and logs the event; it doesn't yet correlate a delivery status back to the `otp_challenges` row that sent it — that'd need the provider's `message_id` captured at send time and a column to hold it, which nothing does today.
 
-**Their docs don't say which secret signs the header** — "your secret key," unspecified. This verifies against `TERMII_API_KEY`, the only secret both sides are known to share. If real Termii traffic starts failing signature checks, that assumption is the first thing to check against the dashboard.
+**Their docs don't say which secret signs the header** — "your secret key," unspecified. By default this verifies against `TERMII_API_KEY`, the only secret both sides are known to share. If your Termii dashboard shows a separate webhook/secret key, set `TERMII_WEBHOOK_SECRET` to it and that is used instead (unset or empty falls back to `TERMII_API_KEY`).
+
+**Diagnosing a mismatch:** a wrong key doesn't fail loudly on Termii's side — every genuine event just gets a `403`. Each rejected request logs `termii webhook: signature verification failed` at `warn` (with `signature_present`, so a missing header is distinguishable from a wrong key). If those appear for real delivery events:
+
+1. Confirm the header is arriving at all (`signature_present=false` means a proxy is stripping `X-Termii-Signature`).
+2. Try the other key: set `TERMII_WEBHOOK_SECRET` to the dashboard's secret key if you were relying on `TERMII_API_KEY`, or unset it if you had set it.
+3. Check nothing between Termii and the API re-serializes the JSON body — the HMAC-SHA512 is over the exact raw bytes.
 
 **Known gap since OTP shipped:** the `/admin` page's login form only knows the old one-step `/login` → cookie flow. An admin account created *before* OTP existed (no `phone_number` on the row) still logs in through it fine. An admin account with a phone number now gets a challenge response back instead of a session, and the dashboard has no code-entry step to handle that — it'll appear to fail to log in. Until the dashboard is updated, keep your admin account phone-less, or drive `/login` → `/verify-otp` manually with `curl`/Postman and paste the resulting cookie in by hand.
+
+## Wallet key custody and rotation
+
+Every merchant wallet's Stellar secret seed is stored AES-256-GCM encrypted in `wallets.secret_key_encrypted` under `WALLET_ENCRYPTION_KEY`. One leaked key exposes every wallet, so:
+
+- **Every decryption is audited.** Code that needs a secret must go through `services::wallets::decrypt_secret(db, wallet_id, key, purpose)`, which writes a row to `wallet_secret_access_log` (`wallet_id`, `purpose`, `accessed_at`) before decrypting. Review it for decryptions you can't explain:
+
+  ```sql
+  SELECT wallet_id, purpose, accessed_at FROM wallet_secret_access_log ORDER BY accessed_at DESC LIMIT 100;
+  ```
+
+- **The key can be rotated.** `rotate_wallet_key` re-encrypts every secret under a new key in a single transaction: if any secret fails to decrypt under the current key, nothing changes. Each re-encryption is logged with purpose `key_rotation`.
+
+### Rotating `WALLET_ENCRYPTION_KEY`
+
+1. Generate the new key: `openssl rand -hex 32`.
+2. Stop the API and the deposit worker so nothing writes wallets during the rotation, and back up the `wallets` table.
+3. Run the rotation with the current key and the new one:
+
+   ```bash
+   DATABASE_URL=postgres://... \
+   WALLET_ENCRYPTION_KEY=<current key> \
+   NEW_WALLET_ENCRYPTION_KEY=<new key> \
+   cargo run --release --bin rotate_wallet_key
+   ```
+
+4. Set `WALLET_ENCRYPTION_KEY` to the new key everywhere it's deployed (e.g. `npx wrangler secret put WALLET_ENCRYPTION_KEY`) and restart the API.
+5. Destroy every copy of the old key. If you are rotating because the old key may have leaked, treat all wallet secrets as exposed as well: rotating the encryption key doesn't change the Stellar keys themselves, so funds should be moved to newly generated wallets.
 
 ## Deploying behind TLS
 

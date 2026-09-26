@@ -25,6 +25,12 @@ pub async fn termii(
         .unwrap_or("");
 
     if !state.otp_provider.verify_webhook_signature(&body, signature) {
+        // Logged so a key mismatch (every genuine event rejected) is visible
+        // instead of silent 403s — see README "Termii webhook".
+        tracing::warn!(
+            signature_present = !signature.is_empty(),
+            "termii webhook: signature verification failed"
+        );
         return Err(forbidden(ErrorCode::Forbidden, "invalid webhook signature"));
     }
 

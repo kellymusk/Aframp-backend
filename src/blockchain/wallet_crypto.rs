@@ -39,3 +39,33 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, String> {
     let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| e.to_string())?;
     String::from_utf8(plaintext).map_err(|e| e.to_string())
 }
+
+/// Decrypt `encoded` under `old_key` and encrypt the plaintext under
+/// `new_key`, for key rotation. Fails without producing anything if
+/// `old_key` doesn't decrypt it.
+pub fn reencrypt(old_key: &[u8; 32], new_key: &[u8; 32], encoded: &str) -> Result<String, String> {
+    encrypt(new_key, &decrypt(old_key, encoded)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reencrypt_moves_ciphertext_to_the_new_key() {
+        let old_key = [1u8; 32];
+        let new_key = [2u8; 32];
+        let encoded = encrypt(&old_key, "SSECRETSEED").unwrap();
+
+        let rotated = reencrypt(&old_key, &new_key, &encoded).unwrap();
+
+        assert_eq!(decrypt(&new_key, &rotated).unwrap(), "SSECRETSEED");
+        assert!(decrypt(&old_key, &rotated).is_err());
+    }
+
+    #[test]
+    fn reencrypt_fails_with_the_wrong_old_key() {
+        let encoded = encrypt(&[1u8; 32], "SSECRETSEED").unwrap();
+        assert!(reencrypt(&[3u8; 32], &[2u8; 32], &encoded).is_err());
+    }
+}

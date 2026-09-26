@@ -45,6 +45,7 @@ pub async fn state() -> Option<AppState> {
             secure: true,
             same_site: aframp::SameSite::Lax,
         },
+        cngn_issuer: None,
     })
 }
 

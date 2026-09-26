@@ -5,21 +5,21 @@ use sqlx::PgPool;
 
 use crate::blockchain::stellar::{BlockchainListener, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
-use crate::services::{balances, payment_requests, payments, wallets};
+use crate::services::{balances, merchant_webhooks, payment_requests, payments, wallets};
 use crate::AppState;
 
 pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
     let listener = StellarListener::new(horizon_url);
 
     loop {
-        if let Err(err) = poll_once(&state.db, &listener).await {
+        if let Err(err) = poll_once(&state.db, state.webhook_secret.as_str(), &listener).await {
             tracing::warn!(error = %err, "deposit poll failed");
         }
         tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
     }
 }
 
-async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
+async fn poll_once(db: &PgPool, webhook_secret: &str, listener: &StellarListener) -> Result<(), String> {
     let addresses: Vec<String> = wallets::all_wallets(db)
         .await
         .map_err(|e| e.to_string())?
@@ -32,14 +32,18 @@ async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String
 
     let deposits = listener.fetch_deposits(&addresses).await?;
     for deposit in deposits {
-        if let Err(err) = process_deposit(db, deposit).await {
+        if let Err(err) = process_deposit(db, webhook_secret, deposit).await {
             tracing::warn!(error = %err, "failed to process deposit");
         }
     }
     Ok(())
 }
 
-async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
+async fn process_deposit(
+    db: &PgPool,
+    webhook_secret: &str,
+    d: crate::blockchain::stellar::DetectedDeposit,
+) -> Result<(), String> {
     let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
     else {
         return Ok(());
@@ -125,8 +129,32 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
         tracing::warn!(error = %err, payment_id = %payment.id, "platform sweep failed");
     }
 
-    // TODO: dispatch payment.confirmed webhook.
+    // The balance has been credited: tell the merchant. Delivery (with
+    // retries) runs in the background and never fails deposit processing.
+    if let Err(err) = merchant_webhooks::dispatch(
+        db,
+        webhook_http_client(),
+        webhook_secret,
+        payment.merchant_id,
+        merchant_webhooks::PAYMENT_CONFIRMED,
+        &merchant_webhooks::payment_confirmed_payload(&payment),
+        merchant_webhooks::RetryPolicy::default(),
+    )
+    .await
+    {
+        tracing::warn!(error = %err, payment_id = %payment.id, "failed to queue payment.confirmed webhooks");
+    }
     Ok(())
+}
+
+fn webhook_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("failed to build webhook HTTP client")
+    })
 }
 
 /// Moves confirmed merchant funds from the merchant's custodial wallet to the

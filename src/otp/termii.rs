@@ -31,6 +31,10 @@ pub struct TermiiWebhookEvent {
 pub struct TermiiProvider {
     api_key: String,
     sender_id: String,
+    /// Secret that signs `X-Termii-Signature`. Termii's docs only say "your
+    /// secret key", so this defaults to the API key (the one secret both
+    /// sides are known to share) unless `TERMII_WEBHOOK_SECRET` is set.
+    webhook_secret: Option<String>,
     http: reqwest::Client,
 }
 
@@ -40,7 +44,13 @@ impl TermiiProvider {
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("failed to build Termii HTTP client");
-        Self { api_key, sender_id, http }
+        Self { api_key, sender_id, webhook_secret: None, http }
+    }
+
+    /// Verify webhook signatures with a dedicated secret instead of the API key.
+    pub fn with_webhook_secret(mut self, webhook_secret: Option<String>) -> Self {
+        self.webhook_secret = webhook_secret;
+        self
     }
 }
 
@@ -94,10 +104,57 @@ impl OtpProvider for TermiiProvider {
         let Ok(sig_bytes) = hex::decode(signature) else {
             return false;
         };
-        let Ok(mut mac) = Hmac::<Sha512>::new_from_slice(self.api_key.as_bytes()) else {
+        let key = self.webhook_secret.as_deref().unwrap_or(&self.api_key);
+        let Ok(mut mac) = Hmac::<Sha512>::new_from_slice(key.as_bytes()) else {
             return false;
         };
         mac.update(body);
         mac.verify_slice(&sig_bytes).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BODY: &[u8] = br#"{"type":"outbound","message_id":"abc123","status":"Delivered"}"#;
+    /// HMAC-SHA512 of `BODY` keyed with `termii-api-key`.
+    const SIG_API_KEY: &str = "23dedc762dd410473d46b6ea8d5cf5464110861e422fba864176f2ed4edb59ab8e30429943bc7a752da747372ee12a112d544535847289b159381656e36078c3";
+    /// HMAC-SHA512 of `BODY` keyed with `termii-webhook-secret`.
+    const SIG_WEBHOOK_SECRET: &str = "0e4eb03abda351b2e5f8d5e750b4bdd5d1c7a46b8fdf887ba179428986099c1b7ebeaa3d451717d504e9ebcc89ea550ab4364b54f80e0d1f46db270ae5dadae2";
+
+    fn provider() -> TermiiProvider {
+        TermiiProvider::new("termii-api-key".into(), "Aframp".into())
+    }
+
+    #[test]
+    fn accepts_known_good_signature_keyed_with_api_key() {
+        assert!(provider().verify_webhook_signature(BODY, SIG_API_KEY));
+    }
+
+    #[test]
+    fn rejects_signature_for_a_different_body() {
+        let tampered = br#"{"type":"outbound","message_id":"abc123","status":"Failed"}"#;
+        assert!(!provider().verify_webhook_signature(tampered, SIG_API_KEY));
+    }
+
+    #[test]
+    fn rejects_missing_and_non_hex_signatures() {
+        assert!(!provider().verify_webhook_signature(BODY, ""));
+        assert!(!provider().verify_webhook_signature(BODY, "not-hex"));
+    }
+
+    #[test]
+    fn dedicated_webhook_secret_replaces_api_key() {
+        let p = provider().with_webhook_secret(Some("termii-webhook-secret".into()));
+        assert!(p.verify_webhook_signature(BODY, SIG_WEBHOOK_SECRET));
+        assert!(!p.verify_webhook_signature(BODY, SIG_API_KEY));
+    }
+
+    #[test]
+    fn unset_webhook_secret_falls_back_to_api_key() {
+        let p = provider().with_webhook_secret(None);
+        assert!(p.verify_webhook_signature(BODY, SIG_API_KEY));
+        assert!(!p.verify_webhook_signature(BODY, SIG_WEBHOOK_SECRET));
     }
 }
