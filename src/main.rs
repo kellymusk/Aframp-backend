@@ -27,6 +27,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tokio::spawn(listener);
 
+    // Hard-delete expired+cancelled payment requests older than 30 days.
+    let cleanup_state = state.clone();
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_secs(60 * 60);
+        loop {
+            match aframp::services::payment_requests::hard_delete_expired_cancelled(
+                &cleanup_state.db,
+            )
+            .await
+            {
+                Ok(n) if n > 0 => {
+                    tracing::info!(deleted = n, "hard-deleted expired cancelled payment requests")
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "payment request cleanup failed")
+                }
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+
     // Auth travels as an HttpOnly cookie for browsers, so credentials are on —
     // which means origins must be listed explicitly, never mirrored back.
     let origins = config
@@ -46,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cors = CorsLayer::new()
         .allow_origin(origins)
         .allow_credentials(true)
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = router((*state).clone())

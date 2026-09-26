@@ -89,7 +89,8 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route(
             "/payment-requests/{id}",
-            axum::routing::get(api::payment_requests::get),
+            axum::routing::get(api::payment_requests::get)
+                .delete(api::payment_requests::cancel),
         )
         .route("/admin", axum::routing::get(api::admin::dashboard))
         .route("/admin/overview", axum::routing::get(api::admin::overview))
