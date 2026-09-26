@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 
 use crate::auth::password;
-use crate::models::{Merchant, User};
+use crate::models::{Merchant, User, UserProfile};
 
 #[derive(Debug, thiserror::Error)]
 pub enum UserError {
@@ -58,7 +58,11 @@ pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
     }
 }
 
-pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
+pub async fn login(
+    db: &PgPool,
+    email: &str,
+    password_raw: &str,
+) -> Result<(User, Option<Merchant>), UserError> {
     let user = sqlx::query_as::<_, User>(
         "SELECT id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at
            FROM users WHERE email = $1",
@@ -92,7 +96,23 @@ pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>
     .await
 }
 
-pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+pub async fn user_profile_by_id(
+    db: &PgPool,
+    user_id: uuid::Uuid,
+) -> Result<Option<UserProfile>, sqlx::Error> {
+    sqlx::query_as::<_, UserProfile>(
+        "SELECT id, email, name, is_admin, created_at
+           FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+}
+
+pub async fn merchant_by_user(
+    db: &PgPool,
+    user_id: uuid::Uuid,
+) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
@@ -101,7 +121,10 @@ pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option
     .await
 }
 
-pub async fn merchant_by_id(db: &PgPool, merchant_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+pub async fn merchant_by_id(
+    db: &PgPool,
+    merchant_id: uuid::Uuid,
+) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, created_at FROM merchants WHERE id = $1",
     )

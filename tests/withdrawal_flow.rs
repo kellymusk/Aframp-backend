@@ -73,7 +73,11 @@ async fn withdrawal_insufficient_balance_rejected() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected rejection: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected rejection: {json}"
+    );
     assert_eq!(json["error"], "insufficient available balance");
 }
 
@@ -146,7 +150,9 @@ async fn withdrawal_success_decrements_balance() {
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.as_array().unwrap().len(), 1);
+    let withdrawals = json["data"].as_array().unwrap();
+    assert_eq!(withdrawals.len(), 1);
+    assert_eq!(withdrawals[0]["account_number"], "****6789");
 }
 
 #[tokio::test]
@@ -192,7 +198,11 @@ async fn withdrawal_full_balance_then_insufficient() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "second withdrawal should fail");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "second withdrawal should fail"
+    );
 }
 
 #[tokio::test]
@@ -225,8 +235,15 @@ async fn withdrawal_unsupported_asset_rejected() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected rejection: {json}");
-    assert_eq!(json["error"], "withdrawals are only supported for the cNGN asset");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected rejection: {json}"
+    );
+    assert_eq!(
+        json["error"],
+        "withdrawals are only supported for the cNGN asset"
+    );
 }
 
 #[tokio::test]
@@ -261,8 +278,15 @@ async fn withdrawal_rejects_sub_kobo_precision() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected rejection: {json}");
-    assert_eq!(json["error"], "amount_stroops must be a whole number of kobo");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected rejection: {json}"
+    );
+    assert_eq!(
+        json["error"],
+        "amount_stroops must be a whole number of kobo"
+    );
 }
 
 #[tokio::test]
@@ -298,7 +322,11 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "expected payout failure: {json}"
+    );
     assert_eq!(json["error"], "simulated provider failure");
 
     let balance = sqlx::query_scalar::<_, i64>(
@@ -308,14 +336,24 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     .fetch_one(&state.db)
     .await
     .unwrap();
-    assert_eq!(balance, 5_000_000, "balance should be refunded after a failed payout");
+    assert_eq!(
+        balance, 5_000_000,
+        "balance should be refunded after a failed payout"
+    );
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    let withdrawals = json.as_array().unwrap();
-    assert_eq!(withdrawals.len(), 1, "the failed attempt should still leave an audit-trail row");
+    let withdrawals = json["data"].as_array().unwrap();
+    assert_eq!(
+        withdrawals.len(),
+        1,
+        "the failed attempt should still leave an audit-trail row"
+    );
     assert_eq!(withdrawals[0]["status"], "failed");
-    assert_eq!(withdrawals[0]["failure_reason"], "simulated provider failure");
+    assert_eq!(
+        withdrawals[0]["failure_reason"],
+        "simulated provider failure"
+    );
 }
 
 #[tokio::test]
@@ -344,7 +382,11 @@ async fn withdrawal_insufficient_balance_never_calls_provider() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected rejection: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected rejection: {json}"
+    );
     assert_eq!(json["error"], "insufficient available balance");
 }
 
@@ -379,7 +421,11 @@ async fn withdrawal_invalid_bank_code_refunds_balance_and_records_reason() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "expected payout failure: {json}"
+    );
     assert_eq!(json["error"], "Invalid bank code");
 
     let balance = sqlx::query_scalar::<_, i64>(
@@ -389,11 +435,14 @@ async fn withdrawal_invalid_bank_code_refunds_balance_and_records_reason() {
     .fetch_one(&state.db)
     .await
     .unwrap();
-    assert_eq!(balance, 5_000_000, "balance should be refunded after an invalid bank code");
+    assert_eq!(
+        balance, 5_000_000,
+        "balance should be refunded after an invalid bank code"
+    );
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    let withdrawals = json.as_array().unwrap();
+    let withdrawals = json["data"].as_array().unwrap();
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "Invalid bank code");
 }
@@ -429,7 +478,11 @@ async fn withdrawal_invalid_account_number_refunds_balance_and_records_reason() 
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "expected payout failure: {json}"
+    );
     assert_eq!(json["error"], "Could not resolve account number");
 
     let balance = sqlx::query_scalar::<_, i64>(
@@ -439,13 +492,19 @@ async fn withdrawal_invalid_account_number_refunds_balance_and_records_reason() 
     .fetch_one(&state.db)
     .await
     .unwrap();
-    assert_eq!(balance, 5_000_000, "balance should be refunded after an invalid account number");
+    assert_eq!(
+        balance, 5_000_000,
+        "balance should be refunded after an invalid account number"
+    );
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    let withdrawals = json.as_array().unwrap();
+    let withdrawals = json["data"].as_array().unwrap();
     assert_eq!(withdrawals[0]["status"], "failed");
-    assert_eq!(withdrawals[0]["failure_reason"], "Could not resolve account number");
+    assert_eq!(
+        withdrawals[0]["failure_reason"],
+        "Could not resolve account number"
+    );
 }
 
 #[tokio::test]
@@ -479,7 +538,11 @@ async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "expected payout failure: {json}"
+    );
     assert_eq!(json["error"], "request to Paystack timed out");
 
     let balance = sqlx::query_scalar::<_, i64>(
@@ -489,11 +552,17 @@ async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
     .fetch_one(&state.db)
     .await
     .unwrap();
-    assert_eq!(balance, 5_000_000, "balance should be refunded after a provider timeout");
+    assert_eq!(
+        balance, 5_000_000,
+        "balance should be refunded after a provider timeout"
+    );
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    let withdrawals = json.as_array().unwrap();
+    let withdrawals = json["data"].as_array().unwrap();
     assert_eq!(withdrawals[0]["status"], "failed");
-    assert_eq!(withdrawals[0]["failure_reason"], "request to Paystack timed out");
+    assert_eq!(
+        withdrawals[0]["failure_reason"],
+        "request to Paystack timed out"
+    );
 }

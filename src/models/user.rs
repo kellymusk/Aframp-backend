@@ -20,6 +20,16 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Safe read model for API responses that should never expose password hashes.
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct UserProfile {
+    pub id: Uuid,
+    pub email: String,
+    pub name: String,
+    pub is_admin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SignupRequest {
     pub email: String,

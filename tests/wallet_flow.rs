@@ -57,6 +57,22 @@ async fn create_and_fetch_wallet() {
 }
 
 #[tokio::test]
+async fn get_wallet_returns_404_when_not_created() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let (token, _) = ensure_merchant(&app, "wallet_missing").await;
+
+    let (status, json) = send(app.clone(), "GET", "/wallet", Some(&token), None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "expected 404 when wallet is missing: {json}"
+    );
+    assert_eq!(json["code"], "WALLET_NOT_FOUND");
+}
+
+#[tokio::test]
 async fn balance_and_transactions_start_empty() {
     let Some(app) = app().await else {
         return;
@@ -80,8 +96,22 @@ async fn wallet_address_is_stable_per_merchant() {
     let (token_a, _) = ensure_merchant(&app, "stable_a").await;
     let (token_b, _) = ensure_merchant(&app, "stable_b").await;
 
-    send(app.clone(), "POST", "/wallet/create", Some(&token_a), Some(json!({}))).await;
-    send(app.clone(), "POST", "/wallet/create", Some(&token_b), Some(json!({}))).await;
+    send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token_a),
+        Some(json!({})),
+    )
+    .await;
+    send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token_b),
+        Some(json!({})),
+    )
+    .await;
 
     let (_, json_a) = send(app.clone(), "GET", "/wallet", Some(&token_a), None).await;
     let (_, json_b) = send(app.clone(), "GET", "/wallet", Some(&token_b), None).await;

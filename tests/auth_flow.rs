@@ -44,11 +44,15 @@ async fn signup_then_verify_otp_issues_session() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
-    assert!(challenge.get("token").is_none(), "signup must not issue a session before OTP verification");
+    assert!(
+        challenge.get("token").is_none(),
+        "signup must not issue a session before OTP verification"
+    );
     let challenge_id = challenge["challenge_id"].as_str().unwrap();
     assert!(challenge["expires_in_secs"].as_i64().unwrap() > 0);
 
-    let message = aframp::otp::mock::last_message_for(&normalized_phone).expect("mock provider should record the message");
+    let message = aframp::otp::mock::last_message_for(&normalized_phone)
+        .expect("mock provider should record the message");
     let code = extract_otp_code(&message);
 
     let (status, verified) = send(
@@ -77,7 +81,11 @@ async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
 
     // Neither challenge has been verified — resubmitting is a resend, not a conflict.
     let (status2, second) = send(app.clone(), "POST", "/signup", None, Some(body)).await;
-    assert_eq!(status2, StatusCode::TOO_MANY_REQUESTS, "immediate resend should hit the cooldown, not a conflict: {second}");
+    assert_eq!(
+        status2,
+        StatusCode::TOO_MANY_REQUESTS,
+        "immediate resend should hit the cooldown, not a conflict: {second}"
+    );
 }
 
 #[tokio::test]
@@ -111,7 +119,11 @@ async fn signup_duplicate_email_conflicts_after_verification() {
         Some(json!({ "email": email, "password": "password123", "name": "Dup", "phone_number": other_phone })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "expected conflict: {conflict}");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "expected conflict: {conflict}"
+    );
     assert_eq!(conflict["code"], "EMAIL_TAKEN");
 }
 
@@ -190,8 +202,13 @@ async fn login_with_verified_phone_requires_otp() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "login failed: {challenge}");
-    assert!(challenge.get("token").is_none(), "login for a phone-verified account must not issue a session directly");
-    let challenge_id = challenge["challenge_id"].as_str().expect("login should return a fresh challenge_id");
+    assert!(
+        challenge.get("token").is_none(),
+        "login for a phone-verified account must not issue a session directly"
+    );
+    let challenge_id = challenge["challenge_id"]
+        .as_str()
+        .expect("login should return a fresh challenge_id");
 
     let code = extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
     let (status, verified) = send(
@@ -230,8 +247,15 @@ async fn login_legacy_account_without_phone_skips_otp() {
         Some(json!({ "email": email, "password": "legacy-password-123" })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "legacy login should succeed synchronously: {body}");
-    assert!(body["token"].as_str().unwrap().len() > 10, "legacy login must issue a session directly, no OTP");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "legacy login should succeed synchronously: {body}"
+    );
+    assert!(
+        body["token"].as_str().unwrap().len() > 10,
+        "legacy login must issue a session directly, no OTP"
+    );
 }
 
 /// A real Argon2 hash of `legacy-password-123`, computed once so the legacy
@@ -366,11 +390,13 @@ async fn otp_expired_challenge_rejected() {
     .await;
     let challenge_id = challenge["challenge_id"].as_str().unwrap();
 
-    sqlx::query("UPDATE otp_challenges SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid")
-        .bind(challenge_id)
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE otp_challenges SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid",
+    )
+    .bind(challenge_id)
+    .execute(&db)
+    .await
+    .unwrap();
 
     let code = extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
     let (status, body) = send(
@@ -409,9 +435,11 @@ async fn otp_resend_after_cooldown_uses_new_code() {
     let (email, phone_number, normalized_phone) = fresh_identity("refresh");
     let body = json!({ "email": email, "password": "password123", "name": "Refresh", "phone_number": phone_number });
 
-    let (status1, challenge1) = send(app.clone(), "POST", "/signup", None, Some(body.clone())).await;
+    let (status1, challenge1) =
+        send(app.clone(), "POST", "/signup", None, Some(body.clone())).await;
     assert_eq!(status1, StatusCode::OK);
-    let old_code = extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
+    let old_code =
+        extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
 
     // Fast-forward past the cooldown on the existing challenge.
     sqlx::query("UPDATE otp_challenges SET last_sent_at = now() - interval '61 seconds' WHERE id = $1::uuid")
@@ -426,7 +454,8 @@ async fn otp_resend_after_cooldown_uses_new_code() {
         challenge1["challenge_id"], challenge2["challenge_id"],
         "a resend refreshes the same challenge row, it doesn't create a new one"
     );
-    let new_code = extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
+    let new_code =
+        extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
 
     // The old code is dead; only the freshly-sent one verifies.
     let (status, body) = send(
@@ -508,6 +537,49 @@ async fn me_returns_profile_for_a_valid_token() {
 }
 
 #[tokio::test]
+async fn admin_users_list_never_includes_password_hash() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
+    let password = "legacy-password-123";
+    let hash = aframp_password_hash_for_tests();
+    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin User', true)")
+        .bind(&email)
+        .bind(&hash)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (status, login) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": password })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin login failed: {login}");
+    let token = login["token"]
+        .as_str()
+        .expect("legacy admin login should return a token");
+
+    let (status, users) = send(app.clone(), "GET", "/admin/users", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "admin users failed: {users}");
+    let rows = users
+        .as_array()
+        .expect("/admin/users should return an array");
+    let current_admin = rows
+        .iter()
+        .find(|row| row["email"].as_str() == Some(email.as_str()))
+        .expect("newly-created admin should be visible in /admin/users");
+    assert!(
+        current_admin.get("password_hash").is_none(),
+        "/admin/users must never leak password hashes"
+    );
+}
+
+#[tokio::test]
 async fn login_sets_an_http_only_session_cookie_that_authenticates() {
     let Some(app) = app().await else {
         return;
@@ -539,9 +611,18 @@ async fn login_sets_an_http_only_session_cookie_that_authenticates() {
         .iter()
         .find(|c| c.starts_with("aframp_session="))
         .expect("verify-otp must set a session cookie");
-    assert!(session.contains("HttpOnly"), "session must be unreadable from JS: {session}");
-    assert!(session.contains("Secure"), "session must not travel over plain HTTP: {session}");
-    assert!(session.contains("SameSite=Lax"), "session must not ride cross-site requests: {session}");
+    assert!(
+        session.contains("HttpOnly"),
+        "session must be unreadable from JS: {session}"
+    );
+    assert!(
+        session.contains("Secure"),
+        "session must not travel over plain HTTP: {session}"
+    );
+    assert!(
+        session.contains("SameSite=Lax"),
+        "session must not ride cross-site requests: {session}"
+    );
 
     // The cookie alone authenticates: no Authorization header in sight.
     let jar = format!("aframp_session={}", verified["token"].as_str().unwrap());
@@ -555,15 +636,17 @@ async fn logout_clears_the_session_cookie() {
     let Some(app) = app().await else {
         return;
     };
-    let (status, _, cookies) =
-        send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
+    let (status, _, cookies) = send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     let cleared = cookies
         .iter()
         .find(|c| c.starts_with("aframp_session="))
         .expect("logout must clear the session cookie");
-    assert!(cleared.contains("Max-Age=0"), "cookie must expire immediately: {cleared}");
+    assert!(
+        cleared.contains("Max-Age=0"),
+        "cookie must expire immediately: {cleared}"
+    );
 }
 
 #[tokio::test]
