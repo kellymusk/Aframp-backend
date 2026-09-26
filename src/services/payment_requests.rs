@@ -17,10 +17,24 @@ pub enum PaymentRequestError {
     Database(#[from] sqlx::Error),
 }
 
+/// Random bytes per memo. 14 bytes hex-encode to 28 characters — the most a
+/// Stellar `MEMO_TEXT` can carry — giving 112 bits of entropy.
+const MEMO_BYTES: usize = 14;
+
+/// Memo collisions are astronomically unlikely at 112 bits, but `memo` is
+/// UNIQUE (migration 0004), so a collision is retried with a fresh memo
+/// instead of failing the request.
+const MEMO_ATTEMPTS: usize = 3;
+
 fn generate_memo() -> String {
-    let mut bytes = [0u8; 8];
+    let mut bytes = [0u8; MEMO_BYTES];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+fn is_memo_collision(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db) if db.is_unique_violation()
+        && db.constraint().is_some_and(|c| c.contains("memo")))
 }
 
 pub async fn create_payment_request(
@@ -38,23 +52,33 @@ pub async fn create_payment_request(
         .unwrap_or(DEFAULT_EXPIRY_SECS)
         .clamp(MIN_EXPIRY_SECS, MAX_EXPIRY_SECS);
     let expires_at = Utc::now() + Duration::seconds(ttl);
-    let memo = generate_memo();
 
-    sqlx::query_as::<_, PaymentRequest>(
-        "INSERT INTO payment_requests (merchant_id, wallet_id, amount_stroops, asset, memo, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
-                   expires_at, created_at, updated_at",
-    )
-    .bind(merchant_id)
-    .bind(wallet_id)
-    .bind(amount_stroops)
-    .bind(&asset)
-    .bind(&memo)
-    .bind(expires_at)
-    .fetch_one(db)
-    .await
-    .map_err(PaymentRequestError::from)
+    let mut attempt = 1;
+    loop {
+        let memo = generate_memo();
+        let result = sqlx::query_as::<_, PaymentRequest>(
+            "INSERT INTO payment_requests (merchant_id, wallet_id, amount_stroops, asset, memo, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
+                       expires_at, created_at, updated_at",
+        )
+        .bind(merchant_id)
+        .bind(wallet_id)
+        .bind(amount_stroops)
+        .bind(&asset)
+        .bind(&memo)
+        .bind(expires_at)
+        .fetch_one(db)
+        .await;
+
+        match result {
+            Err(err) if is_memo_collision(&err) && attempt < MEMO_ATTEMPTS => {
+                tracing::warn!(attempt, "payment request memo collision; regenerating");
+                attempt += 1;
+            }
+            other => return other.map_err(PaymentRequestError::from),
+        }
+    }
 }
 
 /// A payment request joined with its wallet's address, so listing many doesn't
@@ -194,4 +218,22 @@ pub async fn mark_partial(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(),
     .execute(db)
     .await
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memo_fits_a_stellar_text_memo() {
+        let memo = generate_memo();
+        assert_eq!(memo.len(), 28, "MEMO_TEXT is limited to 28 bytes");
+        assert!(memo.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn memos_do_not_repeat_across_a_large_batch() {
+        let memos: std::collections::HashSet<String> = (0..10_000).map(|_| generate_memo()).collect();
+        assert_eq!(memos.len(), 10_000);
+    }
 }

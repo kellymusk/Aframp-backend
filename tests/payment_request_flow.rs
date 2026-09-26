@@ -244,3 +244,29 @@ async fn payment_request_marked_paid_on_memo_correlated_deposit() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["status"], "paid");
 }
+
+#[tokio::test]
+async fn payment_request_memos_are_unique_and_fit_a_text_memo() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_memo_batch").await;
+    create_wallet(&app, &token).await;
+
+    let mut memos = std::collections::HashSet::new();
+    for _ in 0..50 {
+        let (status, created) = send(
+            app.clone(),
+            "POST",
+            "/payment-requests",
+            Some(&token),
+            Some(json!({ "amount_stroops": 10_000_000 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create failed: {created}");
+        let memo = created["memo"].as_str().unwrap().to_string();
+        assert_eq!(memo.len(), 28, "memo must fit Stellar's 28-byte MEMO_TEXT");
+        assert!(memos.insert(memo), "memo repeated within one wallet");
+    }
+}

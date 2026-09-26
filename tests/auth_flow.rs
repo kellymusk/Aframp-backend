@@ -593,3 +593,139 @@ async fn me_requires_a_valid_token() {
     let (status, _) = send(app.clone(), "GET", "/me", Some("not-a-real-token"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn verified_signup_challenge_is_deleted() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let (email, phone_number, normalized_phone) = fresh_identity("challenge_gone");
+
+    let (status, challenge) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": "Gone", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
+    let challenge_id: uuid::Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+    let code = extract_otp_code(&aframp::otp::mock::last_message_for(&normalized_phone).unwrap());
+
+    let (status, verified) = send(
+        app.clone(),
+        "POST",
+        "/verify-otp",
+        None,
+        Some(json!({ "challenge_id": challenge_id, "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify-otp failed: {verified}");
+
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE id = $1")
+        .bind(challenge_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "the challenge (and its pending password hash) must be gone");
+
+    // The same code can't be replayed once the row is gone.
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        "/verify-otp",
+        None,
+        Some(json!({ "challenge_id": challenge_id, "code": code })),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    let (email, phone_number, _) = fresh_identity("stale_purge");
+    let (status, challenge) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": "Stale", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
+    let stale_id: uuid::Uuid = challenge["challenge_id"].as_str().unwrap().parse().unwrap();
+
+    // Age the abandoned challenge past the 24h retention window.
+    sqlx::query(
+        "UPDATE otp_challenges
+            SET created_at = now() - interval '25 hours', expires_at = now() - interval '25 hours'
+          WHERE id = $1",
+    )
+    .bind(stale_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (other_email, other_phone, _) = fresh_identity("stale_purge_trigger");
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": other_email, "password": "password123", "name": "Trigger", "phone_number": other_phone })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE id = $1")
+        .bind(stale_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "a challenge expired over 24h ago must be hard-deleted");
+}
+
+#[tokio::test]
+async fn revoking_admin_takes_effect_on_the_next_request() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    // A legacy (no-phone) account logs in without OTP, which keeps this test
+    // focused on the admin check.
+    let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin', true)")
+        .bind(&email)
+        .bind(aframp_password_hash_for_tests())
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": "legacy-password-123" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    let token = body["token"].as_str().unwrap().to_string();
+
+    let (status, body) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "admin should have access: {body}");
+
+    sqlx::query("UPDATE users SET is_admin = false WHERE email = $1")
+        .bind(&email)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Same, still-unexpired token: rejected straight away.
+    let (status, _) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
