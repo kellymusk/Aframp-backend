@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 use crate::blockchain::stellar::{BlockchainListener, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
-use crate::services::{balances, payment_requests, payments, wallets};
+use crate::services::{balances, notifications, payment_requests, payments, wallets};
 use crate::AppState;
 
 pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
@@ -89,7 +89,7 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
         db,
         &UpdateBalance {
             merchant_id: wallet.merchant_id,
-            asset: d.asset,
+            asset: d.asset.clone(),
             available_delta: d.amount_stroops,
             pending_delta: -d.amount_stroops,
         },
@@ -118,6 +118,23 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
                     .map_err(|e| e.to_string())?;
             }
         }
+    }
+
+    // Notify the merchant that the deposit has been confirmed. Notifications are
+    // opt-in via the merchant preference setting; the service is a no-op when the
+    // merchant has not enabled them. Failures are logged and never block deposit
+    // processing.
+    if let Err(err) = notifications::notify_deposit_confirmed(
+        db,
+        wallet.merchant_id,
+        payment.id,
+        d.amount_stroops,
+        &d.asset,
+        &d.tx_hash,
+    )
+    .await
+    {
+        tracing::warn!(error = %err, payment_id = %payment.id, "failed to send deposit notification");
     }
 
     // TODO: dispatch payment.confirmed webhook.

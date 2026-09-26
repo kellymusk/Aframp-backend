@@ -143,3 +143,79 @@ pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sql
     .fetch_optional(db)
     .await
 }
+
+/// Merchant notification preferences relevant to deposit alerts.
+///
+/// Notifications are opt-in: a merchant only receives a deposit email when
+/// `deposit_email_enabled` is true. `unsubscribe_token` is a stable, opaque
+/// value embedded in the email's unsubscribe link so merchants can opt out
+/// without authenticating (GDPR-compliant one-click unsubscribe).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MerchantNotificationPrefs {
+    pub merchant_id: Uuid,
+    pub email: Option<String>,
+    pub deposit_email_enabled: bool,
+    pub unsubscribe_token: Uuid,
+}
+
+/// Loads the notification preferences for a merchant. Returns `None` when the
+/// merchant has no preferences row yet (i.e. has never opted in).
+pub async fn merchant_notification_prefs(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<MerchantNotificationPrefs>, sqlx::Error> {
+    sqlx::query_as::<_, MerchantNotificationPrefs>(
+        "SELECT merchant_id, email, deposit_email_enabled, unsubscribe_token
+           FROM merchant_notification_prefs
+          WHERE merchant_id = $1",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Opts a merchant in (or out) of deposit email notifications. Creates the
+/// preferences row on first call, generating a stable unsubscribe token.
+pub async fn set_deposit_email_enabled(
+    db: &PgPool,
+    merchant_id: Uuid,
+    email: &str,
+    enabled: bool,
+) -> Result<MerchantNotificationPrefs, sqlx::Error> {
+    sqlx::query_as::<_, MerchantNotificationPrefs>(
+        "INSERT INTO merchant_notification_prefs (
+             merchant_id, email, deposit_email_enabled, unsubscribe_token
+         )
+         VALUES ($1, $2, $3, gen_random_uuid())
+         ON CONFLICT (merchant_id) DO UPDATE
+            SET email = EXCLUDED.email,
+                deposit_email_enabled = EXCLUDED.deposit_email_enabled,
+                updated_at = now()
+         RETURNING merchant_id, email, deposit_email_enabled, unsubscribe_token",
+    )
+    .bind(merchant_id)
+    .bind(email)
+    .bind(enabled)
+    .fetch_one(db)
+    .await
+}
+
+/// Disables deposit email notifications using the opaque unsubscribe token
+/// from the email link. Returns `true` when a matching opt-in was disabled.
+/// This is the GDPR-compliant one-click unsubscribe path and requires no
+/// authentication.
+pub async fn unsubscribe_deposit_email(
+    db: &PgPool,
+    token: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE merchant_notification_prefs
+            SET deposit_email_enabled = false, updated_at = now()
+          WHERE unsubscribe_token = $1
+            AND deposit_email_enabled = true",
+    )
+    .bind(token)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
