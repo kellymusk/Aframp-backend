@@ -38,7 +38,9 @@ pub async fn overview(db: &PgPool) -> Result<AdminOverview, sqlx::Error> {
     .await?;
 
     let payment_requests_by_status = sqlx::query_as::<_, StatusCount>(
-        "SELECT status, count(*) FROM payment_requests GROUP BY status ORDER BY status",
+        "SELECT CASE WHEN status = 'pending' AND expires_at < now() THEN 'expired' ELSE status END AS status,
+                count(*)
+           FROM payment_requests GROUP BY 1 ORDER BY 1",
     )
     .fetch_all(db)
     .await?;
@@ -129,7 +131,9 @@ pub async fn withdrawals(db: &PgPool, limit: i64) -> Result<Vec<AdminWithdrawalR
 pub async fn payment_requests(db: &PgPool, limit: i64) -> Result<Vec<AdminPaymentRequestRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminPaymentRequestRow>(
         "SELECT pr.id, pr.merchant_id, m.name AS merchant_name, pr.amount_stroops, pr.asset,
-                pr.memo, pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at
+                pr.memo,
+                CASE WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired' ELSE pr.status END AS status,
+                pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at
          FROM payment_requests pr
          JOIN merchants m ON m.id = pr.merchant_id
          ORDER BY pr.created_at DESC

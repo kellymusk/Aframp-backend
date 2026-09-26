@@ -285,6 +285,10 @@ command.txt    Copy-paste command reference for running/testing/interacting with
 
 Nigeria has a large digital-payments ecosystem and near-universal familiarity with POS and bank-transfer payments — the exact behavior Aframp is extending rather than replacing. The plan is to prove the merchant payment experience narrowly here, then expand to other African markets and cross-border corridors.
 
+## Security
+
+Found a vulnerability? Please do not open a public issue. See **[`SECURITY.md`](SECURITY.md)** for how to report it privately and what response times to expect.
+
 ## Contributing
 
 This project is under active MVP development — expect the API and schema to change as real payout funding, a real cNGN issuer address, and settlement sweeping land. Open an issue or PR against `master`.

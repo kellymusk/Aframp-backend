@@ -89,7 +89,7 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
         db,
         &UpdateBalance {
             merchant_id: wallet.merchant_id,
-            asset: d.asset,
+            asset: d.asset.clone(),
             available_delta: d.amount_stroops,
             pending_delta: -d.amount_stroops,
         },
@@ -120,6 +120,60 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
         }
     }
 
+    // Sweep the confirmed merchant funds to the consolidated settlement wallet.
+    if let Err(err) = sweep_confirmed_payment(db, &wallet, &payment, &d.asset).await {
+        tracing::warn!(error = %err, payment_id = %payment.id, "platform sweep failed");
+    }
+
     // TODO: dispatch payment.confirmed webhook.
+    Ok(())
+}
+
+/// Moves confirmed merchant funds from the merchant's custodial wallet to the
+/// platform settlement wallet (`STELLAR_SYSTEM_WALLET_ADDRESS`).
+///
+/// The merchant wallet secret is decrypted, used to sign a Stellar transfer to
+/// the settlement address, and the resulting sweep is recorded in the payments
+/// table with a `sweep` type.
+async fn sweep_confirmed_payment(
+    db: &PgPool,
+    wallet: &crate::models::Wallet,
+    payment: &crate::models::Payment,
+    asset: &str,
+) -> Result<(), String> {
+    let settlement_address = std::env::var("STELLAR_SYSTEM_WALLET_ADDRESS")
+        .map_err(|_| "STELLAR_SYSTEM_WALLET_ADDRESS is not configured".to_string())?;
+    if settlement_address.trim().is_empty() {
+        return Err("STELLAR_SYSTEM_WALLET_ADDRESS is empty".into());
+    }
+
+    // Decrypt the merchant wallet secret so we can sign the sweep transfer.
+    let secret = wallets::decrypt_secret(db, wallet.id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let sweep_tx_hash = crate::blockchain::stellar::submit_transfer(
+        &secret,
+        &settlement_address,
+        payment.amount_stroops,
+        asset,
+    )
+    .await?;
+
+    payments::record_sweep(
+        db,
+        NewPayment {
+            merchant_id: wallet.merchant_id,
+            wallet_id: wallet.id,
+            wallet_address: wallet.address.clone(),
+            tx_hash: sweep_tx_hash,
+            amount_stroops: payment.amount_stroops,
+            asset: asset.to_string(),
+            network: "stellar".into(),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
