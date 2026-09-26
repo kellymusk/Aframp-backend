@@ -84,6 +84,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/verify-otp", axum::routing::post(api::auth::verify_otp))
         .route("/logout", axum::routing::post(api::auth::logout))
         .route("/webhooks/termii", axum::routing::post(api::webhooks::termii))
+        .route(
+            "/webhooks",
+            axum::routing::post(api::merchant_webhooks::create).get(api::merchant_webhooks::list),
+        )
         .route("/me", axum::routing::get(api::me::get))
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))

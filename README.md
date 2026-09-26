@@ -206,6 +206,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `GET` | `/admin/overview` | 🔒 admin | Counts + balances/status breakdowns across every merchant |
 | `GET` | `/admin/merchants`, `/admin/users`, `/admin/wallets`, `/admin/transactions`, `/admin/withdrawals`, `/admin/payment-requests` | 🔒 admin | System-wide list views (`?limit=`, default 100, max 500), each joined with owner/merchant context |
 | `POST` | `/webhooks/termii` | 🔏 signed | Termii's SMS delivery-status callback — not for merchant/admin use, see [Termii webhook](#termii-webhook) below |
+| `POST` | `/webhooks` | ✅ | Register a URL to receive this merchant's outbound events. Body: `{ url }` (absolute `http`/`https`). `409` if already registered. See [Merchant webhooks](#merchant-webhooks) below |
+| `GET` | `/webhooks` | ✅ | List this merchant's registered webhook URLs |
 
 `/verify-otp` — the only endpoint that ever issues a session — returns:
 
@@ -226,6 +228,20 @@ UPDATE users SET is_admin = true WHERE email = 'you@example.com';
 ```
 
 The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
+
+### Merchant webhooks
+
+Once a deposit is credited to a merchant's balance, Aframp POSTs a `payment.confirmed` event to every URL the merchant registered with `POST /webhooks`:
+
+```json
+{
+  "type": "payment.confirmed",
+  "created_at": "2026-09-26T12:00:00Z",
+  "data": { "payment_id": "...", "merchant_id": "...", "wallet_address": "G...", "tx_hash": "...", "amount_stroops": 10000000, "asset": "cNGN", "network": "stellar" }
+}
+```
+
+Each request carries `X-Aframp-Event: payment.confirmed` and `X-Aframp-Signature`: the hex HMAC-SHA256 of the raw request body keyed with `WEBHOOK_SECRET`. Receivers should recompute it over the exact bytes received and compare in constant time. A delivery that doesn't get a `2xx` is retried with exponential backoff (5 attempts, 1s → 2s → 4s → 8s); every attempt's outcome is recorded in `webhook_deliveries` (`status` `pending` / `delivered` / `failed`, `attempts`, `last_error`).
 
 ### Termii webhook
 
