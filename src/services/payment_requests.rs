@@ -83,7 +83,8 @@ pub async fn payment_requests_by_merchant(
 ) -> Result<Vec<PaymentRequestWithWallet>, sqlx::Error> {
     sqlx::query_as::<_, PaymentRequestWithWallet>(
         "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
-                pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                CASE WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired' ELSE pr.status END AS status,
+                pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
                 w.address, w.network
            FROM payment_requests pr
            JOIN wallets w ON w.id = pr.wallet_id
@@ -110,7 +111,8 @@ pub async fn payment_requests_by_merchant_cursor(
         Some(c) => {
             sqlx::query_as::<_, PaymentRequestWithWallet>(
                 "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
-                        pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                        CASE WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired' ELSE pr.status END AS status,
+                        pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
                         w.address, w.network
                    FROM payment_requests pr
                    JOIN wallets w ON w.id = pr.wallet_id
@@ -129,7 +131,8 @@ pub async fn payment_requests_by_merchant_cursor(
         None => {
             sqlx::query_as::<_, PaymentRequestWithWallet>(
                 "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
-                        pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
+                        CASE WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired' ELSE pr.status END AS status,
+                        pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at,
                         w.address, w.network
                    FROM payment_requests pr
                    JOIN wallets w ON w.id = pr.wallet_id
@@ -145,10 +148,13 @@ pub async fn payment_requests_by_merchant_cursor(
     }
 }
 
+/// Read queries report a `pending` row whose expiry has passed as `expired`,
+/// so a request going stale needs no background job to flip it.
 pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<PaymentRequest>, sqlx::Error> {
     sqlx::query_as::<_, PaymentRequest>(
-        "SELECT id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
-                expires_at, created_at, updated_at
+        "SELECT id, merchant_id, wallet_id, amount_stroops, asset, memo,
+                CASE WHEN status = 'pending' AND expires_at < now() THEN 'expired' ELSE status END AS status,
+                payment_id, expires_at, created_at, updated_at
            FROM payment_requests WHERE id = $1",
     )
     .bind(id)
