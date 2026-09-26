@@ -46,6 +46,12 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
                 .termii_sender_id
                 .clone()
                 .expect("TERMII_SENDER_ID is required when OTP_PROVIDER=termii"),
+        )
+        .with_webhook_secret(
+            config
+                .termii_webhook_secret
+                .as_ref()
+                .map(|s| s.as_str().to_string()),
         )),
         OtpProviderKind::Mock => std::sync::Arc::new(otp::mock::MockOtpProvider),
     };

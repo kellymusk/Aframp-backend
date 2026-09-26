@@ -230,7 +230,13 @@ The `is_admin` flag is baked into the JWT at login, so **re-login after flipping
 
 Register `https://<your-deployed-host>/webhooks/termii` at [termii.com/account/webhook/config](https://termii.com/account/webhook/config) — it's one account-wide setting, not something passed per API call. Termii POSTs SMS delivery-status events (`Delivered`, `Message Failed`, `Rejected`, etc. — see [their docs](https://developers.termii.com/events-and-reports)) there, signed with `X-Termii-Signature` (HMAC-SHA512). This endpoint verifies that signature and logs the event; it doesn't yet correlate a delivery status back to the `otp_challenges` row that sent it — that'd need the provider's `message_id` captured at send time and a column to hold it, which nothing does today.
 
-**Their docs don't say which secret signs the header** — "your secret key," unspecified. This verifies against `TERMII_API_KEY`, the only secret both sides are known to share. If real Termii traffic starts failing signature checks, that assumption is the first thing to check against the dashboard.
+**Their docs don't say which secret signs the header** — "your secret key," unspecified. By default this verifies against `TERMII_API_KEY`, the only secret both sides are known to share. If your Termii dashboard shows a separate webhook/secret key, set `TERMII_WEBHOOK_SECRET` to it and that is used instead (unset or empty falls back to `TERMII_API_KEY`).
+
+**Diagnosing a mismatch:** a wrong key doesn't fail loudly on Termii's side — every genuine event just gets a `403`. Each rejected request logs `termii webhook: signature verification failed` at `warn` (with `signature_present`, so a missing header is distinguishable from a wrong key). If those appear for real delivery events:
+
+1. Confirm the header is arriving at all (`signature_present=false` means a proxy is stripping `X-Termii-Signature`).
+2. Try the other key: set `TERMII_WEBHOOK_SECRET` to the dashboard's secret key if you were relying on `TERMII_API_KEY`, or unset it if you had set it.
+3. Check nothing between Termii and the API re-serializes the JSON body — the HMAC-SHA512 is over the exact raw bytes.
 
 **Known gap since OTP shipped:** the `/admin` page's login form only knows the old one-step `/login` → cookie flow. An admin account created *before* OTP existed (no `phone_number` on the row) still logs in through it fine. An admin account with a phone number now gets a challenge response back instead of a session, and the dashboard has no code-entry step to handle that — it'll appear to fail to log in. Until the dashboard is updated, keep your admin account phone-less, or drive `/login` → `/verify-otp` manually with `curl`/Postman and paste the resulting cookie in by hand.
 
