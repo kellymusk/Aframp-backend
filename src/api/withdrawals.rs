@@ -1,6 +1,8 @@
 use axum::extract::{Query, State};
 use axum::Json;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
@@ -16,14 +18,33 @@ pub struct ListParams {
     pub cursor: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+pub struct WithdrawalView {
+    pub id: Uuid,
+    pub merchant_id: Uuid,
+    pub amount_stroops: i64,
+    pub asset: String,
+    pub status: String,
+    pub provider: Option<String>,
+    pub provider_reference: Option<String>,
+    pub bank_code: Option<String>,
+    pub account_number: Option<String>,
+    pub failure_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(req): Json<CreateWithdrawalRequest>,
-) -> ApiResult<Json<Withdrawal>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+) -> ApiResult<Json<WithdrawalView>> {
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
     if req.amount_stroops <= 0 {
         return Err(bad_request_field(
             "amount_stroops",
@@ -52,37 +73,73 @@ pub async fn create(
     )
     .await
     .map_err(map_withdrawal_error)?;
-    Ok(Json(withdrawal))
+    Ok(Json(to_view(&withdrawal)))
 }
 
 pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Page<Withdrawal>>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+) -> ApiResult<Json<Page<WithdrawalView>>> {
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let withdrawals =
         withdrawals::withdrawals_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
             .await
             .map_err(internal)?;
-    Ok(Json(Page::new(withdrawals, limit, |w| Cursor {
+    let views: Vec<WithdrawalView> = withdrawals.iter().map(to_view).collect();
+    Ok(Json(Page::new(views, limit, |w| Cursor {
         created_at: w.created_at,
         id: w.id,
     })))
 }
 
-fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
+fn to_view(withdrawal: &Withdrawal) -> WithdrawalView {
+    WithdrawalView {
+        id: withdrawal.id,
+        merchant_id: withdrawal.merchant_id,
+        amount_stroops: withdrawal.amount_stroops,
+        asset: withdrawal.asset.clone(),
+        status: withdrawal.status.clone(),
+        provider: withdrawal.provider.clone(),
+        provider_reference: withdrawal.provider_reference.clone(),
+        bank_code: withdrawal.bank_code.clone(),
+        account_number: withdrawal
+            .account_number
+            .as_deref()
+            .map(mask_account_number),
+        failure_reason: withdrawal.failure_reason.clone(),
+        created_at: withdrawal.created_at,
+        updated_at: withdrawal.updated_at,
+    }
+}
+
+fn mask_account_number(account_number: &str) -> String {
+    let last4_start = account_number.len().saturating_sub(4);
+    let last4 = &account_number[last4_start..];
+    format!("****{last4}")
+}
+
+fn map_withdrawal_error(
+    err: WithdrawalError,
+) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
     match err {
-        WithdrawalError::InsufficientBalance => {
-            bad_request(ErrorCode::InsufficientBalance, "insufficient available balance")
-        }
+        WithdrawalError::InsufficientBalance => bad_request(
+            ErrorCode::InsufficientBalance,
+            "insufficient available balance",
+        ),
         WithdrawalError::UnsupportedAsset => bad_request(
             ErrorCode::UnsupportedAsset,
             "withdrawals are only supported for the cNGN asset",

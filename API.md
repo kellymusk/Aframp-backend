@@ -84,7 +84,7 @@ Every error returns the same shape — a human-readable `error` string plus a st
 | `INVALID_CREDENTIALS` | `401` | Wrong password or unknown email on login |
 | `USER_NOT_FOUND` | `404` | Authenticated user no longer exists |
 | `MERCHANT_NOT_FOUND` | `400` | Account has no merchant (visit onboarding) |
-| `WALLET_NOT_FOUND` | `400` | No wallet yet, or none created before a payment-request call |
+| `WALLET_NOT_FOUND` | `404` | No wallet yet, or none created before a payment-request call |
 | `PAYMENT_REQUEST_NOT_FOUND` | `404` | Payment request id doesn't exist |
 | `PAYOUT_FAILED` | `502` | Upstream payment provider rejected the payout |
 | `FORBIDDEN` | `403` | Authenticated but not an admin, on an `/admin/*` route |
@@ -218,7 +218,7 @@ Auth required. Generates a **real Stellar ed25519 keypair** for the merchant. Th
 ### `GET /wallet`
 Auth required. The merchant's most recent wallet. Same shape as above.
 
-Errors: `400 "no wallet created yet"` if none exists — that's the signal to run onboarding, not an error to surface raw.
+Errors: `404 "no wallet created yet"` if none exists — that's the signal to run onboarding, not an error to surface raw.
 
 ---
 
@@ -258,7 +258,7 @@ Auth required. **The core POS action.** Creates a request for a specific amount 
 
 **The `memo` is what links a payment to this request.** A customer paying without it still credits the merchant's balance, but the request stays `pending` forever. The SEP-7 URI includes it automatically; if you ever show manual payment instructions, the memo is mandatory.
 
-Errors: `400 "create a wallet before generating payment requests"` if the merchant has no wallet.
+Errors: `404 "create a wallet before generating payment requests"` if the merchant has no wallet.
 
 ### `GET /payment-requests`
 Auth required. The merchant's own requests, **newest first**. Scoped to the authenticated merchant — you cannot see another merchant's requests.
@@ -368,7 +368,7 @@ Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200).
     "provider": null,
     "provider_reference": null,
     "bank_code": "999992",
-    "account_number": "8038714250",
+    "account_number": "****4250",
     "failure_reason": "Paystack error (HTTP 400 Bad Request): Your balance is not enough to fulfil this request",
     "created_at": "2026-08-13T17:10:50.729251Z",
     "updated_at": "2026-08-13T17:10:52.853489Z"
@@ -377,6 +377,7 @@ Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200).
 ```
 
 `status` is `pending`, `processing`, `completed`, or `failed`. Show `failure_reason` on failed rows — it carries the provider's own wording.
+`account_number` is always masked (`****1234` format) in API responses.
 
 ---
 

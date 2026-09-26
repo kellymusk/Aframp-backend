@@ -34,14 +34,22 @@ pub async fn create(
     auth: AuthUser,
     Json(req): Json<CreatePaymentRequestRequest>,
 ) -> ApiResult<Json<PaymentRequestView>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
 
     let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| bad_request(ErrorCode::WalletNotFound, "create a wallet before generating payment requests"))?;
+        .ok_or_else(|| {
+            not_found(
+                ErrorCode::WalletNotFound,
+                "create a wallet before generating payment requests",
+            )
+        })?;
 
     // Defaults to XLM, not cNGN like withdrawals: XLM is what's actually
     // scannable/testable today (no cNGN issuer address configured yet).
@@ -68,7 +76,12 @@ pub async fn get(
     let pr = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+        .ok_or_else(|| {
+            not_found(
+                ErrorCode::PaymentRequestNotFound,
+                "payment request not found",
+            )
+        })?;
 
     let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
         .await
@@ -83,19 +96,29 @@ pub async fn list(
     auth: AuthUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<PaymentRequestView>>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
 
-    let rows =
-        payment_requests::payment_requests_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
-            .await
-            .map_err(internal)?;
+    let rows = payment_requests::payment_requests_by_merchant_cursor(
+        &state.db,
+        merchant_id,
+        limit,
+        cursor,
+    )
+    .await
+    .map_err(internal)?;
 
     Ok(Json(Page::new(
         rows.iter().map(row_to_view).collect(),
@@ -159,7 +182,11 @@ fn build_sep7_uri(address: &str, amount_stroops: i64, asset: &str, memo: &str) -
     if asset != "XLM" && asset != "native" {
         return None;
     }
-    let amount = format!("{}.{:07}", amount_stroops / 10_000_000, amount_stroops % 10_000_000);
+    let amount = format!(
+        "{}.{:07}",
+        amount_stroops / 10_000_000,
+        amount_stroops % 10_000_000
+    );
     Some(format!(
         "web+stellar:pay?destination={address}&amount={amount}&memo={memo}&memo_type=MEMO_TEXT"
     ))

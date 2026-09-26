@@ -220,7 +220,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Wallet' }
-        '400':
+        '404':
           description: No wallet created yet — run onboarding
           content:
             application/json:
@@ -246,6 +246,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: Wallet not found for this merchant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
     get:
@@ -615,7 +620,11 @@ components:
         provider: { type: string, nullable: true, example: paystack }
         provider_reference: { type: string, nullable: true }
         bank_code: { type: string, nullable: true }
-        account_number: { type: string, nullable: true }
+        account_number:
+          type: string
+          nullable: true
+          description: Masked destination account number in ****1234 format.
+          example: '****6789'
         failure_reason:
           type: string
           nullable: true
