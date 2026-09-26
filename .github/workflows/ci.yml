@@ -149,6 +149,43 @@ jobs:
           OTP_PROVIDER: mock
         run: cargo test --all
 
+      # Snapshot tests for API error response shapes (issue #1089).
+      # `cargo insta test` runs the suite and fails the build if any snapshot
+      # is missing or differs from the committed .snap files, so a refactor
+      # that changes the documented `{ error, code, field? }` shape is caught.
+      - name: Run error snapshot tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+          JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          WEBHOOK_SECRET: test-webhook-secret-at-least-32chars
+          WALLET_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          STELLAR_SYSTEM_WALLET_ADDRESS: GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBV3VDGMRPYW
+          PAYSTACK_SECRET_KEY: sk_test_placeholder
+          OTP_HMAC_SECRET: test-otp-hmac-secret-at-least-32chars
+          OTP_PROVIDER: mock
+          INSTA_UPDATE: no
+        run: |
+          cargo install cargo-insta --locked
+          cargo insta test --all --accept --check
+
+      # Contract tests for the Paystack provider (issue #1091).
+      # These tests spin up a local `wiremock` server and replay recorded
+      # Paystack resolve/recipient/transfer responses (including error
+      # responses) so a schema change in Paystack's API is caught in CI.
+      - name: Run Paystack contract tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+          JWT_SECRET: test-jwt-secret-at-least-32-chars-long
+          WEBHOOK_SECRET: test-webhook-secret-at-least-32chars
+          WALLET_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          STELLAR_SYSTEM_WALLET_ADDRESS: GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBV3VDGMRPYW
+          PAYSTACK_SECRET_KEY: sk_test_placeholder
+          OTP_HMAC_SECRET: test-otp-hmac-secret-at-least-32chars
+          OTP_PROVIDER: mock
+        run: cargo test --all --test paystack_contract
+
   # ─────────────────────────────────────────────────────────────────────────────
   # LINT: clippy + fmt
   # ─────────────────────────────────────────────────────────────────────────────
