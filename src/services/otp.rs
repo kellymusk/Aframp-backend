@@ -152,10 +152,18 @@ pub async fn verify(
         return Err(OtpError::InvalidCode);
     }
 
-    sqlx::query("UPDATE otp_challenges SET consumed_at = now() WHERE id = $1")
+    // Delete the challenge as soon as the code checks out: a signup row holds
+    // the pending password hash, which must not outlive its purpose. The
+    // DELETE is also the atomic claim — if a concurrent verify already took
+    // this challenge, nothing is deleted and this attempt fails.
+    let claimed = sqlx::query("DELETE FROM otp_challenges WHERE id = $1")
         .bind(challenge_id)
         .execute(db)
-        .await?;
+        .await?
+        .rows_affected();
+    if claimed == 0 {
+        return Err(OtpError::ChallengeNotFound);
+    }
 
     if challenge.purpose == "login" {
         let user_id = challenge
@@ -203,6 +211,20 @@ struct NewChallenge<'a> {
     phone_number: &'a str,
 }
 
+/// Hard-deletes challenges that were consumed or expired more than 24 hours
+/// ago, so abandoned signups don't keep a pending password hash around.
+/// Rows younger than that are kept because the hourly send cap counts them.
+pub async fn purge_stale_challenges(db: &PgPool) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM otp_challenges
+          WHERE (consumed_at IS NOT NULL OR expires_at < now())
+            AND created_at < now() - interval '24 hours'",
+    )
+    .execute(db)
+    .await?
+    .rows_affected())
+}
+
 /// Refreshes a still-live challenge for this phone+purpose in place if one
 /// exists (respecting the resend cooldown), otherwise inserts a fresh one
 /// (respecting the hourly spam cap). Returns the challenge id and the plain
@@ -212,6 +234,12 @@ async fn upsert_challenge(
     hmac_secret: &str,
     new: NewChallenge<'_>,
 ) -> Result<(Uuid, String), OtpError> {
+    // There's no scheduler in this service, so stale rows are purged each
+    // time a challenge is issued. Best-effort: never block sending a code.
+    if let Err(err) = purge_stale_challenges(db).await {
+        tracing::warn!(error = %err, "failed to purge stale OTP challenges");
+    }
+
     let existing: Option<(Uuid, chrono::DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, last_sent_at FROM otp_challenges
           WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL AND expires_at > now()
