@@ -24,6 +24,19 @@ pub async fn create(
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+
+    // Refuse if the merchant is suspended.
+    let merchant = crate::services::users::merchant_by_id(&state.db, merchant_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "merchant not found"))?;
+    if merchant.is_suspended() {
+        return Err(crate::error::forbidden(
+            ErrorCode::Forbidden,
+            "this merchant account has been suspended",
+        ));
+    }
+
     if req.amount_stroops <= 0 {
         return Err(bad_request_field(
             "amount_stroops",

@@ -144,6 +144,16 @@ fn map_user_error(err: UserError) -> (axum::http::StatusCode, Json<crate::error:
         UserError::InvalidCredentials => {
             unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
         }
+        UserError::AccountLocked { until } => {
+            let msg = format!(
+                "account locked due to too many failed login attempts; try again after {}",
+                until.format("%Y-%m-%dT%H:%M:%SZ")
+            );
+            crate::error::forbidden(ErrorCode::Forbidden, &msg)
+        }
+        UserError::MerchantSuspended => {
+            crate::error::forbidden(ErrorCode::Forbidden, "this merchant account has been suspended")
+        }
         UserError::Database(_) => internal(err),
     }
 }
