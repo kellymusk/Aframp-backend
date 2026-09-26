@@ -34,3 +34,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 insta = { version = "1", features = ["json"] }
 stellar-base = "0.7.0"
 tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
