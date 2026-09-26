@@ -15,6 +15,7 @@ pub struct Withdrawal {
     pub bank_code: Option<String>,
     pub account_number: Option<String>,
     pub failure_reason: Option<String>,
+    pub idempotency_key: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -34,4 +35,5 @@ pub struct NewWithdrawal {
     pub asset: String,
     pub bank_code: String,
     pub account_number: String,
+    pub idempotency_key: Option<String>,
 }

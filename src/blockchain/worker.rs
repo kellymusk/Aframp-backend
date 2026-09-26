@@ -96,7 +96,7 @@ pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), Stri
         db,
         &UpdateBalance {
             merchant_id: wallet.merchant_id,
-            asset: d.asset,
+            asset: d.asset.clone(),
             available_delta: d.amount_stroops,
             pending_delta: -d.amount_stroops,
         },
@@ -125,6 +125,11 @@ pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), Stri
                     .map_err(|e| e.to_string())?;
             }
         }
+    }
+
+    // Sweep the confirmed merchant funds to the consolidated settlement wallet.
+    if let Err(err) = sweep_confirmed_payment(db, &wallet, &payment, &d.asset).await {
+        tracing::warn!(error = %err, payment_id = %payment.id, "platform sweep failed");
     }
 
     // TODO: dispatch payment.confirmed webhook.
