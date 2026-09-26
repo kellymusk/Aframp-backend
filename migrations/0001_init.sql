@@ -62,6 +62,12 @@ CREATE TABLE withdrawals (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- api_keys: reserved for the planned API key authentication system (see PRD.md).
+-- Not yet referenced by any Rust code; kept in the schema so the auth feature can
+-- be implemented without a breaking migration. key_prefix stores the public,
+-- non-secret portion of the key for lookup, secret_hash stores a hash of the
+-- secret portion, environment distinguishes test vs live keys, and revoked_at
+-- marks keys that have been revoked (NULL means active).
 CREATE TABLE api_keys (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   merchant_id UUID NOT NULL REFERENCES merchants(id),
@@ -72,6 +78,10 @@ CREATE TABLE api_keys (
   revoked_at TIMESTAMPTZ
 );
 
+-- webhook_events: reserved for the planned inbound webhook handling system.
+-- Not yet referenced by any Rust code; intended to persist raw provider webhook
+-- payloads for idempotent processing and replay. The UNIQUE (provider,
+-- external_id) constraint deduplicates repeated deliveries of the same event.
 CREATE TABLE webhook_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   merchant_id UUID NOT NULL REFERENCES merchants(id),

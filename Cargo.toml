@@ -33,3 +33,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 stellar-base = "0.7.0"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
