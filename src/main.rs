@@ -10,12 +10,21 @@ use tower_http::trace::TraceLayer;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+
+    // LOG_FORMAT=json emits structured JSON logs for production log aggregators
+    // (Datadog, CloudWatch, etc.); anything else keeps human-readable text for dev.
+    let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string());
+    if log_format.eq_ignore_ascii_case("json") {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     let config = AppConfig::from_env()?;
     let state = Arc::new(build_state(&config).await?);
