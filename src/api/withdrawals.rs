@@ -2,6 +2,7 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
@@ -21,8 +22,11 @@ pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
     headers: HeaderMap,
-    Json(req): Json<CreateWithdrawalRequest>,
+    Json(body): Json<Value>,
 ) -> ApiResult<Json<Withdrawal>> {
+    let req = CreateWithdrawalRequest::from_json(&body)
+        .map_err(|(field, msg)| bad_request_field(field, msg))?;
+
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;

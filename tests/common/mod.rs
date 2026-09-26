@@ -55,6 +55,18 @@ pub async fn send(
     token: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    let (status, json, _) = send_with_response_headers(app, method, uri, token, body).await;
+    (status, json)
+}
+
+/// Like [`send`], but also returns response headers (e.g. for Cache-Control checks).
+pub async fn send_with_response_headers(
+    app: Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value, axum::http::HeaderMap) {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
@@ -69,11 +81,12 @@ pub async fn send(
 
     let response = app.oneshot(request).await.unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
         .await
         .unwrap();
     let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
+    (status, json, headers)
 }
 
 /// Like [`send`], but authenticates with a `Cookie` header the way a browser

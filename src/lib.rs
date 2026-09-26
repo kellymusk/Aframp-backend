@@ -88,6 +88,10 @@ pub fn router(state: AppState) -> axum::Router {
                 .get(api::payment_requests::list),
         )
         .route(
+            "/payment-requests/{id}/status",
+            axum::routing::get(api::payment_requests::status),
+        )
+        .route(
             "/payment-requests/{id}",
             axum::routing::get(api::payment_requests::get),
         )

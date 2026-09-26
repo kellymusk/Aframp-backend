@@ -198,6 +198,7 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `POST` | `/payment-requests` | ✅ | Create a payment request for the authenticated merchant's wallet. Body: `{ amount_stroops, asset? (default XLM), expires_in_secs? (60–86400, default 900) }` |
 | `GET` | `/payment-requests?limit=` | ✅ | List the merchant's own requests, newest first (default 50, max 200) |
 | `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
+| `GET` | `/payment-requests/{id}/status` | — | Public lightweight poll — `{ status, paid_at? }` with `Cache-Control: public, max-age=5`. Prefer this after the customer has submitted payment |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
@@ -215,6 +216,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 …alongside a `Set-Cookie: aframp_session=<jwt>; HttpOnly; Path=/; SameSite=Lax; Max-Age=86400; Secure`. A browser frontend should use the cookie and ignore the `token` field — copying it into `localStorage` puts the session within reach of any XSS on the page. `/signup` and `/login` themselves return only `{ challenge_id, expires_in_secs }` — no cookie, nothing to store, until the code is verified.
 
 Local dev never needs a real Termii account: set `OTP_PROVIDER=mock` (see `.env.example`) and the code is logged via `tracing::info!` instead of sent, so you can read it straight out of `cargo run`'s stdout.
+
+OTP / Termii credential handling (API key in request body, HTTPS-only send URL, Token API notes) is documented in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### Admin access
 

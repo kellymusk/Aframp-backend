@@ -1,11 +1,14 @@
 use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderValue};
+use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
+use crate::error::{bad_request, bad_request_field, internal, not_found, ApiResult, ErrorCode};
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
 use crate::pagination::{Cursor, Page};
 use crate::services::{payment_requests, wallets};
@@ -29,11 +32,23 @@ pub struct PaymentRequestView {
     pub sep7_uri: Option<String>,
 }
 
+/// Lightweight public polling payload for customers waiting on a QR payment.
+#[derive(Serialize)]
+pub struct PaymentRequestStatusView {
+    pub status: String,
+    /// Present when `status` is `paid` — the row's `updated_at` at mark-paid time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paid_at: Option<DateTime<Utc>>,
+}
+
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
-    Json(req): Json<CreatePaymentRequestRequest>,
+    Json(body): Json<Value>,
 ) -> ApiResult<Json<PaymentRequestView>> {
+    let req = CreatePaymentRequestRequest::from_json(&body)
+        .map_err(|(field, msg)| bad_request_field(field, msg))?;
+
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
@@ -76,6 +91,35 @@ pub async fn get(
         .ok_or_else(|| internal("payment request references a missing wallet"))?;
 
     Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+}
+
+/// Public, cache-friendly status-only poll for customer devices after they
+/// scan a QR. Prefer this over `GET /payment-requests/{id}` when only the
+/// payment outcome is needed.
+pub async fn status(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<impl IntoResponse> {
+    let pr = payment_requests::payment_request_by_id(&state.db, id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+
+    let status = effective_status(&pr.status, pr.expires_at);
+    let paid_at = if status == "paid" {
+        Some(pr.updated_at)
+    } else {
+        None
+    };
+
+    let mut response = Json(PaymentRequestStatusView { status, paid_at }).into_response();
+    // Short TTL so CDN/browser can coalesce rapid polls without serving stale
+    // "pending" for long after a payment flips to paid.
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=5"),
+    );
+    Ok(response)
 }
 
 pub async fn list(

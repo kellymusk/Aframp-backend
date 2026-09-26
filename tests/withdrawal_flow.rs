@@ -497,3 +497,45 @@ async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "request to Paystack timed out");
 }
+
+#[tokio::test]
+async fn withdraw_amount_stroops_rejects_float_and_string() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.payment_provider = Arc::new(MockProvider);
+    let app = aframp::router(state);
+    let (token, _) = ensure_merchant(&app, "wd_amount_types").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 1.5,
+            "bank_code": "058",
+            "account_number": "0123456789",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "float should be 400: {json}");
+    assert_eq!(json["code"], "INVALID_PARAMETERS");
+    assert_eq!(json["field"], "amount_stroops");
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": "1000000",
+            "bank_code": "058",
+            "account_number": "0123456789",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "string should be 400: {json}");
+    assert_eq!(json["code"], "INVALID_PARAMETERS");
+    assert_eq!(json["field"], "amount_stroops");
+}
