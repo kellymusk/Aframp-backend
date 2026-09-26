@@ -241,6 +241,34 @@ Register `https://<your-deployed-host>/webhooks/termii` at [termii.com/account/w
 
 **Known gap since OTP shipped:** the `/admin` page's login form only knows the old one-step `/login` → cookie flow. An admin account created *before* OTP existed (no `phone_number` on the row) still logs in through it fine. An admin account with a phone number now gets a challenge response back instead of a session, and the dashboard has no code-entry step to handle that — it'll appear to fail to log in. Until the dashboard is updated, keep your admin account phone-less, or drive `/login` → `/verify-otp` manually with `curl`/Postman and paste the resulting cookie in by hand.
 
+## Wallet key custody and rotation
+
+Every merchant wallet's Stellar secret seed is stored AES-256-GCM encrypted in `wallets.secret_key_encrypted` under `WALLET_ENCRYPTION_KEY`. One leaked key exposes every wallet, so:
+
+- **Every decryption is audited.** Code that needs a secret must go through `services::wallets::decrypt_secret(db, wallet_id, key, purpose)`, which writes a row to `wallet_secret_access_log` (`wallet_id`, `purpose`, `accessed_at`) before decrypting. Review it for decryptions you can't explain:
+
+  ```sql
+  SELECT wallet_id, purpose, accessed_at FROM wallet_secret_access_log ORDER BY accessed_at DESC LIMIT 100;
+  ```
+
+- **The key can be rotated.** `rotate_wallet_key` re-encrypts every secret under a new key in a single transaction: if any secret fails to decrypt under the current key, nothing changes. Each re-encryption is logged with purpose `key_rotation`.
+
+### Rotating `WALLET_ENCRYPTION_KEY`
+
+1. Generate the new key: `openssl rand -hex 32`.
+2. Stop the API and the deposit worker so nothing writes wallets during the rotation, and back up the `wallets` table.
+3. Run the rotation with the current key and the new one:
+
+   ```bash
+   DATABASE_URL=postgres://... \
+   WALLET_ENCRYPTION_KEY=<current key> \
+   NEW_WALLET_ENCRYPTION_KEY=<new key> \
+   cargo run --release --bin rotate_wallet_key
+   ```
+
+4. Set `WALLET_ENCRYPTION_KEY` to the new key everywhere it's deployed (e.g. `npx wrangler secret put WALLET_ENCRYPTION_KEY`) and restart the API.
+5. Destroy every copy of the old key. If you are rotating because the old key may have leaked, treat all wallet secrets as exposed as well: rotating the encryption key doesn't change the Stellar keys themselves, so funds should be moved to newly generated wallets.
+
 ## Deploying behind TLS
 
 The server intentionally does not terminate TLS. It binds to `127.0.0.1:3000` by default and expects a reverse proxy in front of it — which is also what makes the `Secure` session cookie meaningful, since browsers won't send a `Secure` cookie over plain HTTP to a non-localhost host.
