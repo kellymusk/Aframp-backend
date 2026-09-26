@@ -1,35 +1,33 @@
 [package]
-name = "aframp"
+name = "handsoff-backend"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aes-gcm = "0.11.0"
-argon2 = "0.5"
-async-trait = "0.1"
-axum = "0.8"
-chrono = { version = "0.4", features = ["serde"] }
-dotenvy = "0.15"
-ed25519-dalek = "3.0.0"
-hex = "0.4"
-hmac = "0.12"
-http = "1"
-jsonwebtoken = "9"
-mime = "0.3"
-rand = "0.8"
-reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "query", "rustls"] }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
-stellar-strkey = "0.0.18"
-thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-tower-http = { version = "0.6", features = ["trace", "limit", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+anyhow = "1"
+dotenv = "0.15"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 [dev-dependencies]
-stellar-base = "0.7.0"
-tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# Dependency vulnerability scanning (issue #1068).
+# `cargo audit` reads this section to suppress known false positives.
+# Each ignore entry MUST include a justification comment and an expiry date
+# so stale suppressions are revisited during weekly CI runs.
+[package.metadata.audit]
+# Fail the CI job on any advisory at or above this severity.
+# cargo-audit does not natively support severity thresholds, so the CI job
+# runs `cargo audit --deny warnings` and this value documents the policy.
+severity-threshold = "high"
+
+[package.metadata.audit.ignore]
+# Example (kept commented until a real false positive is confirmed):
+# RUSTSEC-0000-0000 = { reason = "Not exploitable in our usage; upstream fix pending", expires = "2025-12-31" }

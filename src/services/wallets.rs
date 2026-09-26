@@ -66,6 +66,19 @@ pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
     .await
 }
 
+/// Fetches only the `address` column for all stellar wallets.
+///
+/// The deposit worker only needs addresses to call `fetch_deposits`, so this
+/// avoids fetching and deserializing the remaining wallet columns on every poll
+/// tick. Use [`all_wallets`] when the full wallet rows are required.
+pub async fn all_wallet_addresses(db: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT address FROM wallets WHERE network = 'stellar'",
+    )
+    .fetch_all(db)
+    .await
+}
+
 pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
         "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE id = $1",
@@ -82,4 +95,31 @@ pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wall
     .bind(address)
     .fetch_optional(db)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn all_wallet_addresses_returns_only_stellar_addresses(db: PgPool) {
+        sqlx::query(
+            "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
+             VALUES
+               ($1, 'GSTELLAR1', 'stellar', 'enc1'),
+               ($1, 'GSTELLAR2', 'stellar', 'enc2'),
+               ($1, 'GETH1', 'ethereum', 'enc3')",
+        )
+        .bind(Uuid::new_v4())
+        .execute(&db)
+        .await
+        .expect("failed to seed wallets");
+
+        let mut addresses = all_wallet_addresses(&db)
+            .await
+            .expect("all_wallet_addresses failed");
+        addresses.sort();
+
+        assert_eq!(addresses, vec!["GSTELLAR1".to_string(), "GSTELLAR2".to_string()]);
+    }
 }

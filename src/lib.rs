@@ -30,7 +30,8 @@ pub struct AppState {
 
 pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::error::Error>> {
     let db = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.database_max_connections)
+        .min_connections(config.database_min_connections)
         .connect(&config.database_url)
         .await?;
     let wallet_encryption_key = blockchain::wallet_crypto::parse_key(config.wallet_encryption_key.as_str())?;

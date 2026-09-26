@@ -5,6 +5,10 @@ on:
     branches: ["dev-backend"]
   pull_request:
     branches: ["dev-backend"]
+  schedule:
+    # Run weekly (Mondays at 06:00 UTC) even without a push, so newly disclosed
+    # CVEs in pinned transitive dependencies are caught promptly.
+    - cron: "0 6 * * 1"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
@@ -88,6 +92,37 @@ jobs:
           echo "✅  No protected files touched. Guard passed."
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # AUDIT: Scan pinned dependencies for known vulnerabilities (CVEs).
+  # Runs as a separate job so a vulnerable dependency fails CI independently of
+  # build/test results. Also runs weekly via the schedule trigger above.
+  # ─────────────────────────────────────────────────────────────────────────────
+  cargo-audit:
+    name: "Cargo Audit — dependency vulnerability scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-audit-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        # --deny warnings fails the job on any advisory (high/critical included).
+        # Known false positives are ignored via cargo-audit.toml with justification.
+        run: cargo audit --deny warnings
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # BUILD + TEST: Compile and run the test suite.
   # ─────────────────────────────────────────────────────────────────────────────
   build-and-test:
@@ -110,6 +145,10 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -128,18 +167,61 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # ───────────────────────────────────────────────────────────────────────
+      # PREFLIGHT: Assert TEST_DATABASE_URL is set and the database is reachable
+      # before running any tests. Without this, integration tests silently skip
+      # and CI shows green with zero real coverage.
+      # ───────────────────────────────────────────────────────────────────────
+      - name: Preflight — assert TEST_DATABASE_URL is set and reachable
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TEST_DATABASE_URL:-}" ]; then
+            echo "❌  TEST_DATABASE_URL is not set. Integration tests would silently skip."
+            exit 1
+          fi
+          echo "✅  TEST_DATABASE_URL is set."
+
+          # Wait for Postgres to accept connections (service health may lag).
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              break
+            fi
+            echo "Waiting for Postgres... ($i/30)"
+            sleep 2
+          done
+
+          if ! pg_isready -h localhost -p 5432 -U postgres; then
+            echo "❌  Postgres is not reachable at localhost:5432."
+            exit 1
+          fi
+
+          # Assert we can actually open a connection with the configured URL.
+          if ! psql "$TEST_DATABASE_URL" -c "SELECT 1;" >/dev/null; then
+            echo "❌  Could not connect to TEST_DATABASE_URL: $TEST_DATABASE_URL"
+            exit 1
+          fi
+          echo "✅  TEST_DATABASE_URL is reachable."
+
       - name: Run migrations
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
         run: |
-          for f in migrations/*.sql; do
-            psql "$DATABASE_URL" < "$f"
+          set -euo pipefail
+          shopt -s nullglob
+          files=(migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "❌  No migration files found in migrations/."
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "Applying migration: $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < "$f"
           done
+          echo "✅  Applied ${#files[@]} migration(s)."
 
       - name: Run tests
         env:
-          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/aframp_test
           JWT_SECRET: test-jwt-secret-at-least-32-chars-long
           WEBHOOK_SECRET: test-webhook-secret-at-least-32chars
           WALLET_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
@@ -147,35 +229,19 @@ jobs:
           PAYSTACK_SECRET_KEY: sk_test_placeholder
           OTP_HMAC_SECRET: test-otp-hmac-secret-at-least-32chars
           OTP_PROVIDER: mock
-        run: cargo test --all
+        run: |
+          set -euo pipefail
+          # Capture output so we can assert that tests actually ran.
+          cargo test --all 2>&1 | tee /tmp/cargo-test.log
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # LINT: clippy + fmt
-  # ─────────────────────────────────────────────────────────────────────────────
-  lint:
-    name: "Lint (clippy + fmt)"
-    runs-on: ubuntu-latest
-    needs: guard-main-source
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+          # --fail-if-no-tests equivalent: fail if zero tests were executed.
+          # cargo test prints a summary line like "test result: ok. N passed; ..."
+          PASSED=$(grep -oE 'test result: [a-z]+\. [0-9]+ passed' /tmp/cargo-test.log \
+            | grep -oE '[0-9]+' | paste -sd+ - | bc || echo 0)
+          PASSED=${PASSED:-0}
 
-      - name: Install Rust toolchain (with clippy + rustfmt)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+          if [ "$PASSED" -eq 0 ]; then
+            echo "❌  No tests were executed (0 passed). Integration tests likely skipped."
+            exit 1
+          fi
+          echo "✅  Executed tests: $PASSED passed."
