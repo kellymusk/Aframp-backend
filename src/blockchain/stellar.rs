@@ -26,8 +26,14 @@ pub trait BlockchainListener: Send + Sync {
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String>;
 }
 
+/// Per-request timeout for Horizon calls, so one slow node can't stall the
+/// whole poll cycle.
+const HORIZON_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub struct StellarListener {
     pub horizon_url: String,
+    /// Shared client: pools connections across polls and applies the timeout.
+    http: reqwest::Client,
     /// Tracks the last time each unfunded wallet was polled so the worker can
     /// apply exponential backoff instead of hammering Horizon every cycle.
     unfunded_backoff: Mutex<HashMap<String, UnfundedState>>,
@@ -43,8 +49,17 @@ struct UnfundedState {
 
 impl StellarListener {
     pub fn new(horizon_url: String) -> Self {
+        Self::with_timeout(horizon_url, HORIZON_TIMEOUT)
+    }
+
+    pub fn with_timeout(horizon_url: String, timeout: Duration) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build Horizon HTTP client");
         Self {
             horizon_url,
+            http,
             unfunded_backoff: Mutex::new(HashMap::new()),
         }
     }
@@ -97,7 +112,7 @@ impl BlockchainListener for StellarListener {
             if self.should_skip(address) {
                 continue;
             }
-            match fetch_for_address(&self.horizon_url, address).await {
+            match fetch_for_address(&self.http, &self.horizon_url, address).await {
                 Ok(FetchResult::Funded(found)) => {
                     self.clear_backoff(address);
                     deposits.extend(found);
@@ -191,13 +206,17 @@ enum FetchResult {
 /// `claimable_balance_created` and `path_payment_strict_send` are also handled —
 /// the former delivers funds via claimable balances (not payment ops), and the
 /// latter uses a `destination` field instead of `to`.
-async fn fetch_for_address(horizon_url: &str, address: &str) -> Result<FetchResult, String> {
+async fn fetch_for_address(
+    http: &reqwest::Client,
+    horizon_url: &str,
+    address: &str,
+) -> Result<FetchResult, String> {
     let url = format!(
         "{}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions",
         horizon_url.trim_end_matches('/')
     );
 
-    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let response = http.get(&url).send().await.map_err(|e| e.to_string())?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         // Account has no ledger history yet (never funded) — nothing to detect.
         return Ok(FetchResult::Unfunded);
@@ -522,5 +541,44 @@ mod tests {
         let rec = make_record("account_merge");
 
         assert!(record_to_deposit(rec, addr).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_hanging_horizon_request_times_out_and_the_poll_continues() {
+        const SLOW: &str = "GSLOW";
+        const FAST: &str = "GFAST";
+        let app = axum::Router::new().route(
+            "/accounts/{address}/payments",
+            axum::routing::get(|axum::extract::Path(address): axum::extract::Path<String>| async move {
+                if address == SLOW {
+                    // Longer than the listener's timeout: simulates a stuck node.
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+                axum::Json(serde_json::json!({
+                    "_embedded": { "records": [{
+                        "type": "payment",
+                        "transaction_successful": true,
+                        "transaction_hash": "fast-tx",
+                        "to": FAST,
+                        "amount": "10.0000000",
+                        "asset_type": "native"
+                    }] }
+                }))
+            }),
+        );
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(server, app).await.unwrap() });
+
+        let listener = StellarListener::with_timeout(url, Duration::from_millis(200));
+        let started = Instant::now();
+        let deposits = listener
+            .fetch_deposits(&[SLOW.to_string(), FAST.to_string()])
+            .await
+            .unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2), "the slow address must time out");
+        assert_eq!(deposits.len(), 1, "the other wallet is still polled");
+        assert_eq!(deposits[0].tx_hash, "fast-tx");
     }
 }
