@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -27,6 +28,26 @@ impl PaystackProvider {
             http,
             resolved_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Verify the `x-paystack-signature` header against the raw webhook body.
+    ///
+    /// Paystack signs the exact request body with HMAC-SHA512 using the account's
+    /// webhook secret (the same value as the secret key for the integration).
+    pub fn verify_webhook_signature(secret: &str, body: &[u8], signature: &str) -> bool {
+        let mut mac = match Hmac::<Sha512>::new_from_slice(secret.as_bytes()) {
+            Ok(mac) => mac,
+            Err(_) => return false,
+        };
+        mac.update(body);
+        let expected = hex::encode(mac.finalize().into_bytes());
+        // Constant-time comparison to avoid leaking the expected digest.
+        expected.len() == signature.len()
+            && expected
+                .bytes()
+                .zip(signature.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T, String> {
@@ -127,6 +148,50 @@ struct Transfer {
     status: String,
 }
 
+/// A Paystack webhook event envelope. Only the fields we reconcile on are
+/// deserialized; unknown fields are ignored.
+#[derive(Debug, Deserialize)]
+pub struct PaystackWebhookEvent {
+    pub event: String,
+    pub data: PaystackWebhookData,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PaystackWebhookData {
+    /// The transfer code returned when the payout was created.
+    #[serde(default)]
+    pub transfer_code: Option<String>,
+    /// The merchant-supplied reference, used as a fallback lookup key.
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// The reconciliation outcome derived from a Paystack transfer webhook event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferWebhookOutcome {
+    /// `transfer.success` — the transfer settled successfully.
+    Success,
+    /// `transfer.failed` — the transfer failed; the balance should be refunded.
+    Failed,
+    /// `transfer.reversed` — the transfer was reversed; the balance should be refunded.
+    Reversed,
+}
+
+impl PaystackWebhookEvent {
+    /// Map the event name to a reconciliation outcome, or `None` for events we
+    /// don't act on (e.g. `transfer.initiated`).
+    pub fn outcome(&self) -> Option<TransferWebhookOutcome> {
+        match self.event.as_str() {
+            "transfer.success" => Some(TransferWebhookOutcome::Success),
+            "transfer.failed" => Some(TransferWebhookOutcome::Failed),
+            "transfer.reversed" => Some(TransferWebhookOutcome::Reversed),
+            _ => None,
+        }
+    }
+}
+
 #[async_trait]
 impl PaymentProvider for PaystackProvider {
     async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
@@ -164,8 +229,10 @@ impl PaymentProvider for PaystackProvider {
 
         // Test-mode transfers resolve immediately with no real processing, so the
         // status on this response is authoritative for our purposes. Live mode is
-        // genuinely async (may require OTP finalization) and would need a webhook
-        // or a follow-up "verify transfer" call to reconcile the final status.
+        // genuinely async (may require OTP finalization); the final status is
+        // reconciled asynchronously via the Paystack transfer webhook
+        // (`POST /webhooks/paystack`), which calls `verify_webhook_signature` and
+        // maps the event through `PaystackWebhookEvent::outcome`.
         let transfer: Transfer = self
             .post(
                 "/transfer",
