@@ -26,6 +26,8 @@ pub struct AppState {
     pub otp_provider: std::sync::Arc<dyn otp::OtpProvider>,
     pub otp_hmac_secret: SecretString,
     pub cookie: CookieConfig,
+    /// cNGN issuer account for SEP-0007 URIs; `None` until configured.
+    pub cngn_issuer: Option<std::sync::Arc<String>>,
 }
 
 pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::error::Error>> {
@@ -66,6 +68,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         otp_provider,
         otp_hmac_secret: config.otp_hmac_secret.clone(),
         cookie: config.cookie,
+        cngn_issuer: config.cngn_issuer_address.clone().map(std::sync::Arc::new),
     })
 }
 

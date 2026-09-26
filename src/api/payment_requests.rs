@@ -24,8 +24,8 @@ pub struct PaymentRequestView {
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     /// SEP-0007 payment URI a Stellar wallet can open directly to pay this
-    /// request. `None` for credit assets we don't have a real issuer address
-    /// configured for yet (see PRD §9.4) — we don't guess one.
+    /// request. `None` for cNGN when `CNGNX_ISSUER_ADDRESS` isn't configured
+    /// (see PRD §9.4) — we don't guess an issuer.
     pub sep7_uri: Option<String>,
 }
 
@@ -43,8 +43,8 @@ pub async fn create(
         .map_err(internal)?
         .ok_or_else(|| bad_request(ErrorCode::WalletNotFound, "create a wallet before generating payment requests"))?;
 
-    // Defaults to XLM, not cNGN like withdrawals: XLM is what's actually
-    // scannable/testable today (no cNGN issuer address configured yet).
+    // Defaults to XLM, not cNGN like withdrawals: cNGN is only scannable
+    // once CNGNX_ISSUER_ADDRESS is configured.
     let asset = req.asset.unwrap_or_else(|| "XLM".into());
 
     let pr = payment_requests::create_payment_request(
@@ -58,7 +58,7 @@ pub async fn create(
     .await
     .map_err(map_payment_request_error)?;
 
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
 }
 
 pub async fn get(
@@ -75,7 +75,7 @@ pub async fn get(
         .map_err(internal)?
         .ok_or_else(|| internal("payment request references a missing wallet"))?;
 
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
 }
 
 pub async fn list(
@@ -98,7 +98,9 @@ pub async fn list(
             .map_err(internal)?;
 
     Ok(Json(Page::new(
-        rows.iter().map(row_to_view).collect(),
+        rows.iter()
+            .map(|row| row_to_view(row, state.cngn_issuer.as_deref().map(String::as_str)))
+            .collect(),
         limit,
         |v: &PaymentRequestView| Cursor {
             created_at: v.created_at,
@@ -123,7 +125,7 @@ fn effective_status(status: &str, expires_at: DateTime<Utc>) -> String {
     }
 }
 
-fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestView {
+fn to_view(pr: &PaymentRequest, address: &str, network: &str, cngn_issuer: Option<&str>) -> PaymentRequestView {
     PaymentRequestView {
         id: pr.id,
         merchant_id: pr.merchant_id,
@@ -135,11 +137,11 @@ fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestV
         status: effective_status(&pr.status, pr.expires_at),
         expires_at: pr.expires_at,
         created_at: pr.created_at,
-        sep7_uri: build_sep7_uri(address, pr.amount_stroops, &pr.asset, &pr.memo),
+        sep7_uri: build_sep7_uri(address, pr.amount_stroops, &pr.asset, &pr.memo, cngn_issuer),
     }
 }
 
-fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentRequestView {
+fn row_to_view(row: &payment_requests::PaymentRequestWithWallet, cngn_issuer: Option<&str>) -> PaymentRequestView {
     PaymentRequestView {
         id: row.id,
         merchant_id: row.merchant_id,
@@ -151,17 +153,28 @@ fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentReque
         status: effective_status(&row.status, row.expires_at),
         expires_at: row.expires_at,
         created_at: row.created_at,
-        sep7_uri: build_sep7_uri(&row.address, row.amount_stroops, &row.asset, &row.memo),
+        sep7_uri: build_sep7_uri(&row.address, row.amount_stroops, &row.asset, &row.memo, cngn_issuer),
     }
 }
 
-fn build_sep7_uri(address: &str, amount_stroops: i64, asset: &str, memo: &str) -> Option<String> {
-    if asset != "XLM" && asset != "native" {
-        return None;
-    }
+/// SEP-0007 `pay` URI. Native XLM needs no asset parameters; cNGN is a
+/// credit asset, so the URI must name its issuer, and without a configured
+/// issuer there is no URI. Any other asset gets none.
+fn build_sep7_uri(
+    address: &str,
+    amount_stroops: i64,
+    asset: &str,
+    memo: &str,
+    cngn_issuer: Option<&str>,
+) -> Option<String> {
+    let asset_params = match asset {
+        "XLM" | "native" => String::new(),
+        "cNGN" => format!("&asset_code=cNGN&asset_issuer={}", cngn_issuer?),
+        _ => return None,
+    };
     let amount = format!("{}.{:07}", amount_stroops / 10_000_000, amount_stroops % 10_000_000);
     Some(format!(
-        "web+stellar:pay?destination={address}&amount={amount}&memo={memo}&memo_type=MEMO_TEXT"
+        "web+stellar:pay?destination={address}&amount={amount}{asset_params}&memo={memo}&memo_type=MEMO_TEXT"
     ))
 }
 

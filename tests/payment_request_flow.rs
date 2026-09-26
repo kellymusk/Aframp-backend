@@ -86,8 +86,43 @@ async fn payment_request_cngn_has_no_sep7_uri_yet() {
     assert_eq!(created["asset"], "cNGN");
     assert!(
         created["sep7_uri"].is_null(),
-        "cNGN has no configured issuer address yet, so no QR should be generated"
+        "without CNGNX_ISSUER_ADDRESS no cNGN QR should be generated"
     );
+}
+
+#[tokio::test]
+async fn payment_request_cngn_has_sep7_uri_with_configured_issuer() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    let issuer = "GAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSABOV";
+    state.cngn_issuer = Some(std::sync::Arc::new(issuer.to_string()));
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_cngn_issuer").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 25_000_000, "asset": "cNGN" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let sep7 = created["sep7_uri"]
+        .as_str()
+        .expect("cNGN requests should have a sep7_uri once the issuer is configured");
+    assert!(sep7.starts_with("web+stellar:pay?destination=G"), "{sep7}");
+    assert!(sep7.contains("&amount=2.5000000"), "{sep7}");
+    assert!(sep7.contains(&format!("&asset_code=cNGN&asset_issuer={issuer}")), "{sep7}");
+    assert!(sep7.contains(&format!("&memo={}", created["memo"].as_str().unwrap())), "{sep7}");
+
+    // The public fetch path builds the same URI.
+    let id = created["id"].as_str().unwrap();
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK, "public fetch failed: {fetched}");
+    assert_eq!(fetched["sep7_uri"], created["sep7_uri"]);
 }
 
 #[tokio::test]

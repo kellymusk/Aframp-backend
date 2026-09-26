@@ -49,7 +49,7 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 
 | Gap | What's actually there today |
 |---|---|
-| QR-based payment (cNGN) | `sep7_uri` is `null` for cNGN payment requests — there's no real cNGN issuer Stellar address configured, and a guessed one would silently misdirect a customer's payment. Works for XLM today; cNGN needs a real issuer address sourced first |
+| QR-based payment (cNGN) | cNGN payment requests get a `sep7_uri` naming the issuer once `CNGNX_ISSUER_ADDRESS` is set; until then it's `null`, because a guessed issuer would silently misdirect a customer's payment. The real issuer address still has to be sourced from the cNGN issuer / Stellar Asset List and configured per deployment |
 | Real payout funding ("Stage A") | Paystack Transfers are wired and code-correct (see above), but Paystack's own business-account balance is ₦0 — `source: "balance"` transfers have nothing to draw from. Confirmed live: a real bank account + valid amount still failed with *"Your balance is not enough to fulfil this request."* Nothing pays out until there's a real crypto→fiat funding pipeline (e.g. cNGN issuer redemption) |
 | Confirmation-depth threshold | Deposits move `detected → verified → confirmed` immediately on detection — there's no real "wait N ledger confirmations" logic yet (Stellar has fast finality, so this matters less than on Bitcoin, but it's still an open TODO in `blockchain/worker.rs`) |
 | Settlement/sweep wallet | Each merchant's Stellar secret is held (encrypted) by the platform, but nothing yet sweeps funds from individual merchant wallets into a platform settlement wallet. `STELLAR_SYSTEM_WALLET_ADDRESS` is still validated at startup and reserved for this, but isn't used by anything yet |
@@ -105,6 +105,7 @@ Fill in `.env`:
 | `STELLAR_SYSTEM_WALLET_ADDRESS` | yes | — | Reserved for a future platform settlement/sweep wallet. Validated at startup but not used by deposit detection today (see [Status](#status-real-progress-not-aspiration)) |
 | `STELLAR_HORIZON_URL` | no | `https://horizon-testnet.stellar.org` | Horizon endpoint to poll |
 | `STELLAR_POLL_INTERVAL_SECS` | no | `60` | How often the deposit-detection worker polls Horizon, per wallet |
+| `CNGNX_ISSUER_ADDRESS` | no | — | Stellar account ID (`G...`) that issues cNGN. Source it from the cNGN issuer's own `stellar.toml` / the Stellar Asset List entry for cNGN — never guess it. When set, cNGN payment requests get a `sep7_uri` with `asset_code=cNGN&asset_issuer=...`; when unset, their `sep7_uri` is `null`. Startup fails if the value isn't a valid account ID |
 | `PAYSTACK_SECRET_KEY` | yes | — | Paystack Dashboard → Settings → API Keys & Webhooks. `sk_test_...` for dev, `sk_live_...` only once the business is verified/activated for Transfers (see `PRD.md` §9.1) |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
@@ -197,7 +198,7 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `GET` | `/transactions?limit=` | ✅ | List the merchant's detected payments (default limit 50, max 200) |
 | `POST` | `/payment-requests` | ✅ | Create a payment request for the authenticated merchant's wallet. Body: `{ amount_stroops, asset? (default XLM), expires_in_secs? (60–86400, default 900) }` |
 | `GET` | `/payment-requests?limit=` | ✅ | List the merchant's own requests, newest first (default 50, max 200) |
-| `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
+| `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests, and for cNGN requests when `CNGNX_ISSUER_ADDRESS` is configured (`null` otherwise) |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
