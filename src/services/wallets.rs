@@ -6,6 +6,8 @@ use crate::models::{NewWallet, Wallet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CreateWalletError {
+    #[error("failed to generate wallet keypair: {0}")]
+    Keygen(#[from] keypair::KeypairError),
     #[error("failed to encrypt wallet secret: {0}")]
     Encryption(String),
     #[error(transparent)]
@@ -18,7 +20,7 @@ pub async fn create_wallet(
     network: &str,
     encryption_key: &[u8; 32],
 ) -> Result<Wallet, CreateWalletError> {
-    let generated = keypair::generate_keypair();
+    let generated = keypair::generate_keypair()?;
     let secret_key_encrypted = wallet_crypto::encrypt(encryption_key, &generated.secret_seed)
         .map_err(CreateWalletError::Encryption)?;
 

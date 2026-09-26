@@ -154,7 +154,21 @@ Before deploying:
    npx wrangler secret put WALLET_ENCRYPTION_KEY
    npx wrangler secret put STELLAR_SYSTEM_WALLET_ADDRESS
    npx wrangler secret put PAYSTACK_SECRET_KEY
+   npx wrangler secret put OTP_HMAC_SECRET
+   # Required when OTP_PROVIDER=termii (the production default). Skip only if
+   # you deliberately set OTP_PROVIDER=mock for a non-production deploy.
+   npx wrangler secret put TERMII_API_KEY
+   npx wrangler secret put TERMII_SENDER_ID
    ```
+
+   These match every required var in `AppConfig::from_env()`: `DATABASE_URL`,
+   `JWT_SECRET`, `WEBHOOK_SECRET`, `STELLAR_SYSTEM_WALLET_ADDRESS`,
+   `WALLET_ENCRYPTION_KEY`, `PAYSTACK_SECRET_KEY`, and `OTP_HMAC_SECRET` are
+   always required at startup. `TERMII_API_KEY` and `TERMII_SENDER_ID` are
+   required whenever `OTP_PROVIDER` is `termii` (default). Optional vars with
+   defaults (`APP_BIND_ADDR`, `STELLAR_HORIZON_URL`, `STELLAR_POLL_INTERVAL_SECS`,
+   `OTP_PROVIDER`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `COOKIE_SAME_SITE`)
+   can stay as Worker plain-text vars in `wrangler.jsonc`.
 
 3. Run the SQL migrations against the production database, then deploy:
 
