@@ -5,7 +5,7 @@ use axum::Json;
 
 use crate::auth::{cookie, jwt};
 use crate::auth::jwt::Claims;
-use crate::error::{forbidden, ApiError, ErrorCode};
+use crate::error::{forbidden, internal, ApiError, ErrorCode};
 use crate::AppState;
 
 #[derive(Debug, Clone)]
@@ -14,10 +14,10 @@ pub struct AuthUser {
     pub merchant_id: Option<uuid::Uuid>,
 }
 
-/// Same session proof as [`AuthUser`], but additionally requires the `is_admin`
-/// JWT claim. The claim is baked in at login and not re-checked against the
-/// database, so revoking admin access takes up to [`jwt::TOKEN_TTL_HOURS`] to
-/// take effect on outstanding tokens.
+/// Same session proof as [`AuthUser`], but additionally requires admin rights.
+/// The `is_admin` JWT claim is only a cheap first filter: every admin request
+/// also re-reads `users.is_admin`, so revoking admin access in the database
+/// takes effect on the very next request rather than when the token expires.
 #[derive(Debug, Clone)]
 pub struct AdminUser;
 
@@ -59,6 +59,15 @@ impl FromRequestParts<AppState> for AdminUser {
     ) -> Result<Self, Self::Rejection> {
         let claims = authenticate(parts, state)?;
         if !claims.is_admin {
+            return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
+        }
+        let still_admin: Option<bool> = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
+            .bind(claims.sub)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(internal)?;
+        if still_admin != Some(true) {
+            tracing::warn!(user_id = %claims.sub, "admin token presented after admin access was revoked");
             return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
         }
         tracing::info!(admin_user_id = %claims.sub, path = %parts.uri.path(), "admin access");

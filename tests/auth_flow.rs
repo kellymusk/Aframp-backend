@@ -689,3 +689,43 @@ async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
     assert_eq!(remaining, 0, "a challenge expired over 24h ago must be hard-deleted");
 }
 
+#[tokio::test]
+async fn revoking_admin_takes_effect_on_the_next_request() {
+    let Some((app, db)) = app_and_db().await else {
+        return;
+    };
+    // A legacy (no-phone) account logs in without OTP, which keeps this test
+    // focused on the admin check.
+    let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin', true)")
+        .bind(&email)
+        .bind(aframp_password_hash_for_tests())
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": "legacy-password-123" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    let token = body["token"].as_str().unwrap().to_string();
+
+    let (status, body) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "admin should have access: {body}");
+
+    sqlx::query("UPDATE users SET is_admin = false WHERE email = $1")
+        .bind(&email)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Same, still-unexpired token: rejected straight away.
+    let (status, _) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+

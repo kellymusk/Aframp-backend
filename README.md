@@ -224,7 +224,7 @@ There's no self-service way to become an admin — flag a user directly in Postg
 UPDATE users SET is_admin = true WHERE email = 'you@example.com';
 ```
 
-The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
+The `is_admin` flag is also baked into the JWT at login, so **re-login after granting it**. Revoking it takes effect immediately: every admin request re-checks `users.is_admin` in the database, so an outstanding token stops working for `/admin/*` on its next request even though it hasn't expired. Then open `/admin` in a browser and sign in with that account.
 
 ### Termii webhook
 
