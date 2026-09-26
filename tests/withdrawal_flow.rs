@@ -300,6 +300,14 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
     assert_eq!(json["error"], "simulated provider failure");
+    assert_eq!(
+        json["code"], "PAYOUT_FAILED",
+        "502 shape must expose stable PAYOUT_FAILED code: {json}"
+    );
+    assert!(
+        json.get("token").is_none(),
+        "error responses must not leak session material: {json}"
+    );
 
     let balance = sqlx::query_scalar::<_, i64>(
         "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
@@ -316,6 +324,58 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     assert_eq!(withdrawals.len(), 1, "the failed attempt should still leave an audit-trail row");
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "simulated provider failure");
+}
+
+/// #1129 — when MockProvider (or any provider) errors, the HTTP body is the
+/// documented `{ error, code: PAYOUT_FAILED }` shape at 502. Clients must not
+/// retry: the withdrawal row is already persisted as `failed`.
+#[tokio::test]
+async fn withdrawal_paystack_failure_returns_documented_502_payout_failed_shape() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.payment_provider = Arc::new(FailingProvider);
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "payout_502_shape").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    assert_eq!(json["code"], "PAYOUT_FAILED");
+    assert!(json["error"].as_str().unwrap().contains("simulated provider failure"));
+    assert_eq!(json.as_object().unwrap().len(), 2, "error body is only {{error, code}}: {json}");
+
+    // Prove the row exists so frontends know a retry would duplicate work.
+    let failed_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM withdrawals
+          WHERE merchant_id = $1::uuid AND status = 'failed'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(failed_count, 1);
 }
 
 #[tokio::test]

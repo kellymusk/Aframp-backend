@@ -57,6 +57,18 @@ docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test cargo test
 ```
 
+## Mock OTP provider (`OTP_PROVIDER=mock`)
+
+Local and CI runs use `MockOtpProvider` (`src/otp/mock.rs`) instead of Termii.
+
+| Behaviour | Detail |
+|---|---|
+| `send_sms` | Logs the message and stores it in-memory; tests read it back with `aframp::otp::mock::last_message_for(phone)` |
+| Webhook signature | `verify_webhook_signature` accepts **exactly** the sentinel string `mock-signature` (any other value → `false`) |
+| Termii webhook tests | Send `X-Termii-Signature: mock-signature` for a `204`; any other signature (or missing header) → `403 FORBIDDEN` |
+
+This is the configurable expected signature for tests: hard-coded sentinel rather than HMAC, so integration tests for `POST /webhooks/termii` work without a real Termii API key. See `tests/webhook_flow.rs`.
+
 ## Questions?
 
 Open a Discussion or comment on the relevant issue.

@@ -68,7 +68,7 @@ Every error returns the same shape — a human-readable `error` string plus a st
 | `409` | Email or phone already registered | Show on the signup form |
 | `403` | Authenticated, but not an admin (`/admin/*` only) | Not applicable to merchant-facing routes |
 | `429` | OTP resent too soon, or too many times this hour | Show the wait; don't auto-retry |
-| `502` | Upstream payment provider failed | Transient — the `error` carries the provider's own message |
+| `502` | Upstream payment provider failed (`PAYOUT_FAILED`) | **Do not retry the same withdrawal.** The withdrawal row is already created (then marked `failed` and the balance refunded). Show the `error` string; let the user start a *new* withdrawal if they want to try again. |
 | `500` | Internal error | Generic `INTERNAL_ERROR`; details stay in server logs |
 
 ### Error code catalog
@@ -86,7 +86,7 @@ Every error returns the same shape — a human-readable `error` string plus a st
 | `MERCHANT_NOT_FOUND` | `400` | Account has no merchant (visit onboarding) |
 | `WALLET_NOT_FOUND` | `400` | No wallet yet, or none created before a payment-request call |
 | `PAYMENT_REQUEST_NOT_FOUND` | `404` | Payment request id doesn't exist |
-| `PAYOUT_FAILED` | `502` | Upstream payment provider rejected the payout |
+| `PAYOUT_FAILED` | `502` | Upstream payment provider rejected the payout. The withdrawal audit row already exists (`status: failed`); balance was refunded. **Do not auto-retry** — retrying creates a duplicate attempt. |
 | `FORBIDDEN` | `403` | Authenticated but not an admin, on an `/admin/*` route |
 | `OTP_INVALID` | `400` | Wrong code submitted to `/verify-otp` |
 | `OTP_EXPIRED` | `400` | Code submitted after its 10-minute window |
@@ -131,6 +131,13 @@ No auth. **Does not create the account.** Validates the credentials, sends an OT
 { "email": "merchant@example.com", "password": "at-least-8-chars", "name": "Shop Name", "phone_number": "08011122233" }
 ```
 
+| Field | Limits |
+|---|---|
+| `email` | Valid address shape; max **254** characters (RFC 5321). Local-part ≤ 64, domain ≤ 255. |
+| `password` | Min 8 characters |
+| `name` | Non-empty after trim; max **100** characters (validated before the password is hashed) |
+| `phone_number` | Nigerian mobile; normalized to E.164 (`+234…`, 13 chars). Oversized / non-NG input is rejected. |
+
 `phone_number` accepts any common Nigerian mobile format (`0801...`, `801...`, `+234801...`, `234801...`) and is normalized to E.164 before storage/sending.
 
 `200` →
@@ -138,7 +145,7 @@ No auth. **Does not create the account.** Validates the credentials, sends an OT
 { "challenge_id": "b6b54b1e-...", "expires_in_secs": 600 }
 ```
 
-Errors: `400` if email is empty, password is under 8 characters, name is empty, or the phone doesn't parse. `409` (`EMAIL_TAKEN`/`PHONE_TAKEN`) if either is already registered to a *verified* account. `429` (`TOO_MANY_REQUESTS`) if resent within 60s of the last send, or 5 times inside an hour.
+Errors: `400` if email is empty/invalid/oversized, password is under 8 characters, name is empty or longer than 100 characters, or the phone doesn't parse. `409` (`EMAIL_TAKEN`/`PHONE_TAKEN`) if either is already registered to a *verified* account. `429` (`TOO_MANY_REQUESTS`) if resent within 60s of the last send, or 5 times inside an hour.
 
 ### `POST /login`
 No auth. Verifies the password. If the account has a verified phone number, this returns a **fresh OTP challenge** (identical shape to `/signup`'s) instead of a session — full two-factor, every login, no exception for a returning session. Only an account with no phone on file (impossible to create anymore; a relic of accounts made before this existed) logs in synchronously with the old one-step response.
@@ -351,7 +358,32 @@ Auth required. Debits the merchant's balance and initiates a Nigerian bank payou
 
 Validation errors (`400`): `"insufficient available balance"`, `"withdrawals are only supported for the cNGN asset"`, `"amount_stroops must be a whole number of kobo"`, `"positive amount_stroops, bank_code, and a 10-digit account_number are required"`.
 
-> **Payouts do not currently complete.** The Paystack integration is real and correct, but Aframp's Paystack balance is unfunded, so live calls return `502` with *"Your balance is not enough to fulfil this request."* On failure the balance is **automatically refunded** and the withdrawal is recorded with `status: "failed"` and a `failure_reason` — no money or ledger record is lost. Treat `502` as "try later," not as data loss. Paystack's own minimum transfer is ₦50 = `500000000` stroops.
+#### `502 Bad Gateway` — Paystack / payout provider failure
+
+When the upstream payout provider (Paystack) rejects or fails the transfer, the API returns:
+
+```json
+{ "error": "<provider message>", "code": "PAYOUT_FAILED" }
+```
+
+**HTTP status:** `502 Bad Gateway`  
+**Error code:** `PAYOUT_FAILED`
+
+**What already happened server-side before this response:**
+
+1. The merchant's available balance was debited.
+2. A `withdrawals` row was inserted with `status: pending`.
+3. The provider call failed.
+4. The balance was **automatically refunded** and the row updated to `status: failed` with `failure_reason` set to the provider message.
+
+**Frontend / client guidance — do NOT retry this request.**
+
+- Do **not** auto-retry `POST /withdraw` on `502` / `PAYOUT_FAILED`. The withdrawal attempt is already persisted; a blind retry creates a second debit → provider call → refund cycle and a second failed audit row.
+- Do **not** poll waiting for this attempt to flip to `completed` — it is already `failed`. Listing `GET /withdrawals` will show the failed row with `failure_reason`.
+- Show the human-readable `error` string (it carries the provider's own wording).
+- If the user wants to try again, they must explicitly start a **new** withdrawal (new `POST /withdraw` after fixing bank details / waiting for funding / etc.).
+
+> **Payouts do not currently complete in production.** The Paystack integration is real, but Aframp's Paystack balance is unfunded, so live calls often return `502` with *"Your balance is not enough to fulfil this request."* That is still a `PAYOUT_FAILED` — same no-retry rules. Paystack's own minimum transfer is ₦50 = `500000000` stroops.
 
 ### `GET /withdrawals`
 Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200).

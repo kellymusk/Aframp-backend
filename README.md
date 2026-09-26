@@ -167,6 +167,21 @@ Before deploying:
 
 The Worker has a five-minute Cron Trigger that calls `/health`. This keeps the container awake so its 60-second Stellar polling loop continues when there is no API traffic. Cloudflare may take several minutes to provision the first container after deployment.
 
+### Container keep-alive (`/health`) — #1130
+
+| Piece | Where | Role |
+|---|---|---|
+| Path constant | [`scripts/health_path.ts`](scripts/health_path.ts) (`HEALTH_CHECK_PATH = "/health"`) | Single documented source of truth for contributors |
+| Rust liveness route | `src/lib.rs` → `GET /health` → `204 No Content` | What the cron must hit |
+| Worker cron | `cloudflare/worker.ts` → `scheduled()` fetches `http://container.internal/health` | Wakes the container every tick |
+| Schedule | `wrangler.jsonc` → `triggers.crons: ["*/5 * * * *"]` | Every five minutes |
+| Contract test | `tests/health_keepalive.rs` | Fails CI if the Worker / Rust path / constant drift |
+| Monitor | [`.github/workflows/health-monitor.yml`](.github/workflows/health-monitor.yml) | Every 10 minutes probes `HEALTH_CHECK_URL/health` (repo variable); alerts if it stops responding |
+
+**Dependency:** if `/health` is renamed or stops returning a success status (`204`, or `200` behind some proxies), the keep-alive cron no longer proves the container is alive and Stellar polling can stall when there is no API traffic. Update the constant, Worker, Rust route, and monitor together.
+
+Set the GitHub Actions repository variable `HEALTH_CHECK_URL` to your deployed Worker origin (no trailing slash) to enable the 10-minute monitor.
+
 ### Running tests
 
 Integration tests need a separate database, and **silently skip with a false "ok" if it isn't configured** — this bit us during development (a full green `cargo test` run had actually tested nothing). Always set `TEST_DATABASE_URL` before trusting the result:

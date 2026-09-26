@@ -325,10 +325,11 @@ paths:
       tags: [Money]
       summary: Withdraw to a Nigerian bank account
       description: >
-        Debits the balance and calls Paystack Transfers. Payouts do not currently
-        complete — Aframp's Paystack balance is unfunded, so live calls return 502.
-        On failure the balance is automatically refunded and the withdrawal is
-        recorded with status "failed" plus a failure_reason; nothing is lost.
+        Debits the balance and calls Paystack Transfers. On provider failure the
+        API returns 502 with code PAYOUT_FAILED. The withdrawal row is already
+        created (then marked failed) and the balance is refunded — clients must
+        NOT auto-retry; start a new withdrawal only if the user explicitly retries.
+        Payouts do not currently complete in production (Paystack balance unfunded).
       requestBody:
         required: true
         content:
@@ -344,10 +345,18 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '502':
-          description: Payout provider failed; balance already refunded
+          description: >
+            Payout provider failed (`PAYOUT_FAILED`). The withdrawal row was
+            already created, then marked failed, and the balance was refunded.
+            Clients must NOT auto-retry this request — a retry creates a
+            duplicate withdrawal attempt. Show the error and let the user
+            start a new withdrawal if needed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+              example:
+                error: simulated provider failure
+                code: PAYOUT_FAILED
 
   /withdrawals:
     get:
@@ -425,17 +434,42 @@ components:
         code:
           type: string
           example: INSUFFICIENT_BALANCE
-          description: "Machine-readable error code. Full catalog: INVALID_PARAMETERS, INVALID_AMOUNT, INSUFFICIENT_BALANCE, UNSUPPORTED_ASSET, PAYOUT_FAILED, EMAIL_TAKEN, PHONE_TAKEN, INVALID_CREDENTIALS, USER_NOT_FOUND, MERCHANT_NOT_FOUND, WALLET_NOT_FOUND, PAYMENT_REQUEST_NOT_FOUND, FORBIDDEN, OTP_INVALID, OTP_EXPIRED, OTP_LOCKED, OTP_CHALLENGE_NOT_FOUND, TOO_MANY_REQUESTS, INTERNAL_ERROR"
+          description: Machine-readable error code. Match on this field, never on `error`.
+          enum:
+            - INVALID_PARAMETERS
+            - INVALID_AMOUNT
+            - INSUFFICIENT_BALANCE
+            - UNSUPPORTED_ASSET
+            - PAYOUT_FAILED
+            - EMAIL_TAKEN
+            - PHONE_TAKEN
+            - INVALID_CREDENTIALS
+            - USER_NOT_FOUND
+            - MERCHANT_NOT_FOUND
+            - WALLET_NOT_FOUND
+            - PAYMENT_REQUEST_NOT_FOUND
+            - FORBIDDEN
+            - OTP_INVALID
+            - OTP_EXPIRED
+            - OTP_LOCKED
+            - OTP_CHALLENGE_NOT_FOUND
+            - TOO_MANY_REQUESTS
+            - INTERNAL_ERROR
 
     SignupRequest:
       type: object
       required: [email, password, name, phone_number]
       properties:
-        email: { type: string, format: email }
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: RFC 5321 max length 254; local-part ≤ 64, domain ≤ 255.
         password: { type: string, minLength: 8 }
-        name: { type: string, minLength: 1 }
+        name: { type: string, minLength: 1, maxLength: 100 }
         phone_number:
           type: string
+          maxLength: 20
           description: Nigerian mobile, any common format (0801..., 801..., +234801..., 234801...); normalized to E.164 server-side.
 
     LoginRequest:
