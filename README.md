@@ -285,6 +285,19 @@ command.txt    Copy-paste command reference for running/testing/interacting with
 
 Nigeria has a large digital-payments ecosystem and near-universal familiarity with POS and bank-transfer payments — the exact behavior Aframp is extending rather than replacing. The plan is to prove the merchant payment experience narrowly here, then expand to other African markets and cross-border corridors.
 
+## Architecture Decision Records
+
+The `docs/adr/` directory documents the reasoning behind key design choices —
+not just what was built, but why, and what was ruled out. Read these before
+making changes that touch the areas they cover.
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-001](docs/adr/ADR-001-custodial-wallet-design.md) | Per-merchant custodial wallets (vs. single system wallet + memo correlation) |
+| [ADR-002](docs/adr/ADR-002-otp-gated-signup.md) | Phone OTP gates account creation, not just session issuance; full 2FA on login |
+| [ADR-003](docs/adr/ADR-003-hmac-otp-storage.md) | HMAC-SHA256 for OTP codes (not bcrypt/Argon2 — 6-digit space makes KDFs useless) |
+| [ADR-004](docs/adr/ADR-004-commit-before-paystack.md) | Commit withdrawal record before calling Paystack; compensate on failure |
+
 ## Contributing
 
 This project is under active MVP development — expect the API and schema to change as real payout funding, a real cNGN issuer address, and settlement sweeping land. Open an issue or PR against `master`.
