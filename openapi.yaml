@@ -271,8 +271,8 @@ paths:
       summary: Read a payment request (public)
       description: >
         Deliberately unauthenticated so a customer's device can read a request
-        before paying. Poll every 3-5s to detect payment; deposit detection runs
-        on a timer (default 60s), so expect up to ~60s of latency, not instant.
+        before paying. Prefer GET /payment-requests/{id}/status for polling
+        after the customer has submitted payment.
       security: []
       parameters:
         - name: id
@@ -285,6 +285,31 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /payment-requests/{id}/status:
+    get:
+      tags: [Payment requests]
+      summary: Poll payment-request status (public)
+      description: >
+        Lightweight status-only endpoint for customer-side polling after a QR
+        payment. Uses the same effective_status rules as the full object
+        (overdue pending → expired). Returns Cache-Control: public, max-age=5.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Status payload
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=5' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequestStatus' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /balance:
@@ -508,7 +533,10 @@ components:
           type: integer
           format: int64
           minimum: 1
-          description: Amount in stroops (1 unit = 10,000,000 stroops).
+          description: >
+            Amount in stroops (1 unit = 10,000,000 stroops). Must be a JSON
+            integer — floats and strings are rejected with INVALID_PARAMETERS
+            on field amount_stroops.
           example: 25000000
         asset: { type: string, default: XLM }
         expires_in_secs:
@@ -547,6 +575,22 @@ components:
             SEP-0007 payment URI to render as a QR code. Null for non-XLM assets —
             no cNGN issuer address is configured, and a guessed one would misdirect funds.
           example: web+stellar:pay?destination=GDDT...&amount=2.5000000&memo=1f97c93409172a7d&memo_type=MEMO_TEXT
+
+    PaymentRequestStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, paid, expired]
+          description: >
+            Same effective_status as GET /payment-requests/{id} — overdue
+            pending rows report as expired at read time.
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Present when status is paid (row updated_at at mark-paid).
 
     Balance:
       type: object
@@ -591,7 +635,9 @@ components:
           format: int64
           description: >
             Must be a whole multiple of 100000 (1 kobo). Paystack's minimum
-            transfer is NGN 50 = 500000000 stroops.
+            transfer is NGN 50 = 500000000 stroops. Must be a JSON integer —
+            floats and strings are rejected with INVALID_PARAMETERS on field
+            amount_stroops.
           example: 500000000
         asset:
           type: string

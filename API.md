@@ -231,9 +231,9 @@ Auth required. **The core POS action.** Creates a request for a specific amount 
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `amount_stroops` | yes | — | Must be > 0 |
+| `amount_stroops` | yes | — | Must be a positive **integer** (`int64`). Floats (`2.5`) and strings (`"100"`) are rejected with `400` `{ code: "INVALID_PARAMETERS", field: "amount_stroops" }` — not a bare 422. |
 | `asset` | no | `"XLM"` | See the cNGN caveat below |
-| `expires_in_secs` | no | `900` (15 min) | Clamped to 60–86400 |
+| `expires_in_secs` | no | `900` (15 min) | Integer `int64`, clamped to 60–86400 |
 
 `200` →
 ```json
@@ -258,7 +258,7 @@ Auth required. **The core POS action.** Creates a request for a specific amount 
 
 **The `memo` is what links a payment to this request.** A customer paying without it still credits the merchant's balance, but the request stays `pending` forever. The SEP-7 URI includes it automatically; if you ever show manual payment instructions, the memo is mandatory.
 
-Errors: `400 "create a wallet before generating payment requests"` if the merchant has no wallet.
+Errors: `400 "create a wallet before generating payment requests"` if the merchant has no wallet. Non-integer `amount_stroops` → `400` with `code: "INVALID_PARAMETERS"` and `field: "amount_stroops"`.
 
 ### `GET /payment-requests`
 Auth required. The merchant's own requests, **newest first**. Scoped to the authenticated merchant — you cannot see another merchant's requests.
@@ -274,7 +274,7 @@ Query: `?limit=` (default 50, clamped 1–200).
 
 `200` → same object. `404` if the id doesn't exist.
 
-**Poll this to detect payment.** Deposit detection runs on a timer (`STELLAR_POLL_INTERVAL_SECS`, default 60s), so a payment typically shows up within ~60s of confirming on-chain, not instantly. Poll every 3–5s and show a "waiting for payment" state; don't expect a sub-second flip.
+**Prefer `GET /payment-requests/{id}/status` for customer-side polling** (smaller payload). The full object is still useful when the wallet needs destination/memo/`sep7_uri` before paying.
 
 | `status` | Meaning |
 |---|---|
@@ -283,6 +283,24 @@ Query: `?limit=` (default 50, clamped 1–200).
 | `expired` | `expires_at` passed while still pending |
 
 `expired` is computed at read time, so it's accurate the moment you fetch it. A request that expires and is *then* paid still flips to `paid` — expiry doesn't block correlation.
+
+### `GET /payment-requests/{id}/status`
+**No auth** — lightweight public poll for customers after they submit a Stellar payment.
+
+`200` →
+```json
+{ "status": "pending" }
+```
+or when paid:
+```json
+{ "status": "paid", "paid_at": "2026-08-13T14:20:01.000000Z" }
+```
+
+Uses the same `effective_status` rules as the full GET (overdue `pending` → `expired`). Response includes `Cache-Control: public, max-age=5` so browsers/CDNs can coalesce rapid polls.
+
+Deposit detection still runs on a timer (`STELLAR_POLL_INTERVAL_SECS`, default 60s), so expect up to ~60s of latency after on-chain confirmation. Poll every 3–5s.
+
+`404` if the id doesn't exist.
 
 ---
 
@@ -342,7 +360,7 @@ Auth required. Debits the merchant's balance and initiates a Nigerian bank payou
 
 | Field | Required | Notes |
 |---|---|---|
-| `amount_stroops` | yes | Must be a whole multiple of `100000` (1 kobo) |
+| `amount_stroops` | yes | Whole multiple of `100000` (1 kobo). Must be an **integer** (`int64`) — floats/strings return `400` `{ code: "INVALID_PARAMETERS", field: "amount_stroops" }`. |
 | `asset` | no | Defaults to `cNGN`; **only cNGN is accepted** |
 | `bank_code` | yes | Paystack bank code, e.g. `058` GTBank, `999992` OPay |
 | `account_number` | yes | Exactly 10 digits (NUBAN) |
@@ -386,13 +404,13 @@ The core merchant loop:
 
 1. `POST /payment-requests` with the amount → get `id` and `sep7_uri`
 2. Render `sep7_uri` as a QR code; show the amount and a countdown to `expires_at`
-3. Poll `GET /payment-requests/{id}` every 3–5s
+3. Poll `GET /payment-requests/{id}/status` every 3–5s (prefer over the full object)
 4. On `status: "paid"` → show "Payment received"; on `"expired"` → offer to regenerate
 
 ```js
 async function waitForPayment(id, { signal } = {}) {
   while (!signal?.aborted) {
-    const res = await fetch(`${API}/payment-requests/${id}`, { signal });
+    const res = await fetch(`${API}/payment-requests/${id}/status`, { signal });
     if (!res.ok) throw new Error(`lookup failed: ${res.status}`);
     const pr = await res.json();
     if (pr.status !== 'pending') return pr;      // 'paid' or 'expired'
