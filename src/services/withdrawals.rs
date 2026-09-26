@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -8,6 +12,9 @@ use crate::payments::{PaymentProvider, PayoutRequest};
 /// cNGN is pegged 1:1 to NGN, so 1 kobo = 100,000 stroops.
 const STROOPS_PER_KOBO: i64 = 100_000;
 
+/// How long a resolved account name stays valid in the in-process cache.
+const VERIFICATION_TTL: Duration = Duration::from_secs(600);
+
 #[derive(Debug, thiserror::Error)]
 pub enum WithdrawalError {
     #[error("insufficient available balance")]
@@ -16,10 +23,94 @@ pub enum WithdrawalError {
     UnsupportedAsset,
     #[error("amount_stroops must be a whole number of kobo (a multiple of {STROOPS_PER_KOBO})")]
     InvalidAmountPrecision,
+    #[error("bank account could not be verified: {0}")]
+    AccountVerificationFailed(String),
     #[error("payout provider failed: {0}")]
     PayoutFailed(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+}
+
+/// A bank account whose ownership has been confirmed by the payout provider.
+#[derive(Debug, Clone)]
+pub struct VerifiedAccount {
+    pub account_number: String,
+    pub bank_code: String,
+    pub account_name: String,
+}
+
+struct CacheEntry {
+    account_name: String,
+    expires_at: Instant,
+}
+
+/// Process-local cache of resolved account names, keyed by `(bank_code,
+/// account_number)`. Avoids hammering the provider's resolve endpoint for the
+/// same account across repeated withdrawal attempts.
+static VERIFIED_ACCOUNTS: Mutex<Option<HashMap<(String, String), CacheEntry>>> = Mutex::new(None);
+
+fn cache_key(bank_code: &str, account_number: &str) -> (String, String) {
+    (bank_code.to_string(), account_number.to_string())
+}
+
+fn cache_lookup(bank_code: &str, account_number: &str) -> Option<String> {
+    let mut guard = VERIFIED_ACCOUNTS.lock().ok()?;
+    let map = guard.as_mut()?;
+    let key = cache_key(bank_code, account_number);
+    match map.get(&key) {
+        Some(entry) if entry.expires_at > Instant::now() => Some(entry.account_name.clone()),
+        Some(_) => {
+            map.remove(&key);
+            None
+        }
+        None => None,
+    }
+}
+
+fn cache_store(bank_code: &str, account_number: &str, account_name: &str) {
+    if let Ok(mut guard) = VERIFIED_ACCOUNTS.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.insert(
+            cache_key(bank_code, account_number),
+            CacheEntry {
+                account_name: account_name.to_string(),
+                expires_at: Instant::now() + VERIFICATION_TTL,
+            },
+        );
+    }
+}
+
+/// Resolve a bank account to its registered account name, caching successful
+/// resolutions so repeated calls for the same account skip the provider.
+///
+/// This is the hard gate used before any withdrawal is attempted: a failure
+/// here means the account could not be verified and the caller must not
+/// proceed to move money.
+pub async fn verify_bank_account(
+    provider: &dyn PaymentProvider,
+    bank_code: &str,
+    account_number: &str,
+) -> Result<VerifiedAccount, WithdrawalError> {
+    if let Some(account_name) = cache_lookup(bank_code, account_number) {
+        return Ok(VerifiedAccount {
+            account_number: account_number.to_string(),
+            bank_code: bank_code.to_string(),
+            account_name,
+        });
+    }
+
+    let account_name = provider
+        .resolve_account(bank_code, account_number)
+        .await
+        .map_err(WithdrawalError::AccountVerificationFailed)?;
+
+    cache_store(bank_code, account_number, &account_name);
+
+    Ok(VerifiedAccount {
+        account_number: account_number.to_string(),
+        bank_code: bank_code.to_string(),
+        account_name,
+    })
 }
 
 pub async fn create_withdrawal(
@@ -34,6 +125,16 @@ pub async fn create_withdrawal(
         return Err(WithdrawalError::InvalidAmountPrecision);
     }
     let amount_kobo = withdrawal.amount_stroops / STROOPS_PER_KOBO;
+
+    // Hard requirement: resolve the account *before* debiting the balance or
+    // creating the withdrawal row. A failed resolution aborts here, so no
+    // funds are ever moved against an unverified account.
+    let verified = verify_bank_account(
+        provider,
+        &withdrawal.bank_code,
+        &withdrawal.account_number,
+    )
+    .await?;
 
     let mut tx = db.begin().await?;
 
@@ -81,6 +182,7 @@ pub async fn create_withdrawal(
         .create_payout(&PayoutRequest {
             bank_code: withdrawal.bank_code.clone(),
             account_number: withdrawal.account_number.clone(),
+            account_name: verified.account_name.clone(),
             amount: amount_kobo.to_string(),
             reference: w.id.to_string(),
         })
