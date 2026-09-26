@@ -116,6 +116,68 @@ async fn signup_duplicate_email_conflicts_after_verification() {
 }
 
 #[tokio::test]
+async fn signup_oversized_name_rejected_before_work() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let (email, phone_number, _) = fresh_identity("longname");
+    let name = "N".repeat(101);
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": name, "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "name");
+}
+
+#[tokio::test]
+async fn signup_oversized_email_local_part_rejected() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let (_, phone_number, _) = fresh_identity("longemail");
+    // Local-part longer than 64 is rejected by is_valid_email (and by RFC 5321).
+    let email = format!("{}@example.com", "a".repeat(65));
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": "Long Email", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "email");
+}
+
+#[tokio::test]
+async fn signup_oversized_phone_rejected() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let (email, _, _) = fresh_identity("longphone");
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({
+            "email": email,
+            "password": "password123",
+            "name": "Long Phone",
+            "phone_number": format!("080{}", "1".repeat(40))
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "phone_number");
+}
+
+#[tokio::test]
 async fn signup_weak_password_rejected() {
     let Some(app) = app().await else {
         return;
