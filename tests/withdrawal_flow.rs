@@ -497,3 +497,76 @@ async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
     assert_eq!(withdrawals[0]["status"], "failed");
     assert_eq!(withdrawals[0]["failure_reason"], "request to Paystack timed out");
 }
+
+#[tokio::test]
+async fn concurrent_withdrawals_only_one_succeeds() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "concurrent_withdraw").await;
+
+    // Enough for exactly one of the two withdrawals below.
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 3_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let withdraw = || {
+        send(
+            app.clone(),
+            "POST",
+            "/withdraw",
+            Some(&token),
+            Some(json!({
+                "amount_stroops": 2_000_000,
+                "asset": "cNGN",
+                "bank_code": "058",
+                "account_number": "0123456789"
+            })),
+        )
+    };
+    let ((first, _), (second, _)) = tokio::join!(withdraw(), withdraw());
+
+    let statuses = [first, second];
+    assert_eq!(
+        statuses.iter().filter(|s| s.is_success()).count(),
+        1,
+        "exactly one withdrawal should succeed: {statuses:?}"
+    );
+    assert!(
+        statuses.iter().any(|s| s.is_client_error()),
+        "the other should be rejected for insufficient balance: {statuses:?}"
+    );
+
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(balance, 1_000_000);
+}
+
+#[tokio::test]
+async fn balance_cannot_be_written_negative() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (_, merchant_id) = ensure_merchant(&app, "negative_balance").await;
+
+    let result = sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', -1, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await;
+    assert!(result.is_err(), "a negative available balance must be rejected");
+}

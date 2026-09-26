@@ -151,6 +151,15 @@ No auth. Verifies the password. If the account has a verified phone number, this
 
 Errors: `401` for both a wrong password and an unknown email — deliberately indistinguishable, so don't build a "no such account" message from it. `429` on the same resend rules as signup.
 
+**Rate limit.** Every `/login` attempt counts against two fixed 15-minute windows, stored in Postgres (`login_attempts`) so they hold across restarts and instances:
+
+| Key | Limit per 15 min |
+|---|---|
+| Email address (case-insensitive) | 5 attempts |
+| Client IP (TCP peer address) | 20 attempts |
+
+Going over either returns `429` with `code: "TOO_MANY_REQUESTS"` and a `Retry-After` header giving the seconds until the window resets. A correct password resets that email's counter. Counters expire on their own when their window ends. Behind a reverse proxy the peer address is the proxy's, so the per-IP limit then applies to all traffic through it; the per-email limit still applies.
+
 ### `POST /verify-otp`
 No auth. The **only** endpoint that ever issues a session, reached from either a signup or a login challenge.
 
@@ -173,7 +182,7 @@ Errors: `400` `OTP_INVALID` (wrong code — 5 wrong guesses and the challenge is
 ### `POST /logout`
 No auth — a browser holding an expired or malformed session still needs to clear it. Returns `204` and a `Set-Cookie` that expires `aframp_session` immediately.
 
-Note this clears the browser's session, it does not revoke the JWT: a token already copied elsewhere stays valid until it expires. There's no server-side revocation list yet.
+It also revokes the presented token (the `Authorization: Bearer` header, or the session cookie if no header is sent): the token's `jti` goes on a server-side revocation list until the token would have expired, so a copy of it held elsewhere is rejected with `401` from then on. Other sessions of the same user are unaffected.
 
 ### `GET /me`
 Auth required. The signed-in user's profile. The JWT carries only ids, so call this after a reload to render anything human-readable without forcing a re-login.

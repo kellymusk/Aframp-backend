@@ -60,6 +60,9 @@ pub struct AppConfig {
     pub stellar_system_wallet: Arc<String>,
     pub stellar_horizon_url: String,
     pub stellar_poll_interval_secs: u64,
+    /// Poll passes a deposit must be seen in before its funds move from
+    /// `pending` to `available` (`STELLAR_MIN_CONFIRMATIONS`, default 1).
+    pub stellar_min_confirmations: i32,
     pub wallet_encryption_key: SecretString,
     pub paystack_secret_key: SecretString,
     /// Keys the HMAC that OTP codes are stored under. A bare hash of a
@@ -128,6 +131,11 @@ impl AppConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(60),
+            stellar_min_confirmations: std::env::var("STELLAR_MIN_CONFIRMATIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|n: &i32| *n >= 1)
+                .unwrap_or(1),
             wallet_encryption_key: SecretString::new(env("WALLET_ENCRYPTION_KEY")?),
             paystack_secret_key: SecretString::new(env("PAYSTACK_SECRET_KEY")?),
             otp_hmac_secret: SecretString::new(env("OTP_HMAC_SECRET")?),
@@ -195,6 +203,7 @@ mod tests {
                 stellar_system_wallet: Arc::new("GXXXXXXX".to_string()),
                 stellar_horizon_url: "https://horizon.stellar.org".to_string(),
                 stellar_poll_interval_secs: 60,
+                stellar_min_confirmations: 1,
                 wallet_encryption_key: SecretString::new("encryption-key".to_string()),
                 paystack_secret_key: SecretString::new("paystack-key".to_string()),
                 otp_hmac_secret: SecretString::new("otp-hmac-secret-value".to_string()),

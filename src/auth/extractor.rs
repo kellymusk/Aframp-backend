@@ -21,18 +21,27 @@ pub struct AuthUser {
 #[derive(Debug, Clone)]
 pub struct AdminUser;
 
-fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, Json<ApiError>)> {
+/// The session token from the `Authorization: Bearer` header, falling back to
+/// the session cookie.
+pub(crate) fn session_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     // API clients send a bearer token; browsers send the HttpOnly session
     // cookie, which JS on the page cannot read. Either proves the session.
-    let token = parts
-        .headers
+    headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .or_else(|| cookie::from_headers(&parts.headers))
+        .or_else(|| cookie::from_headers(headers))
+}
+
+async fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, Json<ApiError>)> {
+    let token = session_token(&parts.headers)
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "missing session cookie or bearer token".into(), field: None })))?;
-    jwt::verify(&state.jwt_secret, token)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })))
+    jwt::verify_active(&state.db, &state.jwt_secret, token)
+        .await
+        .map_err(|err| match err {
+            jwt::VerifyError::Database(e) => crate::error::internal(e),
+            _ => (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })),
+        })
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -42,7 +51,7 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let claims = authenticate(parts, state)?;
+        let claims = authenticate(parts, state).await?;
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,
@@ -57,7 +66,7 @@ impl FromRequestParts<AppState> for AdminUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let claims = authenticate(parts, state)?;
+        let claims = authenticate(parts, state).await?;
         if !claims.is_admin {
             return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
         }
