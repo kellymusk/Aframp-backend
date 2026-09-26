@@ -16,6 +16,11 @@ pub struct User {
     /// created since always has one.
     pub phone_number: Option<String>,
     pub phone_verified: bool,
+    /// Tracks consecutive failed password attempts. Reset to 0 on success.
+    pub failed_login_count: i32,
+    /// When `Some`, the account is locked until this timestamp. Cleared on
+    /// admin unlock or when the time naturally passes.
+    pub locked_until: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

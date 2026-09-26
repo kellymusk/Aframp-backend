@@ -21,6 +21,28 @@ const RESEND_COOLDOWN_SECS: i64 = 60;
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
 
+/// OTP retention policy: audit records are kept for 24 hours after the
+/// challenge's `expires_at` timestamp. This gives enough time for
+/// debugging / support while preventing unbounded table growth.
+///
+/// At 5 challenges/hour per user across a large user base the table would
+/// otherwise grow to tens of thousands of stale rows, making the
+/// `WHERE consumed_at IS NULL AND expires_at > now()` queries progressively
+/// slower. The `otp_challenges_expires_at_idx` index (migration 0009) makes
+/// this DELETE efficient.
+///
+/// Call this periodically from a background task (e.g. every hour). It is
+/// safe to call concurrently; Postgres row-level locking prevents double
+/// deletes.
+pub async fn cleanup_expired(db: &PgPool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM otp_challenges WHERE expires_at < now() - interval '24 hours'",
+    )
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OtpError {
     #[error("too many requests, please try again shortly")]

@@ -27,6 +27,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tokio::spawn(listener);
 
+    // Background OTP cleanup: deletes challenges older than 24 hours past
+    // expiry every hour. Prevents unbounded growth of the otp_challenges table.
+    // See services::otp::cleanup_expired for the retention policy.
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                match aframp::services::otp::cleanup_expired(&db).await {
+                    Ok(n) => tracing::info!(deleted = n, "otp_challenges cleanup complete"),
+                    Err(e) => tracing::error!(error = %e, "otp_challenges cleanup failed"),
+                }
+            }
+        });
+    }
+
     // Auth travels as an HttpOnly cookie for browsers, so credentials are on —
     // which means origins must be listed explicitly, never mirrored back.
     let origins = config
