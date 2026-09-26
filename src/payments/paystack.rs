@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use sha2::Sha512;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use super::{PaymentProvider, PayoutRequest, PayoutResult};
 
@@ -11,6 +12,9 @@ const BASE_URL: &str = "https://api.paystack.co";
 pub struct PaystackProvider {
     secret_key: String,
     http: reqwest::Client,
+    // Cache of resolved account names keyed by (account_number, bank_code) so that
+    // repeated withdrawals to the same account don't re-hit the resolution API.
+    resolved_cache: Mutex<HashMap<(String, String), String>>,
 }
 
 impl PaystackProvider {
@@ -19,7 +23,11 @@ impl PaystackProvider {
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("failed to build Paystack HTTP client");
-        Self { secret_key, http }
+        Self {
+            secret_key,
+            http,
+            resolved_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Verify the `x-paystack-signature` header against the raw webhook body.
@@ -76,6 +84,44 @@ impl PaystackProvider {
             return Err(format!("Paystack error (HTTP {status}): {}", body.message));
         }
         body.data.ok_or_else(|| "Paystack response missing data".to_string())
+    }
+
+    /// Resolve a bank account to its registered account holder name.
+    ///
+    /// This is a hard requirement before creating a withdrawal recipient: a
+    /// failed resolution means the account number is likely wrong, and we must
+    /// not attempt a transfer (which would debit the balance) with a placeholder
+    /// name. Successful resolutions are cached so repeated withdrawals to the
+    /// same account avoid redundant API calls.
+    pub async fn verify_bank_account(
+        &self,
+        account_number: &str,
+        bank_code: &str,
+    ) -> Result<String, String> {
+        let key = (account_number.to_string(), bank_code.to_string());
+        if let Some(name) = self
+            .resolved_cache
+            .lock()
+            .expect("resolved cache poisoned")
+            .get(&key)
+            .cloned()
+        {
+            return Ok(name);
+        }
+
+        let resolved: ResolvedAccount = self
+            .get(
+                "/bank/resolve",
+                &[("account_number", account_number), ("bank_code", bank_code)],
+            )
+            .await?;
+
+        self.resolved_cache
+            .lock()
+            .expect("resolved cache poisoned")
+            .insert(key, resolved.account_name.clone());
+
+        Ok(resolved.account_name)
     }
 }
 
@@ -154,25 +200,19 @@ impl PaymentProvider for PaystackProvider {
             .parse()
             .map_err(|_| format!("invalid payout amount: {}", req.amount))?;
 
-        // Best-effort: resolving gets us the real account holder's name (and would
-        // catch a typo'd account number), but its failure shouldn't hard-block the
-        // payout — Paystack checks this against real NIBSS data even in test mode,
-        // so a fabricated test account number fails here even though the recipient
-        // and transfer calls below don't perform the same check.
-        let resolved: Option<ResolvedAccount> = self
-            .get(
-                "/bank/resolve",
-                &[("account_number", req.account_number.as_str()), ("bank_code", req.bank_code.as_str())],
-            )
+        // Hard requirement: resolve the account before creating the recipient or
+        // attempting the transfer. If resolution fails the account number is
+        // likely invalid, so we fail fast and let the caller refund/abort before
+        // any balance is debited.
+        let recipient_name = self
+            .verify_bank_account(&req.account_number, &req.bank_code)
             .await
             .map_err(|err| {
-                tracing::warn!(error = %err, "account resolution failed, proceeding with a placeholder name");
-                err
-            })
-            .ok();
-        let recipient_name = resolved
-            .map(|r| r.account_name)
-            .unwrap_or_else(|| "Aframp Merchant".to_string());
+                format!(
+                    "bank account verification failed for {} ({}): {err}",
+                    req.account_number, req.bank_code
+                )
+            })?;
 
         let recipient: Recipient = self
             .post(

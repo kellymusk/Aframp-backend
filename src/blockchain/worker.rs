@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 use crate::blockchain::stellar::{BlockchainListener, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
-use crate::services::{balances, payment_requests, payments, wallets};
+use crate::services::{balances, notifications, payment_requests, payments, wallets};
 use crate::AppState;
 
 pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
@@ -120,9 +120,21 @@ async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDep
         }
     }
 
-    // Sweep the confirmed merchant funds to the consolidated settlement wallet.
-    if let Err(err) = sweep_confirmed_payment(db, &wallet, &payment, &d.asset).await {
-        tracing::warn!(error = %err, payment_id = %payment.id, "platform sweep failed");
+    // Notify the merchant that the deposit has been confirmed. Notifications are
+    // opt-in via the merchant preference setting; the service is a no-op when the
+    // merchant has not enabled them. Failures are logged and never block deposit
+    // processing.
+    if let Err(err) = notifications::notify_deposit_confirmed(
+        db,
+        wallet.merchant_id,
+        payment.id,
+        d.amount_stroops,
+        &d.asset,
+        &d.tx_hash,
+    )
+    .await
+    {
+        tracing::warn!(error = %err, payment_id = %payment.id, "failed to send deposit notification");
     }
 
     // TODO: dispatch payment.confirmed webhook.

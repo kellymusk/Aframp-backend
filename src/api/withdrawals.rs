@@ -1,7 +1,7 @@
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
@@ -15,6 +15,51 @@ use crate::AppState;
 pub struct ListParams {
     pub limit: Option<i64>,
     pub cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyBankParams {
+    pub bank_code: String,
+    pub account_number: String,
+}
+
+#[derive(Serialize)]
+pub struct VerifiedAccount {
+    pub account_name: String,
+    pub bank_code: String,
+    pub account_number: String,
+}
+
+/// Resolve a bank account (account number + bank code) to its registered
+/// account name before any withdrawal is attempted. This lets merchants
+/// confirm the recipient details up front instead of discovering a bad
+/// account only after a transfer has been attempted.
+pub async fn verify_bank(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+    Query(params): Query<VerifyBankParams>,
+) -> ApiResult<Json<VerifiedAccount>> {
+    if !is_valid_bank_code(&params.bank_code) {
+        return Err(bad_request_field("bank_code", "must be a 3-digit code"));
+    }
+    if !is_valid_account_number(&params.account_number) {
+        return Err(bad_request_field(
+            "account_number",
+            "must be a 10-digit NUBAN account number",
+        ));
+    }
+    let resolved = withdrawals::resolve_account(
+        state.payment_provider.as_ref(),
+        &params.bank_code,
+        &params.account_number,
+    )
+    .await
+    .map_err(map_withdrawal_error)?;
+    Ok(Json(VerifiedAccount {
+        account_name: resolved.account_name,
+        bank_code: params.bank_code,
+        account_number: params.account_number,
+    }))
 }
 
 pub async fn create(
@@ -100,6 +145,9 @@ fn map_withdrawal_error(err: WithdrawalError) -> (axum::http::StatusCode, Json<c
             ErrorCode::InvalidAmount,
             "amount_stroops must be a whole number of kobo",
         ),
+        WithdrawalError::AccountResolutionFailed(msg) => {
+            bad_request(ErrorCode::AccountResolutionFailed, &msg)
+        }
         WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
         WithdrawalError::Database(e) => internal(e),
     }
