@@ -1,7 +1,11 @@
 use axum::extract::{Path, Query, State};
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
@@ -76,6 +80,80 @@ pub async fn get(
         .ok_or_else(|| internal("payment request references a missing wallet"))?;
 
     Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+}
+
+/// Renders the payment request's SEP-0007 URI as a PNG QR code so merchants
+/// can display it directly at a POS terminal without a client-side QR library.
+///
+/// The rendered image is cached in-process keyed by `(id, size)`; the SEP-0007
+/// URI for a given request is immutable, so the cache never needs invalidation.
+pub async fn qr(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<QrParams>,
+) -> ApiResult<impl IntoResponse> {
+    let size = params.size.unwrap_or(256).clamp(64, 1024) as u32;
+
+    let pr = payment_requests::payment_request_by_id(&state.db, id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+
+    let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| internal("payment request references a missing wallet"))?;
+
+    let sep7_uri = build_sep7_uri(&wallet.address, pr.amount_stroops, &pr.asset, &pr.memo)
+        .ok_or_else(|| {
+            bad_request(
+                ErrorCode::InvalidParameters,
+                "this payment request has no SEP-0007 URI to encode",
+            )
+        })?;
+
+    let png = qr_png_cached(id, size, &sep7_uri)?;
+
+    Ok(([(header::CONTENT_TYPE, "image/png")], png))
+}
+
+#[derive(serde::Deserialize)]
+pub struct QrParams {
+    pub size: Option<i64>,
+}
+
+/// In-process cache of rendered QR PNGs keyed by `(payment request id, size)`.
+fn qr_cache() -> &'static Mutex<HashMap<(Uuid, u32), Vec<u8>>> {
+    static CACHE: OnceLock<Mutex<HashMap<(Uuid, u32), Vec<u8>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn qr_png_cached(id: Uuid, size: u32, contents: &str) -> ApiResult<Vec<u8>> {
+    let key = (id, size);
+    if let Some(cached) = qr_cache().lock().unwrap().get(&key) {
+        return Ok(cached.clone());
+    }
+
+    let png = render_qr_png(contents, size)?;
+    qr_cache().lock().unwrap().insert(key, png.clone());
+    Ok(png)
+}
+
+fn render_qr_png(contents: &str, size: u32) -> ApiResult<Vec<u8>> {
+    use qrcode::QrCode;
+
+    let code = QrCode::new(contents.as_bytes())
+        .map_err(|_| internal("failed to encode SEP-0007 URI as a QR code"))?;
+    let image = code
+        .render::<image::Luma<u8>>()
+        .min_dimensions(size, size)
+        .build();
+
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|_| internal("failed to encode QR code as PNG"))?;
+    Ok(png)
 }
 
 pub async fn list(
