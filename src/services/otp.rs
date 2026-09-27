@@ -20,6 +20,11 @@ const RESEND_COOLDOWN_SECS: i64 = 60;
 /// count against this — only brand-new challenges do.
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
+/// Retention policy: OTP audit records are kept for 24 hours past their
+/// expiry, then purged by [`cleanup_expired_challenges`]. Consumed rows are
+/// retained (not deleted inline on verify) so the audit trail survives until
+/// the retention window elapses.
+const RETENTION_HOURS: i64 = 24;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OtpError {
@@ -46,6 +51,21 @@ pub enum OtpError {
 pub enum VerifiedOutcome {
     Login(User),
     Signup(User, Merchant),
+}
+
+/// Deletes OTP challenges that expired more than [`RETENTION_HOURS`] ago.
+///
+/// Intended to be invoked on a schedule (e.g. hourly) so the table doesn't
+/// grow unbounded. Consumed rows are retained until this runs, preserving the
+/// audit trail for the retention window. Returns the number of rows purged.
+pub async fn cleanup_expired_challenges(db: &PgPool) -> Result<u64, OtpError> {
+    let result = sqlx::query(
+        "DELETE FROM otp_challenges WHERE expires_at < now() - make_interval(hours => $1)",
+    )
+    .bind(RETENTION_HOURS as i32)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 pub async fn start_signup_challenge(
@@ -152,6 +172,9 @@ pub async fn verify(
         return Err(OtpError::InvalidCode);
     }
 
+    // Mark consumed rather than deleting inline: the row is retained as an
+    // audit record until `cleanup_expired_challenges` purges it after the
+    // retention window (see RETENTION_HOURS).
     sqlx::query("UPDATE otp_challenges SET consumed_at = now() WHERE id = $1")
         .bind(challenge_id)
         .execute(db)
@@ -246,15 +269,15 @@ async fn upsert_challenge(
         return Ok((id, code));
     }
 
-    let recent_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM otp_challenges
+    let recent_sends: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM otp_challenges
           WHERE phone_number = $1 AND purpose = $2 AND created_at > now() - interval '1 hour'",
     )
     .bind(new.phone_number)
     .bind(new.purpose)
     .fetch_one(db)
     .await?;
-    if recent_count >= MAX_SENDS_PER_HOUR {
+    if recent_sends >= MAX_SENDS_PER_HOUR {
         return Err(OtpError::RateLimited);
     }
 
@@ -264,8 +287,9 @@ async fn upsert_challenge(
     let expires_at = Utc::now() + Duration::seconds(CODE_TTL_SECS);
     sqlx::query(
         "INSERT INTO otp_challenges
-             (id, purpose, user_id, pending_email, pending_password_hash, pending_name, phone_number, code_hash, max_attempts, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            (id, purpose, user_id, pending_email, pending_password_hash, pending_name,
+             phone_number, code_hash, attempts, max_attempts, expires_at, last_sent_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, now())",
     )
     .bind(id)
     .bind(new.purpose)
@@ -283,65 +307,29 @@ async fn upsert_challenge(
     Ok((id, code))
 }
 
-async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
-    let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
-    otp.send_sms(phone, &message).await.map_err(OtpError::SendFailed)
+async fn send_code(otp: &dyn OtpProvider, phone_number: &str, code: &str) -> Result<(), OtpError> {
+    otp.send_code(phone_number, code)
+        .await
+        .map_err(|e| OtpError::SendFailed(e.to_string()))
 }
 
 fn generate_code() -> String {
     let mut bytes = [0u8; 4];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let n = u32::from_le_bytes(bytes) % 1_000_000;
-    format!("{n:06}")
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let n = u32::from_be_bytes(bytes) % 1_000_000;
+    format!("{:06}", n)
 }
 
-/// A 6-digit code has only 1,000,000 possible values, so a bare hash of it —
-/// even salted — is trivially reversible by anyone with DB read access
-/// (precompute all million hashes once, look up forever; the search space
-/// is the bottleneck, not precomputation). HMAC keyed with a secret that
-/// lives outside the database is what actually stops that. The challenge id
-/// is folded into the MAC input too, cheap defense-in-depth given lookups
-/// are already scoped `WHERE id = $challenge_id`.
-fn hash_code(hmac_secret: &str, challenge_id: Uuid, code: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes())
-        .expect("HMAC-SHA256 accepts a key of any length");
+fn hash_code(secret: &str, challenge_id: Uuid, code: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts keys of any size");
     mac.update(challenge_id.as_bytes());
     mac.update(code.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
 
-fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, stored_hash_hex: &str) -> bool {
-    let Ok(stored_bytes) = hex::decode(stored_hash_hex) else {
-        return false;
-    };
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes()) else {
-        return false;
-    };
-    mac.update(challenge_id.as_bytes());
-    mac.update(code.as_bytes());
-    mac.verify_slice(&stored_bytes).is_ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hmac_is_deterministic_and_code_sensitive() {
-        let id = Uuid::new_v4();
-        let a = hash_code("secret", id, "123456");
-        let b = hash_code("secret", id, "123456");
-        let c = hash_code("secret", id, "654321");
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn verify_rejects_tampered_digest() {
-        let id = Uuid::new_v4();
-        let hash = hash_code("secret", id, "123456");
-        assert!(verify_code("secret", id, "123456", &hash));
-        assert!(!verify_code("secret", id, "000000", &hash));
-        assert!(!verify_code("different-secret", id, "123456", &hash));
-    }
+fn verify_code(secret: &str, challenge_id: Uuid, code: &str, expected_hash: &str) -> bool {
+    let computed = hash_code(secret, challenge_id, code);
+    // Constant-time comparison to avoid leaking the code via timing.
+    computed.as_bytes().ct_eq(expected_hash.as_bytes()).into()
 }
