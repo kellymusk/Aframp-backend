@@ -27,3 +27,17 @@ CREATE TABLE otp_challenges (
 
 CREATE INDEX otp_challenges_phone_purpose_idx ON otp_challenges (phone_number, purpose, created_at DESC);
 CREATE INDEX otp_challenges_user_idx ON otp_challenges (user_id) WHERE user_id IS NOT NULL;
+
+-- Retention policy: OTP audit records are kept for 24 hours past their expiry.
+-- Consumed challenges are retained (consumed_at is set on successful verify) so
+-- that the audit trail survives; the scheduled cleanup below removes both
+-- consumed and expired rows once they fall outside the retention window.
+CREATE INDEX otp_challenges_expires_at_idx ON otp_challenges (expires_at);
+
+-- Scheduled cleanup: delete challenges that expired more than 24 hours ago.
+-- Run periodically (e.g. hourly) via the application scheduler / cron:
+--   DELETE FROM otp_challenges WHERE expires_at < now() - interval '24 hours';
+CREATE OR REPLACE FUNCTION cleanup_otp_challenges()
+RETURNS void AS $$
+  DELETE FROM otp_challenges WHERE expires_at < now() - interval '24 hours';
+$$ LANGUAGE sql;
