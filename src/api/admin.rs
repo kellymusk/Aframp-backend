@@ -1,4 +1,4 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Html;
 use axum::Json;
 use serde::Deserialize;
@@ -83,6 +83,27 @@ pub async fn payment_requests(
         .await
         .map_err(internal)?;
     Ok(Json(rows))
+}
+
+/// Suspend a merchant account, preventing it from logging in, receiving
+/// payments, or initiating withdrawals.
+pub async fn suspend_merchant(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<AdminMerchantRow>> {
+    let row = admin::suspend_merchant(&state.db, id).await.map_err(internal)?;
+    Ok(Json(row))
+}
+
+/// Lift a suspension, restoring the merchant's ability to transact.
+pub async fn unsuspend_merchant(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<AdminMerchantRow>> {
+    let row = admin::unsuspend_merchant(&state.db, id).await.map_err(internal)?;
+    Ok(Json(row))
 }
 
 /// Static dashboard shell. Unauthenticated by design — it's markup and JS with
