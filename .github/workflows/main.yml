@@ -1,0 +1,87 @@
+name: Protect Main
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # GUARD: Fail if any push or PR against master/main touches the protected
+  # backend source tree. All source changes must flow through dev-backend and
+  # be explicitly reviewed by a maintainer — never committed directly to master.
+  # ─────────────────────────────────────────────────────────────────────────────
+  guard-source-integrity:
+    name: "Guard — no touches to main backend source"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for forbidden file changes
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          # First push to the branch — nothing to diff against.
+          if [[ "$BASE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "First push to branch — skipping diff guard."
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "${{ github.sha }}" 2>/dev/null || true)
+
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          # Protected paths — must not be modified directly on master/main.
+          FORBIDDEN_PATTERNS=(
+            "^src/"
+            "^migrations/"
+            "^examples/"
+            "^Dockerfile$"
+            "^Cargo\.toml$"
+            "^Cargo\.lock$"
+            "^wrangler\.jsonc$"
+            "^cloudflare/"
+          )
+
+          VIOLATIONS=""
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+              if echo "$file" | grep -qE "$pattern"; then
+                VIOLATIONS="${VIOLATIONS}\n  ❌  $file  (matches protected pattern: $pattern)"
+                break
+              fi
+            done
+          done <<< "$CHANGED"
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🚫  MAIN SOURCE INTEGRITY GUARD FAILED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+            echo "The following files belong to the protected backend source"
+            echo "tree and must NOT be modified directly on master/main:"
+            echo -e "$VIOLATIONS"
+            echo ""
+            echo "All changes to the backend source must:"
+            echo "  1. Be made on the dev-backend branch"
+            echo "  2. Pass the dev-backend CI guard"
+            echo "  3. Be reviewed and merged by a maintainer"
+            echo ""
+            echo "Direct commits or PRs that modify production source files"
+            echo "will always be rejected by this check."
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 1
+          fi
+
+          echo "✅  No protected files touched. Guard passed."

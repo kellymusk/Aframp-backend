@@ -3,15 +3,16 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
+use crate::auth::extractor::Session;
 use crate::auth::jwt;
 use crate::auth::password;
 use crate::error::{
-    bad_request, bad_request_field, conflict, internal, not_found, too_many_requests, unauthorized,
-    ApiResult, ErrorCode,
+    bad_request, bad_request_field, internal,
+    ApiResult,
 };
 use crate::models::{AuthResponse, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
-use crate::services::otp::{self, OtpError, VerifiedOutcome};
-use crate::services::users::{self, UserError};
+use crate::services::otp::{self, VerifiedOutcome};
+use crate::services::users;
 use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name};
 use crate::AppState;
 
@@ -45,8 +46,7 @@ pub async fn signup(
         &name,
         &phone_number,
     )
-    .await
-    .map_err(map_otp_error)?;
+    .await?;
 
     Ok(Json(challenge))
 }
@@ -63,8 +63,7 @@ pub async fn login(
         return Err(bad_request_field("email", "must be a valid email address"));
     }
     let (user, merchant) = users::login(&state.db, &req.email, &req.password)
-        .await
-        .map_err(map_user_error)?;
+        .await?;
 
     if user.phone_number.is_some() {
         let challenge = otp::start_login_challenge(
@@ -73,8 +72,7 @@ pub async fn login(
             state.otp_hmac_secret.as_str(),
             &user,
         )
-        .await
-        .map_err(map_otp_error)?;
+        .await?;
         return Ok(Json(challenge).into_response());
     }
 
@@ -104,11 +102,10 @@ pub async fn verify_otp(
     Json(req): Json<VerifyOtpRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let outcome = otp::verify(&state.db, state.otp_hmac_secret.as_str(), req.challenge_id, &req.code)
-        .await
-        .map_err(map_otp_error)?;
+        .await?;
 
     let (user, merchant_id) = match outcome {
-        VerifiedOutcome::Login(user) => {
+        VerifiedOutcome::Login(user) | VerifiedOutcome::PhoneChanged(user) => {
             let merchant = users::merchant_by_user(&state.db, user.id).await.map_err(internal)?;
             (user, merchant.map(|m| m.id))
         }
@@ -133,6 +130,24 @@ pub async fn logout(State(state): State<AppState>) -> ApiResult<impl IntoRespons
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
 }
 
+/// Exchanges a valid, unexpired session token for a fresh one (also reset
+/// as the session cookie), up to `jwt::MAX_SESSION_DAYS` after the original
+/// login; after that the user has to log in again.
+pub async fn refresh(State(state): State<AppState>, Session(claims): Session) -> ApiResult<impl IntoResponse> {
+    let token = jwt::refresh(&state.jwt_secret, &claims).map_err(|err| match err {
+        jwt::RefreshError::Signing => internal(err),
+        _ => unauthorized(ErrorCode::InvalidCredentials, &err.to_string()),
+    })?;
+    authenticated(
+        &state,
+        AuthResponse {
+            token,
+            user_id: claims.sub,
+            merchant_id: claims.merchant_id,
+        },
+    )
+}
+
 /// Sets the session cookie for browsers and echoes the token for API clients.
 fn authenticated(state: &AppState, body: AuthResponse) -> ApiResult<impl IntoResponse> {
     let cookie = state.cookie.session(&body.token).map_err(internal)?;
@@ -143,6 +158,16 @@ fn map_user_error(err: UserError) -> (axum::http::StatusCode, Json<crate::error:
     match err {
         UserError::InvalidCredentials => {
             unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
+        }
+        UserError::AccountLocked { until } => {
+            let msg = format!(
+                "account locked due to too many failed login attempts; try again after {}",
+                until.format("%Y-%m-%dT%H:%M:%SZ")
+            );
+            crate::error::forbidden(ErrorCode::Forbidden, &msg)
+        }
+        UserError::MerchantSuspended => {
+            crate::error::forbidden(ErrorCode::Forbidden, "this merchant account has been suspended")
         }
         UserError::Database(_) => internal(err),
     }
