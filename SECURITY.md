@@ -21,6 +21,16 @@ diagnostic context is needed. Redact or omit sensitive values before passing
 them to tracing fields; production log scrubbing is defense in depth, not a
 replacement for safe logging at the source.
 
+## Admin dashboard response headers
+
+The `/admin` HTML response must include a Content-Security-Policy that limits
+resources to the application origin, disables plugins with `object-src 'none'`,
+and prevents framing with `frame-ancestors 'none'`. Any inline scripts must use
+a cryptographically random nonce generated for that response, and the same nonce
+must appear in the CSP and each permitted script element. Do not use
+`'unsafe-inline'` in `script-src`. The response must also include
+`X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`.
+
 ## Reporting a vulnerability
 
 **Do not open a public issue, pull request, or discussion for a security problem.**
