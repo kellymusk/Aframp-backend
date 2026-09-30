@@ -61,6 +61,18 @@ docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test cargo test
 ```
 
+## Standard make targets
+
+Use the project's `Makefile` for common commands:
+
+```bash
+make run        # OTP_PROVIDER=mock cargo run
+make test       # cargo test (uses TEST_DATABASE_URL, defaulting to local aframp_test)
+make migrate    # sqlx migrate run (uses DATABASE_URL, defaulting to local aframp)
+make fmt        # cargo fmt --all
+make clippy     # cargo clippy -- -D warnings
+make docker     # docker build -t aframp-backend .
+make docker-db  # start (or create) local Postgres container
 ## Mock OTP provider (`OTP_PROVIDER=mock`)
 
 Local and CI runs use `MockOtpProvider` (`src/otp/mock.rs`) instead of Termii.

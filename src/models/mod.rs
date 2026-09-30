@@ -25,6 +25,7 @@ pub use merchant::{Merchant, NewMerchant};
 pub use otp::{OtpChallenge, OtpChallengeResponse, VerifyOtpRequest};
 pub use payment::{NewPayment, Payment, UpdatePaymentStatus};
 pub use payment_request::{CreatePaymentRequestRequest, PaymentRequest};
+pub use user::{AuthResponse, LoginRequest, NewUser, SignupRequest, User, UserProfile};
 pub use status::{PaymentRequestStatus, PaymentStatus, WithdrawalStatus};
 pub use user::{AuthResponse, LoginRequest, NewUser, SignupRequest, User};
 pub use wallet::{CreateWalletRequest, NewWallet, Wallet};

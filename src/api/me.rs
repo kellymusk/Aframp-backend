@@ -55,7 +55,7 @@ struct WalletBalanceRow {
 }
 
 pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<MeView>> {
-    let user = users::user_by_id(&state.db, auth.user_id)
+    let user = users::user_profile_by_id(&state.db, auth.user_id)
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(ErrorCode::UserNotFound, "user not found"))?;
