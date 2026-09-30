@@ -22,6 +22,7 @@ pub use list_params::{
 pub use otp::{OtpChallenge, OtpChallengeResponse, VerifyOtpRequest};
 pub use balance::{Balance, UpdateBalance};
 pub use merchant::{Merchant, NewMerchant};
+pub use otp::{OtpChallenge, OtpChallengeResponse, VerifyOtpRequest};
 pub use payment::{NewPayment, Payment, UpdatePaymentStatus};
 pub use payment_request::{CreatePaymentRequestRequest, PaymentRequest};
 pub use status::{PaymentRequestStatus, PaymentStatus, WithdrawalStatus};
