@@ -19,6 +19,8 @@ tags:
   - name: Wallet
   - name: Payment requests
   - name: Money
+  - name: Analytics
+    description: Proposed merchant reporting contract; endpoint is not implemented yet.
   - name: Webhooks
     description: Provider callbacks — not for merchant or admin use
   - name: Admin
@@ -449,6 +451,33 @@ paths:
                     type: string
                     nullable: true
                     description: Pass as `cursor` to fetch the next page; null on the last page.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /analytics:
+    get:
+      tags: [Analytics]
+      summary: Merchant payment analytics (proposed)
+      description: >
+        Proposed contract only; this endpoint is not currently served. Daily
+        aggregates use UTC dates and include confirmed payments. Volume values
+        are integer stroops. total_paid_requests counts requests created in the
+        selected period that reached paid status; success_rate is paid requests
+        divided by all requests created in that period, from 0 to 1.
+      x-implementation-status: planned
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+      responses:
+        '200':
+          description: Proposed merchant-scoped analytics response
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -1021,6 +1050,33 @@ components:
           description: Currently always 0 — confirmation-depth tracking is not implemented. Do not display.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    AnalyticsResponse:
+      type: object
+      required: [period, daily, total_paid_requests, success_rate]
+      properties:
+        period: { type: string, enum: [7d, 30d, 90d] }
+        daily:
+          type: array
+          items:
+            type: object
+            required: [date, payment_count, volume_by_asset]
+            properties:
+              date: { type: string, format: date }
+              payment_count: { type: integer, format: int64, minimum: 0 }
+              volume_by_asset:
+                type: object
+                description: Confirmed payment volume per asset, in stroops.
+                additionalProperties:
+                  type: integer
+                  format: int64
+                  minimum: 0
+        total_paid_requests: { type: integer, format: int64, minimum: 0 }
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Paid requests divided by all requests created in the selected period.
 
     CreateWithdrawalRequest:
       type: object

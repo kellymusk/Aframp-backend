@@ -644,5 +644,6 @@ Worth knowing before you design around them:
 - **No rate limiting on the password check itself.** OTP sends are throttled (60s cooldown, 5/hour per phone), but nothing yet stops repeated wrong-password guesses against `/login` before it ever gets to that step.
 - **No cancel/delete on payment requests.** They can only expire naturally.
 - **`DELETE /payment-requests/{id}`** soft-cancels a request (sets `cancelled_at`). CORS allows `GET`/`POST`/`DELETE`.
+- **Merchant analytics** (`GET /analytics?period=7d|30d|90d`) is a proposed contract only and is not available until the endpoint is implemented. The proposed response includes daily confirmed-payment counts and volume by asset in stroops, paid requests created in the selected period, and a 0–1 paid-request success rate.
 - **cNGN QR codes**, pending a real issuer address.
 - **Completed payouts**, pending funding (see `PRD.md` §9.1).
