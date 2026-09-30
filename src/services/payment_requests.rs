@@ -372,6 +372,7 @@ pub async fn find_pending_by_wallet_and_memo(
         "SELECT id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
                 expires_at, cancelled_at, created_at, updated_at
            FROM payment_requests
+          WHERE wallet_id = $1 AND memo = $2 AND status = 'pending' AND expires_at > now()",
           WHERE wallet_id = $1 AND memo = $2 AND status = 'pending'
             AND cancelled_at IS NULL",
           WHERE wallet_id = $1 AND memo = $2 AND status = $3",

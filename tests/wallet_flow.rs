@@ -110,6 +110,15 @@ async fn wallet_address_is_stable_per_merchant() {
     assert_ne!(json_a["address"], json_b["address"]);
 }
 
+#[tokio::test]
+async fn backed_off_wallet_is_excluded_from_poll_query() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "wallet_backoff").await;
+
+    let (status, json) = send(
 // ─────────────────────────────────────────────────────────────────────────────
 // #1042 — duplicate wallet prevention: second POST /wallet/create must fail
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,6 +146,21 @@ async fn second_wallet_create_returns_409() {
         Some(json!({})),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "create wallet failed: {json}");
+    let address = json["address"].as_str().unwrap().to_string();
+
+    let polled = aframp::services::wallets::pollable_wallets(&state.db, &[])
+        .await
+        .unwrap();
+    assert!(polled.iter().any(|w| w.address == address));
+
+    let polled =
+        aframp::services::wallets::pollable_wallets(&state.db, std::slice::from_ref(&address))
+            .await
+            .unwrap();
+    assert!(
+        !polled.iter().any(|w| w.address == address),
+        "a wallet in backoff must not be loaded for polling"
     assert_eq!(status, StatusCode::OK, "first create should succeed: {first}");
     let first_address = first["address"].as_str().unwrap().to_string();
     assert!(!first_address.is_empty());

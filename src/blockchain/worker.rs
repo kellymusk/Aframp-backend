@@ -22,6 +22,9 @@ pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: 
     }
 }
 
+async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
+    let skip = listener.skipped_addresses();
+    let addresses: Vec<String> = wallets::pollable_wallets(db, &skip)
 pub async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
 /// Polls the blockchain listener once and processes any detected deposits.
 ///

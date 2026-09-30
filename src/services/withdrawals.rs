@@ -1,3 +1,4 @@
+use std::time::Duration;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -7,12 +8,14 @@ use uuid::Uuid;
 
 use crate::models::status::WithdrawalStatus;
 use crate::models::{NewWithdrawal, Withdrawal};
-use crate::payments::{PaymentProvider, PayoutRequest};
+use crate::payments::{PaymentProvider, PayoutRequest, PayoutResult};
 
 /// 1 unit of a Stellar asset = 10,000,000 stroops; 1 Naira = 100 kobo.
 /// cNGN is pegged 1:1 to NGN, so 1 kobo = 100,000 stroops.
 const STROOPS_PER_KOBO: i64 = 100_000;
 
+/// How many times to try recording a successful payout before giving up.
+const PAYOUT_RECORD_ATTEMPTS: u32 = 3;
 /// How long a resolved account name stays valid in the in-process cache.
 const VERIFICATION_TTL: Duration = Duration::from_secs(600);
 
@@ -224,6 +227,35 @@ pub async fn create_withdrawal_idempotent(
 
     match payout {
         Ok(result) => {
+            // The transfer has already gone out, so a failed write here must not
+            // be swallowed: retry transient DB errors, and if they persist, log
+            // enough for an operator to reconcile the row by hand.
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                match record_payout(db, w.id, &result).await {
+                    Ok(updated) => return Ok(updated),
+                    Err(e) if attempt < PAYOUT_RECORD_ATTEMPTS => {
+                        tracing::warn!(
+                            withdrawal_id = %w.id,
+                            attempt,
+                            error = %e,
+                            "retrying payout status write"
+                        );
+                        tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            withdrawal_id = %w.id,
+                            transfer_code = %result.provider_reference,
+                            provider = %result.provider,
+                            error = %e,
+                            "payout succeeded but recording it failed; withdrawal needs manual reconciliation"
+                        );
+                        return Err(WithdrawalError::Database(e));
+                    }
+                }
+            }
             // If this write fails, the row is left `pending` with no provider
             // info — recoverable later, and safe: it under-states what happened
             // (a real transfer may have gone out) rather than erasing the record
@@ -278,6 +310,24 @@ pub async fn create_withdrawal_idempotent(
     }
 }
 
+async fn record_payout(
+    db: &PgPool,
+    id: Uuid,
+    result: &PayoutResult,
+) -> Result<Withdrawal, sqlx::Error> {
+    sqlx::query_as::<_, Withdrawal>(
+        "UPDATE withdrawals
+            SET provider = $2, provider_reference = $3, status = $4, updated_at = now()
+          WHERE id = $1
+          RETURNING id, merchant_id, amount_stroops, asset, status, provider,
+                    provider_reference, bank_code, account_number, failure_reason,
+                    created_at, updated_at",
+    )
+    .bind(id)
+    .bind(&result.provider)
+    .bind(&result.provider_reference)
+    .bind(&result.status)
+    .fetch_one(db)
 /// Look up a withdrawal previously created with the given idempotency key for
 /// this merchant. Returns `None` when the key has not been used yet.
 pub async fn find_by_idempotency_key(
