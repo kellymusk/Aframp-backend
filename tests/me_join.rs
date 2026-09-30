@@ -99,6 +99,23 @@ async fn me_response_matches_single_join_query() {
 }
 
 #[tokio::test]
+async fn me_response_includes_verified_phone_fields() {
+    let Some(state) = state().await else {
+        return;
+    };
+    let app = aframp::router(state);
+    let (token, _) = ensure_merchant(&app, "me_phone").await;
+
+    let (status, me) = send(app, "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "GET /me failed: {me}");
+    assert!(
+        me["phone_number"].as_str().is_some(),
+        "verified user phone_number should be present: {me}"
+    );
+    assert_eq!(me["phone_verified"].as_bool(), Some(true));
+}
+
+#[tokio::test]
 async fn me_join_returns_none_merchant_fields_when_no_merchant_row() {
     // Signup always creates a merchant today, so synthesize the edge case
     // the LEFT JOIN must handle: a user with no merchants row. We delete the

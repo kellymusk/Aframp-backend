@@ -296,6 +296,8 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
   "user_id": "2c5e0ee2-7f87-4efb-b1c9-d7e1b3ee0eeb",
   "email": "merchant@example.com",
   "name": "Shop Name",
+  "phone_number": "+2348011122233",
+  "phone_verified": true,
   "created_at": "2026-08-13T14:15:34.232320Z",
   "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
   "merchant_name": "Shop Name"
@@ -303,6 +305,7 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
 ```
 
 `merchant_id` and `merchant_name` are `null` for an account with no merchant. The password hash is never serialized.
+`phone_number` is `null` for legacy accounts without a number; `phone_verified` is `false` until phone verification succeeds.
 
 ---
 

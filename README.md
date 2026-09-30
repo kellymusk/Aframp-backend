@@ -1,5 +1,7 @@
 # Aframp
 
+[![codecov](https://codecov.io/gh/kellymusk/Aframp-backend/branch/dev-backend/graph/badge.svg)](https://codecov.io/gh/kellymusk/Aframp-backend)
+
 **Building the POS network for Stellar in Africa.**
 
 Aframp brings Stellar-powered payments into everyday physical commerce, starting in Nigeria. The idea is simple: Nigerians already understand the POS terminal — tap, transfer, withdraw. Aframp adds another familiar option on top of that muscle memory: **scan and pay**, settled on Stellar, without the merchant or customer ever needing to think about wallets, addresses, or blockchains.

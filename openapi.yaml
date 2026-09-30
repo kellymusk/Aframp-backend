@@ -875,12 +875,14 @@ components:
 
     Me:
       type: object
-      required: [user_id, email, name, created_at]
+      required: [user_id, email, name, created_at, phone_number, phone_verified]
       properties:
         user_id: { type: string, format: uuid }
         email: { type: string, format: email }
         name: { type: string }
         created_at: { type: string, format: date-time }
+        phone_number: { type: string, nullable: true, description: Null for legacy accounts without a phone number }
+        phone_verified: { type: boolean, description: True after the phone number has been verified by OTP }
         merchant_id: { type: string, format: uuid, nullable: true }
         merchant_name: { type: string, nullable: true }
 
