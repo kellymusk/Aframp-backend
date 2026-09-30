@@ -16,20 +16,26 @@ hmac = "0.12"
 http = "1"
 jsonwebtoken = "9"
 mime = "0.3"
+qrcode = "0.14"
 rand = "0.8"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "query", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "derive"] }
 stellar-strkey = "0.0.18"
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower-http = { version = "0.6", features = ["trace", "limit", "cors"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+httpmock = "0.7"
+proptest = "1"
+insta = { version = "1", features = ["json"] }
 stellar-base = "0.7.0"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+wiremock = "0.6"

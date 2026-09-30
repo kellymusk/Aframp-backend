@@ -54,9 +54,7 @@ impl PaymentProvider for TimeoutProvider {
 
 #[tokio::test]
 async fn withdrawal_insufficient_balance_rejected() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "insufficient").await;
 
@@ -83,9 +81,7 @@ async fn withdrawal_insufficient_balance_rejected() {
 
 #[tokio::test]
 async fn withdrawal_validates_bank_details() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "validation").await;
 
@@ -106,9 +102,7 @@ async fn withdrawal_validates_bank_details() {
 
 #[tokio::test]
 async fn withdrawal_success_decrements_balance() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "withdraw_ok").await;
 
@@ -157,9 +151,7 @@ async fn withdrawal_success_decrements_balance() {
 
 #[tokio::test]
 async fn withdrawal_full_balance_then_insufficient() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "drain").await;
 
@@ -207,9 +199,7 @@ async fn withdrawal_full_balance_then_insufficient() {
 
 #[tokio::test]
 async fn withdrawal_unsupported_asset_rejected() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "unsupported_asset").await;
 
@@ -248,9 +238,7 @@ async fn withdrawal_unsupported_asset_rejected() {
 
 #[tokio::test]
 async fn withdrawal_rejects_sub_kobo_precision() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "precision").await;
 
@@ -291,9 +279,7 @@ async fn withdrawal_rejects_sub_kobo_precision() {
 
 #[tokio::test]
 async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     // Swap in a provider that always fails, to exercise the compensating
     // refund + audit-trail path without needing a real Paystack failure.
     state.payment_provider = Arc::new(FailingProvider);
@@ -328,6 +314,14 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
         "expected payout failure: {json}"
     );
     assert_eq!(json["error"], "simulated provider failure");
+    assert_eq!(
+        json["code"], "PAYOUT_FAILED",
+        "502 shape must expose stable PAYOUT_FAILED code: {json}"
+    );
+    assert!(
+        json.get("token").is_none(),
+        "error responses must not leak session material: {json}"
+    );
 
     let balance = sqlx::query_scalar::<_, i64>(
         "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
@@ -356,11 +350,61 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
     );
 }
 
+/// #1129 — when MockProvider (or any provider) errors, the HTTP body is the
+/// documented `{ error, code: PAYOUT_FAILED }` shape at 502. Clients must not
+/// retry: the withdrawal row is already persisted as `failed`.
 #[tokio::test]
-async fn withdrawal_insufficient_balance_never_calls_provider() {
+async fn withdrawal_paystack_failure_returns_documented_502_payout_failed_shape() {
     let Some(mut state) = state().await else {
         return;
     };
+    state.payment_provider = Arc::new(FailingProvider);
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "payout_502_shape").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    assert_eq!(json["code"], "PAYOUT_FAILED");
+    assert!(json["error"].as_str().unwrap().contains("simulated provider failure"));
+    assert_eq!(json.as_object().unwrap().len(), 2, "error body is only {{error, code}}: {json}");
+
+    // Prove the row exists so frontends know a retry would duplicate work.
+    let failed_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM withdrawals
+          WHERE merchant_id = $1::uuid AND status = 'failed'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(failed_count, 1);
+}
+
+#[tokio::test]
+async fn withdrawal_insufficient_balance_never_calls_provider() {
+    let mut state = state().await;
     // A MockProvider always succeeds, so if this withdrawal were rejected
     // for any reason other than the balance check, this test would see a
     // 200 instead of the expected 400 — this isolates the balance check as
@@ -392,9 +436,7 @@ async fn withdrawal_insufficient_balance_never_calls_provider() {
 
 #[tokio::test]
 async fn withdrawal_invalid_bank_code_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(InvalidBankCodeProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "invalid_bank_code").await;
@@ -449,9 +491,7 @@ async fn withdrawal_invalid_bank_code_refunds_balance_and_records_reason() {
 
 #[tokio::test]
 async fn withdrawal_invalid_account_number_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(InvalidAccountNumberProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "invalid_account_number").await;
@@ -509,9 +549,7 @@ async fn withdrawal_invalid_account_number_refunds_balance_and_records_reason() 
 
 #[tokio::test]
 async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(TimeoutProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "paystack_timeout").await;
@@ -565,4 +603,46 @@ async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
         withdrawals[0]["failure_reason"],
         "request to Paystack timed out"
     );
+}
+
+#[tokio::test]
+async fn withdraw_amount_stroops_rejects_float_and_string() {
+    let Some(mut state) = state().await else {
+        return;
+    };
+    state.payment_provider = Arc::new(MockProvider);
+    let app = aframp::router(state);
+    let (token, _) = ensure_merchant(&app, "wd_amount_types").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 1.5,
+            "bank_code": "058",
+            "account_number": "0123456789",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "float should be 400: {json}");
+    assert_eq!(json["code"], "INVALID_PARAMETERS");
+    assert_eq!(json["field"], "amount_stroops");
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": "1000000",
+            "bank_code": "058",
+            "account_number": "0123456789",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "string should be 400: {json}");
+    assert_eq!(json["code"], "INVALID_PARAMETERS");
+    assert_eq!(json["field"], "amount_stroops");
 }
