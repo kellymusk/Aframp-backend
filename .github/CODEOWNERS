@@ -1,0 +1,84 @@
+# CODEOWNERS — Aframp Backend
+#
+# GitHub requests a review from the owners listed here whenever a pull request
+# touches a matching path. This adds a *human* review layer on top of the
+# automated `Guard` CI job that already blocks edits to protected paths
+# (see CONTRIBUTING.md and .github/workflows/ci.yml).
+#
+# Syntax reference: https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# ---------------------------------------------------------------------------
+# Rule order matters: the LAST matching pattern wins.
+# Keep the most specific rules at the BOTTOM of each section.
+# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Default owner — everything not matched below
+# ─────────────────────────────────────────────────────────────────────────────
+*                               @kelly-musk
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Critical source: security-sensitive / money-moving code.
+#
+# These paths are also blocked from direct edits by the CI Guard job, so the
+# only way they change is a deliberate maintainer-authored merge. CODEOWNERS
+# guarantees a named human is on every such merge.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Authentication, sessions, JWT and password handling.
+src/auth/                      @kelly-musk
+
+# Stellar integration: listener, worker, key handling and wallet crypto.
+src/blockchain/                @kelly-musk
+
+# Wallet encryption / key derivation helpers (explicit for discoverability,
+# even though already covered by src/blockchain/).
+src/blockchain/wallet_crypto.rs @kelly-musk
+
+# Database schema. Every migration is a one-way door on live data.
+migrations/                    @kelly-musk
+
+# Withdrawal, payment and payout processing — direct custodial fund movement.
+src/services/withdrawals.rs    @kelly-musk
+src/services/payments.rs       @kelly-musk
+src/services/payment_requests.rs @kelly-musk
+
+# OTP issuance, hashing and phone verification.
+src/services/otp.rs            @kelly-musk
+src/otp/                       @kelly-musk
+
+# Webhook ingress and signature verification.
+src/api/webhooks.rs            @kelly-musk
+
+# Process entrypoint and shared wiring.
+src/main.rs                    @kelly-musk
+src/lib.rs                     @kelly-musk
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CI, release and security policy files.
+#
+# A change here can weaken the guardrails for every future contribution, so it
+# gets the same treatment as production source.
+# ─────────────────────────────────────────────────────────────────────────────
+.github/workflows/              @kelly-musk
+.github/CODEOWNERS             @kelly-musk
+SECURITY.md                    @kelly-musk
+CONTRIBUTING.md                @kelly-musk
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Contributor sandbox.
+#
+# `tests/`, `docs/` and `scripts/` are the paths open-source contributors may
+# edit freely. They still warrant a light review, but they are NOT part of the
+# critical set, so they fall back to the default owner above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Explicit note for reviewers — these are the only paths the CI Guard permits
+# contributors to change on `dev-backend`:
+#   tests/
+#   docs/
+#   scripts/
+#   API.md
+#   openapi.yaml
+#   README.md
+#   CHANGELOG.md
