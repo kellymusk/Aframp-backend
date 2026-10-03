@@ -1,5 +1,7 @@
 # Aframp
 
+[![codecov](https://codecov.io/gh/kellymusk/Aframp-backend/branch/dev-backend/graph/badge.svg)](https://codecov.io/gh/kellymusk/Aframp-backend)
+
 **Building the POS network for Stellar in Africa.**
 
 Aframp brings Stellar-powered payments into everyday physical commerce, starting in Nigeria. The idea is simple: Nigerians already understand the POS terminal — tap, transfer, withdraw. Aframp adds another familiar option on top of that muscle memory: **scan and pay**, settled on Stellar, without the merchant or customer ever needing to think about wallets, addresses, or blockchains.
@@ -56,7 +58,6 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 | TLS | The server speaks plain HTTP by design and must run behind a TLS-terminating reverse proxy. Deployed without one, passwords cross the network in cleartext and no amount of hashing helps — the attacker sees the password before it is hashed. See [Deploying behind TLS](#deploying-behind-tls) |
 | Login rate limiting | Nothing throttles password guessing against `/login` yet |
 | Token revocation | `POST /logout` clears the browser cookie, but a JWT already copied elsewhere stays valid for its full 24h. No revocation list, no refresh rotation |
-| `src/stellar/mod.rs` | Vestigial stub from an earlier, abandoned design (single system wallet + memo-based correlation). Not compiled into the binary's active module tree in any meaningful way, superseded by the per-wallet design in `src/blockchain/`. Left in place as known cleanup debt rather than silently deleted. |
 
 See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider choice, cNGN issuer sourcing, confirmation policy) and roadmap.
 
@@ -106,6 +107,10 @@ Fill in `.env`:
 | `STELLAR_HORIZON_URL` | no | `https://horizon-testnet.stellar.org` | Horizon endpoint to poll |
 | `STELLAR_POLL_INTERVAL_SECS` | no | `60` | How often the deposit-detection worker polls Horizon, per wallet |
 | `PAYSTACK_SECRET_KEY` | yes | — | Paystack Dashboard → Settings → API Keys & Webhooks. `sk_test_...` for dev, `sk_live_...` only once the business is verified/activated for Transfers (see `PRD.md` §9.1) |
+| `OTP_HMAC_SECRET` | yes | — | HMAC secret used to store OTP codes securely. A bare hash of a 6-digit code is trivially reversible — this secret makes it infeasible. Generate with `openssl rand -hex 32`. Never reuse this value for anything else |
+| `OTP_PROVIDER` | no | `termii` | `mock` logs the OTP to stdout instead of sending it (read it from `cargo run` output — no Termii account needed). `termii` sends a real SMS. Always use `mock` in local dev |
+| `TERMII_API_KEY` | no | — | Termii Dashboard → API Keys. Required only when `OTP_PROVIDER=termii` |
+| `TERMII_SENDER_ID` | no | `Aframp` | Sender name shown on the SMS. Must match an ID registered and approved in the Termii dashboard. Ignored when `OTP_PROVIDER=mock` |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
 | `COOKIE_SAME_SITE` | no | `lax` | `lax` or `none`. `none` (which forces `Secure`) is only for a frontend on a different origin, and lets the session ride cross-site requests — prefer serving the frontend same-origin |
@@ -154,7 +159,21 @@ Before deploying:
    npx wrangler secret put WALLET_ENCRYPTION_KEY
    npx wrangler secret put STELLAR_SYSTEM_WALLET_ADDRESS
    npx wrangler secret put PAYSTACK_SECRET_KEY
+   npx wrangler secret put OTP_HMAC_SECRET
+   # Required when OTP_PROVIDER=termii (the production default). Skip only if
+   # you deliberately set OTP_PROVIDER=mock for a non-production deploy.
+   npx wrangler secret put TERMII_API_KEY
+   npx wrangler secret put TERMII_SENDER_ID
    ```
+
+   These match every required var in `AppConfig::from_env()`: `DATABASE_URL`,
+   `JWT_SECRET`, `WEBHOOK_SECRET`, `STELLAR_SYSTEM_WALLET_ADDRESS`,
+   `WALLET_ENCRYPTION_KEY`, `PAYSTACK_SECRET_KEY`, and `OTP_HMAC_SECRET` are
+   always required at startup. `TERMII_API_KEY` and `TERMII_SENDER_ID` are
+   required whenever `OTP_PROVIDER` is `termii` (default). Optional vars with
+   defaults (`APP_BIND_ADDR`, `STELLAR_HORIZON_URL`, `STELLAR_POLL_INTERVAL_SECS`,
+   `OTP_PROVIDER`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `COOKIE_SAME_SITE`)
+   can stay as Worker plain-text vars in `wrangler.jsonc`.
 
 3. Run the SQL migrations against the production database, then deploy:
 
@@ -166,6 +185,21 @@ Before deploying:
    ```
 
 The Worker has a five-minute Cron Trigger that calls `/health`. This keeps the container awake so its 60-second Stellar polling loop continues when there is no API traffic. Cloudflare may take several minutes to provision the first container after deployment.
+
+### Container keep-alive (`/health`) — #1130
+
+| Piece | Where | Role |
+|---|---|---|
+| Path constant | [`scripts/health_path.ts`](scripts/health_path.ts) (`HEALTH_CHECK_PATH = "/health"`) | Single documented source of truth for contributors |
+| Rust liveness route | `src/lib.rs` → `GET /health` → `204 No Content` | What the cron must hit |
+| Worker cron | `cloudflare/worker.ts` → `scheduled()` fetches `http://container.internal/health` | Wakes the container every tick |
+| Schedule | `wrangler.jsonc` → `triggers.crons: ["*/5 * * * *"]` | Every five minutes |
+| Contract test | `tests/health_keepalive.rs` | Fails CI if the Worker / Rust path / constant drift |
+| Monitor | [`.github/workflows/health-monitor.yml`](.github/workflows/health-monitor.yml) | Every 10 minutes probes `HEALTH_CHECK_URL/health` (repo variable); alerts if it stops responding |
+
+**Dependency:** if `/health` is renamed or stops returning a success status (`204`, or `200` behind some proxies), the keep-alive cron no longer proves the container is alive and Stellar polling can stall when there is no API traffic. Update the constant, Worker, Rust route, and monitor together.
+
+Set the GitHub Actions repository variable `HEALTH_CHECK_URL` to your deployed Worker origin (no trailing slash) to enable the 10-minute monitor.
 
 ### Running tests
 
@@ -198,6 +232,7 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `POST` | `/payment-requests` | ✅ | Create a payment request for the authenticated merchant's wallet. Body: `{ amount_stroops, asset? (default XLM), expires_in_secs? (60–86400, default 900) }` |
 | `GET` | `/payment-requests?limit=` | ✅ | List the merchant's own requests, newest first (default 50, max 200) |
 | `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
+| `GET` | `/payment-requests/{id}/status` | — | Public lightweight poll — `{ status, paid_at? }` with `Cache-Control: public, max-age=5`. Prefer this after the customer has submitted payment |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
@@ -216,6 +251,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 
 Local dev never needs a real Termii account: set `OTP_PROVIDER=mock` (see `.env.example`) and the code is logged via `tracing::info!` instead of sent, so you can read it straight out of `cargo run`'s stdout.
 
+OTP / Termii credential handling (API key in request body, HTTPS-only send URL, Token API notes) is documented in [docs/SECURITY.md](docs/SECURITY.md).
+
 ### Admin access
 
 There's no self-service way to become an admin — flag a user directly in Postgres:
@@ -224,7 +261,7 @@ There's no self-service way to become an admin — flag a user directly in Postg
 UPDATE users SET is_admin = true WHERE email = 'you@example.com';
 ```
 
-The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
+The `is_admin` flag is also baked into the JWT at login, so **re-login after granting it**. Revoking it takes effect immediately: every admin request re-checks `users.is_admin` in the database, so an outstanding token stops working for `/admin/*` on its next request even though it hasn't expired. Then open `/admin` in a browser and sign in with that account.
 
 ### Termii webhook
 
@@ -272,7 +309,6 @@ src/
   models/      Request/response and row types
   services/    Business logic (users, wallets, balances, payments, payment_requests, withdrawals)
   payments/    PaymentProvider abstraction — real PaystackProvider + a MockProvider for tests
-  stellar/     Vestigial unused stub from an earlier design — see Status
 migrations/    SQL schema migrations (sqlx)
 tests/         Integration tests (auth, wallet, payment request, withdrawal flows)
 examples/      prove_payment_loop.rs — end-to-end demo harness (real testnet payment)
@@ -284,6 +320,22 @@ command.txt    Copy-paste command reference for running/testing/interacting with
 ## Why Nigeria first
 
 Nigeria has a large digital-payments ecosystem and near-universal familiarity with POS and bank-transfer payments — the exact behavior Aframp is extending rather than replacing. The plan is to prove the merchant payment experience narrowly here, then expand to other African markets and cross-border corridors.
+
+## Security
+
+Found a vulnerability? Please do not open a public issue. See **[`SECURITY.md`](SECURITY.md)** for how to report it privately and what response times to expect.
+## Architecture Decision Records
+
+The `docs/adr/` directory documents the reasoning behind key design choices —
+not just what was built, but why, and what was ruled out. Read these before
+making changes that touch the areas they cover.
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-001](docs/adr/ADR-001-custodial-wallet-design.md) | Per-merchant custodial wallets (vs. single system wallet + memo correlation) |
+| [ADR-002](docs/adr/ADR-002-otp-gated-signup.md) | Phone OTP gates account creation, not just session issuance; full 2FA on login |
+| [ADR-003](docs/adr/ADR-003-hmac-otp-storage.md) | HMAC-SHA256 for OTP codes (not bcrypt/Argon2 — 6-digit space makes KDFs useless) |
+| [ADR-004](docs/adr/ADR-004-commit-before-paystack.md) | Commit withdrawal record before calling Paystack; compensate on failure |
 
 ## Contributing
 

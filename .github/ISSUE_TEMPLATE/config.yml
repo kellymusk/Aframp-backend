@@ -1,0 +1,16 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security Vulnerability (Private Disclosure)
+    url: https://github.com/kellymusk/Aframp-backend/security/advisories/new
+    about: >
+      Please report security vulnerabilities privately using GitHub's security
+      advisory feature. Do NOT open a public issue for a vulnerability.
+  - name: SECURITY.md — Disclosure Policy
+    url: https://github.com/kellymusk/Aframp-backend/blob/master/SECURITY.md
+    about: Read our full responsible-disclosure policy and expected response times.
+  - name: Discussions — Questions & Ideas
+    url: https://github.com/kellymusk/Aframp-backend/discussions
+    about: >
+      Have a question or want to discuss an idea before opening an issue?
+      Start a Discussion.

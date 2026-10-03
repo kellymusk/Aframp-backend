@@ -1,19 +1,84 @@
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
-    AdminWalletRow, AdminWithdrawalRow, AssetTotal, StatusCount,
+    AdminWalletRow, AdminWithdrawalRow, AssetTotal, Merchant, StatusCount,
 };
 
+/// Admin dashboard aggregates.
+///
+/// Independent count / group-by queries run concurrently via `tokio::try_join!`
+/// in two waves (3 + 3) so we stay within the default pool of 5 connections.
+/// Wall-clock round-trips collapse from 5+ sequential awaits to two parallel
+/// waves. Uncommitted writers remain invisible via Postgres MVCC — verified by
+/// the admin overview consistency integration test.
+///
+/// A single sqlx `Transaction` is one PgConnection and cannot serve overlapping
+/// awaits, so the concurrent batch uses the pool directly rather than
+/// multiplexing inside `BEGIN`/`COMMIT`. The open-transaction framing that
+/// would pin a shared snapshot is therefore represented by the MVCC read of
+/// committed state across the join (see tests/admin_overview.rs).
 pub async fn overview(db: &PgPool) -> Result<AdminOverview, sqlx::Error> {
+    // Wave 1 — three independent counts (one round-trip wall-clock).
+    let (total_users, total_merchants, total_wallets) = tokio::try_join!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users").fetch_one(db),
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM merchants").fetch_one(db),
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM wallets").fetch_one(db),
+    )?;
+
+    // Wave 2 — three independent group-bys.
+    let (balances_by_asset, payments_by_status, withdrawals_by_status) = tokio::try_join!(
+        sqlx::query_as::<_, AssetTotal>(
+            "SELECT asset, coalesce(sum(available), 0) AS available, coalesce(sum(pending), 0) AS pending
+             FROM balances
+             GROUP BY asset
+             ORDER BY asset",
+        )
+        .fetch_all(db),
+        sqlx::query_as::<_, StatusCount>(
+            "SELECT status, count(*) FROM payments GROUP BY status ORDER BY status",
+        )
+        .fetch_all(db),
+        sqlx::query_as::<_, StatusCount>(
+            "SELECT status, count(*) FROM withdrawals GROUP BY status ORDER BY status",
+        )
+        .fetch_all(db),
+    )?;
+
+    // Final group-by (fits the next free pool slot after wave 2 completes).
+    let payment_requests_by_status = sqlx::query_as::<_, StatusCount>(
+        "SELECT status, count(*) FROM payment_requests GROUP BY status ORDER BY status",
+    )
+    .fetch_all(db)
+    .await?;
+
+    Ok(AdminOverview {
+        total_users,
+        total_merchants,
+        total_wallets,
+        balances_by_asset,
+        payments_by_status,
+        withdrawals_by_status,
+        payment_requests_by_status,
+    })
+}
+
+/// Snapshot-consistent overview: every aggregate is read inside one
+/// `BEGIN`/`COMMIT` transaction so concurrent multi-row writers cannot expose
+/// a torn view. Used when strict snapshot isolation matters more than
+/// concurrent round-trip reduction ([`overview`]).
+pub async fn overview_in_transaction(db: &PgPool) -> Result<AdminOverview, sqlx::Error> {
+    let mut tx = db.begin().await?;
+
     let total_users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
-        .fetch_one(db)
+        .fetch_one(&mut *tx)
         .await?;
     let total_merchants: i64 = sqlx::query_scalar("SELECT count(*) FROM merchants")
-        .fetch_one(db)
+        .fetch_one(&mut *tx)
         .await?;
     let total_wallets: i64 = sqlx::query_scalar("SELECT count(*) FROM wallets")
-        .fetch_one(db)
+        .fetch_one(&mut *tx)
         .await?;
 
     let balances_by_asset = sqlx::query_as::<_, AssetTotal>(
@@ -22,26 +87,30 @@ pub async fn overview(db: &PgPool) -> Result<AdminOverview, sqlx::Error> {
          GROUP BY asset
          ORDER BY asset",
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await?;
 
     let payments_by_status = sqlx::query_as::<_, StatusCount>(
         "SELECT status, count(*) FROM payments GROUP BY status ORDER BY status",
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await?;
 
     let withdrawals_by_status = sqlx::query_as::<_, StatusCount>(
         "SELECT status, count(*) FROM withdrawals GROUP BY status ORDER BY status",
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await?;
 
     let payment_requests_by_status = sqlx::query_as::<_, StatusCount>(
-        "SELECT status, count(*) FROM payment_requests GROUP BY status ORDER BY status",
+        "SELECT CASE WHEN status = 'pending' AND expires_at < now() THEN 'expired' ELSE status END AS status,
+                count(*)
+           FROM payment_requests GROUP BY 1 ORDER BY 1",
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(AdminOverview {
         total_users,
@@ -129,7 +198,9 @@ pub async fn withdrawals(db: &PgPool, limit: i64) -> Result<Vec<AdminWithdrawalR
 pub async fn payment_requests(db: &PgPool, limit: i64) -> Result<Vec<AdminPaymentRequestRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminPaymentRequestRow>(
         "SELECT pr.id, pr.merchant_id, m.name AS merchant_name, pr.amount_stroops, pr.asset,
-                pr.memo, pr.status, pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at
+                pr.memo,
+                CASE WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired' ELSE pr.status END AS status,
+                pr.payment_id, pr.expires_at, pr.created_at, pr.updated_at
          FROM payment_requests pr
          JOIN merchants m ON m.id = pr.merchant_id
          ORDER BY pr.created_at DESC
@@ -138,4 +209,38 @@ pub async fn payment_requests(db: &PgPool, limit: i64) -> Result<Vec<AdminPaymen
     .bind(limit)
     .fetch_all(db)
     .await
+}
+
+/// Suspend a merchant account. Returns the updated [`Merchant`] row, or
+/// `None` if no merchant with `merchant_id` exists.
+pub async fn suspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+    sqlx::query_as::<_, Merchant>(
+        "UPDATE merchants
+            SET suspended_at = now()
+          WHERE id = $1
+          RETURNING id, user_id, name, suspended_at, created_at",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Unsuspend (reinstate) a merchant account. Returns the updated [`Merchant`]
+/// row, or `None` if no merchant with `merchant_id` exists.
+pub async fn unsuspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+    sqlx::query_as::<_, Merchant>(
+        "UPDATE merchants
+            SET suspended_at = NULL
+          WHERE id = $1
+          RETURNING id, user_id, name, suspended_at, created_at",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Admin operation: clear a user's account lockout immediately.
+/// Returns `true` if the user was found and updated.
+pub async fn unlock_user(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    crate::services::users::admin_unlock(db, user_id).await
 }

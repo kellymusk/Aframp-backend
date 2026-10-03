@@ -1,6 +1,8 @@
 pub mod admin;
+pub mod api_keys;
 pub mod auth;
 pub mod balances;
+pub mod health;
 pub mod me;
 pub mod payment_requests;
 pub mod transactions;
