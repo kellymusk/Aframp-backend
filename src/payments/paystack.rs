@@ -6,11 +6,16 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use super::{PaymentProvider, PayoutRequest, PayoutResult, PayoutVerification};
+use crate::config::SecretString;
 
 const BASE_URL: &str = "https://api.paystack.co";
 
 pub struct PaystackProvider {
-    secret_key: String,
+    /// Held as a [`SecretString`] so the key cannot reach a log through the
+    /// ordinary routes — `{:?}` on this struct or a `tracing` field both print
+    /// `[REDACTED]`. Only [`SecretString::as_str`] yields the real value, for
+    /// `bearer_auth` and webhook signature checks.
+    secret_key: SecretString,
     http: reqwest::Client,
     // Cache of resolved account names keyed by (account_number, bank_code) so that
     // repeated withdrawals to the same account don't re-hit the resolution API.
@@ -18,33 +23,46 @@ pub struct PaystackProvider {
     base_url: String,
 }
 
+/// Derived `Debug` would invite the key into a log line the first time someone
+/// adds `?provider` to a `tracing` macro.
+impl std::fmt::Debug for PaystackProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaystackProvider")
+            .field("secret_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl PaystackProvider {
     pub fn new(secret_key: String) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .expect("failed to build Paystack HTTP client");
-        Self {
-            secret_key,
-            http,
-            resolved_cache: Mutex::new(HashMap::new()),
-            base_url: BASE_URL.to_string(),
-        }
+        Self::with_secret(SecretString::new(secret_key))
+    }
+
+    pub fn with_secret(secret_key: SecretString) -> Self {
+        Self::build(secret_key, BASE_URL.to_string())
     }
 
     /// Build a provider pointed at an arbitrary base URL. Used by contract tests
     /// to target a local mock server instead of the live Paystack API.
     #[cfg(test)]
     pub(crate) fn with_base_url(secret_key: String, base_url: String) -> Self {
+        Self::build(SecretString::new(secret_key), base_url)
+    }
+
+    fn build(secret_key: SecretString, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
+            // The default, stated: with it on, reqwest's trace-level wire
+            // logging prints request headers verbatim, including
+            // `Authorization: Bearer sk_live_…`.
+            .connection_verbose(false)
             .build()
             .expect("failed to build Paystack HTTP client");
         Self {
             secret_key,
             http,
-            base_url,
             resolved_cache: Mutex::new(HashMap::new()),
+            base_url,
         }
     }
 
@@ -52,7 +70,7 @@ impl PaystackProvider {
         let response = self
             .http
             .get(format!("{}{path}", self.base_url))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .query(query)
             .send()
             .await
@@ -64,7 +82,7 @@ impl PaystackProvider {
         let response = self
             .http
             .post(format!("{}{path}", self.base_url))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .json(body)
             .send()
             .await
@@ -286,7 +304,7 @@ impl PaymentProvider for PaystackProvider {
         let response = self
             .http
             .get(format!("{}/transfer/verify/{reference}", self.base_url))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .send()
             .await
             .map_err(|e| e.to_string())?;

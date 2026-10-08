@@ -100,8 +100,11 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         jwt_secret: config.jwt_secret.clone(),
         webhook_secret: config.webhook_secret.clone(),
         wallet_encryption_key: std::sync::Arc::new(zeroize::Zeroizing::new(wallet_encryption_key)),
-        payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::new(
-            config.paystack_secret_key.as_str().to_string(),
+        // Hand the secret over as a `SecretString` rather than unwrapping it to
+        // a bare `String`: the plaintext never exists as a loggable value
+        // between the environment and `bearer_auth`.
+        payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::with_secret(
+            config.paystack_secret_key.clone(),
         )),
         otp_provider,
         otp_hmac_secret: config.otp_hmac_secret.clone(),
@@ -153,6 +156,11 @@ pub fn router(state: AppState) -> axum::Router {
             "/transactions/export",
             axum::routing::get(api::transactions::export),
         )
+        .route(
+            "/api-keys",
+            axum::routing::post(api::api_keys::create).get(api::api_keys::list),
+        )
+        .route("/api-keys/{id}", axum::routing::delete(api::api_keys::revoke))
         .route("/withdraw", axum::routing::post(api::withdrawals::create))
         .route("/withdrawal-fee", axum::routing::get(api::withdrawals::withdrawal_fee))
         .route("/withdrawals", axum::routing::get(api::withdrawals::list))

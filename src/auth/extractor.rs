@@ -13,6 +13,18 @@ use crate::AppState;
 pub struct AuthUser {
     pub user_id: uuid::Uuid,
     pub merchant_id: Option<uuid::Uuid>,
+    pub via: AuthMethod,
+}
+
+/// How the caller proved who they are. Most handlers don't care, but minting
+/// an API key is session-only, so a leaked key cannot mint its own
+/// replacement and outlive its revocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    /// A session JWT, from the `Authorization` header or the session cookie.
+    Session,
+    /// A long-lived `sk_`-prefixed API key.
+    ApiKey,
 }
 
 /// The verified claims of the presented session token (bearer or cookie),
@@ -47,51 +59,34 @@ fn bearer_token(parts: &Parts) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-/// Resolve a merchant-scoped API key (`sk_test_` / `sk_live_` prefix) into an
-/// [`AuthUser`]. Only the hash of the key is stored, so we hash the presented
-/// token and look it up. Revoked keys are rejected.
+/// Resolve a merchant-scoped API key (`sk_test_…` / `sk_live_…`) into an
+/// [`AuthUser`]. Returns `Ok(None)` for bearer values that aren't shaped like
+/// one of our keys, so a JWT presented on the same header falls through.
 async fn authenticate_api_key(
     state: &AppState,
     token: &str,
 ) -> Result<Option<AuthUser>, (StatusCode, Json<ApiError>)> {
-    if !token.starts_with("sk_test_") && !token.starts_with("sk_live_") {
+    if !token.starts_with("sk_") {
         return Ok(None);
     }
-    let secret_hash = crate::auth::api_key::hash(token);
-    let row = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
-        "SELECT m.user_id, k.merchant_id
-           FROM api_keys k
-           JOIN merchants m ON m.id = k.merchant_id
-          WHERE k.secret_hash = $1 AND k.revoked_at IS NULL",
-    )
-    .bind(&secret_hash)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError {
-                code: ErrorCode::InternalError,
-                error: "failed to verify api key".into(),
-                field: None, retry_after_secs: None
-            }),
-        )
-    })?;
-
-    let Some((user_id, merchant_id)) = row else {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                code: ErrorCode::InvalidCredentials,
-                error: "invalid or revoked api key".into(),
-                field: None, retry_after_secs: None
-            }),
-        ));
-    };
-
+    let principal = crate::services::api_keys::authenticate(&state.db, token)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ApiError {
+                    code: ErrorCode::InvalidCredentials,
+                    error: "invalid or revoked api key".into(),
+                    field: None,
+                    retry_after_secs: None,
+                }),
+            )
+        })?;
     Ok(Some(AuthUser {
-        user_id,
-        merchant_id: Some(merchant_id),
+        user_id: principal.user_id,
+        merchant_id: Some(principal.merchant_id),
+        via: AuthMethod::ApiKey,
     }))
 }
 
@@ -139,6 +134,7 @@ impl FromRequestParts<AppState> for AuthUser {
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,
+            via: AuthMethod::Session,
         })
     }
 }

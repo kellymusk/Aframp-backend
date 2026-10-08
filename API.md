@@ -318,6 +318,43 @@ Auth required. Body: `{ "name"?: string, "phone_number"?: string }` (at least on
 Auth required. Deletes the signed-in account (right to erasure under GDPR / NDPA). Returns `204` and clears the session cookie. Every token issued for the account stops working immediately (including for `/auth/refresh`), and the email can't log in again.
 
 **Data retention:** deletion is a soft delete. Personal data on the account is erased in place — email becomes `deleted-<id>@deleted.invalid`, name becomes "Deleted user", the phone number and password hash are cleared — and pending OTP challenges are removed. Financial records (payments, payment requests, withdrawals, wallets, balances) are kept, still linked to the anonymized account, because they're needed for the audit trail; withdrawal records keep the bank details they were paid out to for the same reason.
+## API keys
+
+A JWT expires in 24 hours and has no refresh endpoint — fine for a browser session, useless for a server that has to keep working overnight. API keys are the credential for that: long-lived, merchant-scoped, and revocable one at a time without disturbing anything else.
+
+A key looks like `sk_test_a1b2c3d4<32 hex chars>`. Send it exactly where a JWT would go:
+
+```
+Authorization: Bearer sk_test_a1b2c3d4…
+```
+
+Every authenticated endpoint accepts either. The `sk_` prefix is what distinguishes them, so there is no ambiguity and no second header to learn.
+
+### `POST /api-keys`
+Auth required (**JWT only** — a key cannot mint another key, so a leaked key cannot be used to establish persistence).
+
+Body: `{ "environment": "test" }` — `test` or `live`, defaulting to `test`.
+
+`201` →
+```json
+{
+  "id": "9f0c14a6-0d5f-4b7a-9d7e-27dcbb9e5b41",
+  "key_prefix": "sk_test_a1b2c3d4",
+  "environment": "test",
+  "created_at": "2026-08-31T09:12:44.019Z",
+  "secret": "sk_test_a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+}
+```
+
+> **`secret` is shown exactly once.** Only its Argon2 hash is stored, so we cannot show it again and neither can a database dump. Store it at the moment of creation; if it is lost, revoke the key and create another.
+
+### `GET /api-keys`
+Auth required. Active (non-revoked) keys for the merchant, newest first. Returns `key_prefix`, never the secret — the prefix is what you display in a settings UI to let someone tell two keys apart.
+
+### `DELETE /api-keys/{id}`
+Auth required. Stamps `revoked_at`; the key stops authenticating immediately. `404` if the id doesn't exist, belongs to another merchant, or was already revoked — the three are deliberately indistinguishable.
+
+---
 
 ### `POST /wallet/create`
 Auth required. Generates a **real Stellar ed25519 keypair** for the merchant. The private key is AES-256-GCM encrypted server-side and never leaves it.
