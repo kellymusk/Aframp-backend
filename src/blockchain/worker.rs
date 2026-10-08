@@ -38,7 +38,7 @@ pub async fn run(
 /// Generic over [`BlockchainListener`] so tests can inject a mock listener
 /// (e.g. to simulate a fake deposit) without hitting a real chain.
 #[tracing::instrument(skip_all, err)]
-pub async fn poll_once<L: BlockchainListener>(
+pub async fn poll_once<L: BlockchainListener + ?Sized>(
     db: &PgPool,
     listener: &L,
 ) -> Result<(), String> {
