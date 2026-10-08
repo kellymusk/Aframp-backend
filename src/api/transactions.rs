@@ -1,12 +1,13 @@
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::header;
+use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::stream;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
+use crate::etag;
 use crate::error::{bad_request, internal, ApiResult, ErrorCode};
 use crate::models::{ListParams, Payment};
 use crate::pagination::{Cursor, Page};
@@ -17,7 +18,8 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Page<Payment>>> {
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
@@ -29,10 +31,11 @@ pub async fn list(
     let payments = payments::payments_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
         .await
         .map_err(internal)?;
-    Ok(Json(Page::new(payments, limit, |p| Cursor {
+    let page = Page::new(payments, limit, |p| Cursor {
         created_at: p.created_at,
         id: p.id,
-    })))
+    });
+    Ok(etag::conditional_json(&headers, &page))
 }
 
 #[derive(Deserialize)]

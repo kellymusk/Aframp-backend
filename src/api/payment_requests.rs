@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue};
-use axum::response::IntoResponse;
+use axum::http::{header, HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -10,6 +10,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
+use crate::etag;
 use crate::error::{
     bad_request, bad_request_field, forbidden, internal, not_found, ApiResult, ErrorCode,
 };
@@ -229,7 +230,8 @@ pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Page<PaymentRequestView>>> {
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let merchant_id = auth.merchant_id.ok_or_else(|| {
         bad_request(
             ErrorCode::MerchantNotFound,
@@ -256,14 +258,15 @@ pub async fn list(
     .await
     .map_err(internal)?;
 
-    Ok(Json(Page::new(
+    let page = Page::new(
         rows.iter().map(row_to_view).collect(),
         limit,
         |v: &PaymentRequestView| Cursor {
             created_at: v.created_at,
             id: v.id,
         },
-    )))
+    );
+    Ok(etag::conditional_json(&headers, &page))
 }
 
 /// `POST /payment-requests/{id}/expire` — end a pending request immediately.

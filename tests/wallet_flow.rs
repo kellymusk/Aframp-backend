@@ -191,3 +191,27 @@ async fn wallet_create_rejects_unsupported_network() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
     assert_eq!(json["field"], "network");
 }
+
+/// #1010 — list endpoints carry an ETag and answer a matching
+/// If-None-Match with 304 and no body.
+#[tokio::test]
+async fn transactions_list_supports_etag_revalidation() {
+    use tower::ServiceExt;
+    let app = app().await;
+    let (token, _) = ensure_merchant(&app, "etag").await;
+
+    let (status, _, headers) =
+        common::send_with_response_headers(app.clone(), "GET", "/transactions", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let etag = headers.get("etag").expect("etag header").to_str().unwrap().to_string();
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri("/transactions")
+        .header("authorization", format!("Bearer {token}"))
+        .header("if-none-match", &etag)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+}
