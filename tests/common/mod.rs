@@ -181,7 +181,7 @@ pub async fn ensure_merchant(app: &Router, seed: &str) -> (String, String) {
         None,
         Some(serde_json::json!({
             "email": email,
-            "password": "password123",
+            "password": "Password123!",
             "name": "Test Merchant",
             "phone_number": phone_number,
         })),

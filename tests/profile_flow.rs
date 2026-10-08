@@ -152,7 +152,7 @@ async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
         "POST",
         "/login",
         None,
-        Some(json!({ "email": email, "password": "password123" })),
+        Some(json!({ "email": email, "password": "Password123!" })),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

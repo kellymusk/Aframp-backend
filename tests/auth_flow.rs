@@ -38,7 +38,7 @@ async fn signup_then_verify_otp_issues_session() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Alice", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Alice", "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
@@ -71,7 +71,7 @@ async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
     let app = app().await;
     let (email, phone_number, _) = fresh_identity("pending");
 
-    let body = json!({ "email": email, "password": "password123", "name": "Pending", "phone_number": phone_number });
+    let body = json!({ "email": email, "password": "Password123!", "name": "Pending", "phone_number": phone_number });
     let (status1, first) = send(app.clone(), "POST", "/signup", None, Some(body.clone())).await;
     assert_eq!(status1, StatusCode::OK, "first signup failed: {first}");
 
@@ -88,7 +88,7 @@ async fn signup_pending_same_email_is_not_a_conflict_until_verified() {
 async fn signup_duplicate_email_conflicts_after_verification() {
     let app = app().await;
     let (email, phone_number, normalized_phone) = fresh_identity("dup");
-    let body = json!({ "email": email, "password": "password123", "name": "Dup", "phone_number": phone_number });
+    let body = json!({ "email": email, "password": "Password123!", "name": "Dup", "phone_number": phone_number });
 
     let (status, challenge) = send(app.clone(), "POST", "/signup", None, Some(body.clone())).await;
     assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
@@ -110,7 +110,7 @@ async fn signup_duplicate_email_conflicts_after_verification() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Dup", "phone_number": other_phone })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Dup", "phone_number": other_phone })),
     )
     .await;
     assert_eq!(
@@ -145,7 +145,7 @@ async fn signup_invalid_phone_rejected() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Bad Phone", "phone_number": "123" })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Bad Phone", "phone_number": "123" })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -159,7 +159,7 @@ async fn signup_and_verify(app: &axum::Router, seed: &str) -> (String, String, s
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Test User", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Test User", "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
@@ -186,7 +186,7 @@ async fn login_with_verified_phone_requires_otp() {
         "POST",
         "/login",
         None,
-        Some(json!({ "email": email, "password": "password123" })),
+        Some(json!({ "email": email, "password": "Password123!" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "login failed: {challenge}");
@@ -281,7 +281,7 @@ async fn verify_otp_wrong_code_rejected() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Wrong Code", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Wrong Code", "phone_number": phone_number })),
     )
     .await;
 
@@ -321,7 +321,7 @@ async fn otp_attempts_exhausted_locks_challenge() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Locked", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Locked", "phone_number": phone_number })),
     )
     .await;
     let challenge_id = challenge["challenge_id"].as_str().unwrap();
@@ -361,7 +361,7 @@ async fn otp_expired_challenge_rejected() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Expired", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Expired", "phone_number": phone_number })),
     )
     .await;
     let challenge_id = challenge["challenge_id"].as_str().unwrap();
@@ -391,7 +391,7 @@ async fn otp_expired_challenge_rejected() {
 async fn otp_resend_cooldown_429_within_60s() {
     let app = app().await;
     let (email, phone_number, _) = fresh_identity("cooldown");
-    let body = json!({ "email": email, "password": "password123", "name": "Cooldown", "phone_number": phone_number });
+    let body = json!({ "email": email, "password": "Password123!", "name": "Cooldown", "phone_number": phone_number });
 
     let (status1, _) = send(app.clone(), "POST", "/signup", None, Some(body.clone())).await;
     assert_eq!(status1, StatusCode::OK);
@@ -405,7 +405,7 @@ async fn otp_resend_cooldown_429_within_60s() {
 async fn otp_resend_after_cooldown_uses_new_code() {
     let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("refresh");
-    let body = json!({ "email": email, "password": "password123", "name": "Refresh", "phone_number": phone_number });
+    let body = json!({ "email": email, "password": "Password123!", "name": "Refresh", "phone_number": phone_number });
 
     let (status1, challenge1) =
         send(app.clone(), "POST", "/signup", None, Some(body.clone())).await;
@@ -478,7 +478,7 @@ async fn otp_rate_limit_429_after_five_in_an_hour() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Spam", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Spam", "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
@@ -514,7 +514,7 @@ async fn login_sets_an_http_only_session_cookie_that_authenticates() {
         "POST",
         "/login",
         None,
-        Some(json!({ "email": email, "password": "password123" })),
+        Some(json!({ "email": email, "password": "Password123!" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "login failed: {challenge}");
@@ -641,7 +641,7 @@ async fn account_locks_after_repeated_failed_logins() {
         "POST",
         "/login",
         None,
-        Some(json!({ "email": email, "password": "password123" })),
+        Some(json!({ "email": email, "password": "Password123!" })),
     )
     .await;
     assert_eq!(status, StatusCode::LOCKED, "{body}");
@@ -710,7 +710,7 @@ async fn signup_oversized_name_rejected_before_work() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": name, "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": name, "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -728,7 +728,7 @@ async fn signup_oversized_email_local_part_rejected() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Long Email", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Long Email", "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -746,7 +746,7 @@ async fn signup_oversized_phone_rejected() {
         None,
         Some(json!({
             "email": email,
-            "password": "password123",
+            "password": "Password123!",
             "name": "Long Phone",
             "phone_number": format!("080{}", "1".repeat(40))
         })),
@@ -766,7 +766,7 @@ async fn verified_signup_challenge_is_deleted() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Gone", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Gone", "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
@@ -811,7 +811,7 @@ async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": email, "password": "password123", "name": "Stale", "phone_number": phone_number })),
+        Some(json!({ "email": email, "password": "Password123!", "name": "Stale", "phone_number": phone_number })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "signup failed: {challenge}");
@@ -834,7 +834,7 @@ async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
         "POST",
         "/signup",
         None,
-        Some(json!({ "email": other_email, "password": "password123", "name": "Trigger", "phone_number": other_phone })),
+        Some(json!({ "email": other_email, "password": "Password123!", "name": "Trigger", "phone_number": other_phone })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

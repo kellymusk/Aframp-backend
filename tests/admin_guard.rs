@@ -60,7 +60,7 @@ async fn admin_token(app: &axum::Router, db: &PgPool) -> String {
         "POST",
         "/login",
         None,
-        Some(json!({ "email": email, "password": "password123" })),
+        Some(json!({ "email": email, "password": "Password123!" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "admin login failed: {challenge}");

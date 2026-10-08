@@ -10,7 +10,7 @@ use crate::error::{bad_request, bad_request_field, internal, unauthorized, ApiRe
 use crate::models::{AuthResponse, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
 use crate::services::otp::{self, VerifiedOutcome};
 use crate::services::users;
-use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name};
+use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name, validate_password};
 use crate::AppState;
 
 /// Validates and hashes the credentials, then hands off to an OTP challenge
@@ -23,11 +23,9 @@ pub async fn signup(
     if !is_valid_email(&req.email) {
         return Err(bad_request_field("email", "must be a valid email address"));
     }
-    if req.password.len() < 8 {
-        return Err(bad_request_field(
-            "password",
-            "must be at least 8 characters",
-        ));
+    if let Err(errors) = validate_password(&req.password) {
+        let message = format!("password {}", errors.join(", "));
+        return Err(bad_request_field("password", &message));
     }
     let name = validate_name(&req.name).map_err(|msg| bad_request_field("name", msg))?;
     let phone_number = normalize_ng_phone_number(&req.phone_number)

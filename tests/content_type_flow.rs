@@ -53,7 +53,7 @@ async fn login_with_no_content_type_but_a_body_returns_415() {
         "POST",
         "/login",
         None,
-        r#"{"email":"x@x.com","password":"password123"}"#,
+        r#"{"email":"x@x.com","password":"Password123!"}"#,
     )
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -67,7 +67,7 @@ async fn login_with_text_plain_body_returns_415() {
         "POST",
         "/login",
         Some("text/plain"),
-        r#"{"email":"x@x.com","password":"password123"}"#,
+        r#"{"email":"x@x.com","password":"Password123!"}"#,
     )
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -76,7 +76,7 @@ async fn login_with_text_plain_body_returns_415() {
 #[tokio::test]
 async fn login_415_error_body_has_expected_shape() {
     let app = app().await;
-    let body_str = r#"{"email":"x@x.com","password":"password123"}"#;
+    let body_str = r#"{"email":"x@x.com","password":"Password123!"}"#;
     let request = Request::builder()
         .method("POST")
         .uri("/login")
@@ -186,7 +186,7 @@ async fn login_with_json_content_type_is_not_rejected_by_middleware() {
     let app = app().await;
     // This request has a valid Content-Type. The middleware must pass it through.
     // The handler will likely return 401 (bad credentials) but NOT 415.
-    let body_str = r#"{"email":"nobody@example.com","password":"password123"}"#;
+    let body_str = r#"{"email":"nobody@example.com","password":"Password123!"}"#;
     let status = raw_send(
         app,
         "POST",

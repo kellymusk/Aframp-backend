@@ -25,7 +25,7 @@ fn fresh_signup(seed: &str) -> (Value, String) {
     let local_digits = (unique.as_u128() as u64) % 10_000_000_000;
     let body = json!({
         "email": format!("{seed}+{}@example.com", unique.simple()),
-        "password": "password123",
+        "password": "Password123!",
         "name": "Rate Limit",
         "phone_number": format!("0{local_digits:010}"),
     });

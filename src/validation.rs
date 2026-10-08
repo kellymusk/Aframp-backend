@@ -124,9 +124,56 @@ pub fn validate_name(name: &str) -> Result<String, &'static str> {
     Ok(trimmed.to_string())
 }
 
+/// Validates password complexity requirements:
+/// - At least 8 characters (improved from 1Password's minimum)
+/// - At least one uppercase letter
+/// - At least one digit
+/// - At least one special character
+///
+/// Returns Ok(()) if valid, or Err with a Vec of specific requirement messages.
+pub fn validate_password(password: &str) -> Result<(), Vec<&'static str>> {
+    let mut errors = Vec::new();
+
+    if password.len() < 8 {
+        errors.push("must be at least 8 characters");
+    }
+
+    if !password.chars().any(|c| c.is_ascii_uppercase()) {
+        errors.push("must contain at least one uppercase letter");
+    }
+
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        errors.push("must contain at least one digit");
+    }
+
+    if !password.chars().any(|c| !c.is_alphanumeric()) {
+        errors.push("must contain at least one special character");
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_complexity_lists_each_missing_requirement() {
+        assert!(validate_password("Password123!").is_ok());
+        assert_eq!(
+            validate_password("password").unwrap_err(),
+            vec![
+                "must contain at least one uppercase letter",
+                "must contain at least one digit",
+                "must contain at least one special character",
+            ]
+        );
+        assert!(validate_password("Sh0rt!").unwrap_err().contains(&"must be at least 8 characters"));
+    }
     use proptest::prelude::*;
     use serde_json::json;
 
