@@ -235,9 +235,14 @@ mod tests {
         assert!(!display_str.contains("my-secret-key"));
     }
 
-    /// Populates every required env var with valid values so `AppConfig::from_env`
-    /// can succeed. Call this before overriding individual vars in a test.
-    fn set_valid_env() {
+    /// Serializes tests that rewrite the process-wide env vars `from_env` reads.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes the env lock and populates every required var. Hold the returned
+    /// guard for the rest of the test.
+    #[must_use]
+    fn set_valid_env() -> std::sync::MutexGuard<'static, ()> {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // A 64-char hex string — well above the 32-char minimum.
         let long_secret = "a".repeat(64);
         // Don't clobber a real DATABASE_URL: `#[sqlx::test]` tests in the same
@@ -253,11 +258,12 @@ mod tests {
         // Set the secrets to valid values; individual tests may override these.
         std::env::set_var("JWT_SECRET", &long_secret);
         std::env::set_var("WEBHOOK_SECRET", &long_secret);
+        guard
     }
 
     #[test]
     fn jwt_secret_too_short_is_rejected() {
-        set_valid_env();
+        let _env = set_valid_env();
         std::env::set_var("JWT_SECRET", "tooshort");
 
         let err = AppConfig::from_env().unwrap_err();
@@ -277,7 +283,7 @@ mod tests {
 
     #[test]
     fn webhook_secret_too_short_is_rejected() {
-        set_valid_env();
+        let _env = set_valid_env();
         std::env::set_var("WEBHOOK_SECRET", "tooshort");
 
         let err = AppConfig::from_env().unwrap_err();
@@ -297,7 +303,7 @@ mod tests {
 
     #[test]
     fn secret_exactly_32_chars_is_accepted() {
-        set_valid_env();
+        let _env = set_valid_env();
         // Exactly 32 characters — right at the boundary, must pass.
         std::env::set_var("JWT_SECRET", "a".repeat(32));
         std::env::set_var("WEBHOOK_SECRET", "b".repeat(32));
@@ -312,7 +318,7 @@ mod tests {
 
     #[test]
     fn jwt_secret_31_chars_is_rejected() {
-        set_valid_env();
+        let _env = set_valid_env();
         // 31 characters — one below the boundary, must fail.
         std::env::set_var("JWT_SECRET", "a".repeat(31));
 

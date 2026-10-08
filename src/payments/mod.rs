@@ -19,6 +19,28 @@ pub struct PayoutResult {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayoutVerification {
+    Completed {
+        provider: String,
+        provider_reference: String,
+    },
+    Processing {
+        provider: String,
+        provider_reference: String,
+    },
+    Pending {
+        provider: String,
+        provider_reference: String,
+    },
+    Failed {
+        provider: String,
+        provider_reference: Option<String>,
+        reason: String,
+    },
+    NotFound,
+}
+
 #[async_trait]
 pub trait PaymentProvider: Send + Sync {
     async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String>;
@@ -33,4 +55,8 @@ pub trait PaymentProvider: Send + Sync {
     fn verify_webhook_signature(&self, _body: &[u8], _signature: &str) -> bool {
         false
     }
+
+    /// Look up the provider-side state of a payout by our reference, so
+    /// withdrawals stuck in `pending` can be reconciled.
+    async fn verify_payout(&self, reference: &str) -> Result<PayoutVerification, String>;
 }

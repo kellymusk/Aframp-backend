@@ -31,6 +31,10 @@ impl PaymentProvider for FailingMockProvider {
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err(PROVIDER_ERROR.into())
     }
+
+    async fn verify_payout(&self, _reference: &str) -> Result<aframp::payments::PayoutVerification, String> {
+        Ok(aframp::payments::PayoutVerification::NotFound)
+    }
 }
 
 /// A router whose payment provider always fails, plus a merchant with a
