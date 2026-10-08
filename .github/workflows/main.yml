@@ -5,6 +5,9 @@ on:
     branches: ["master", "main"]
   pull_request:
     branches: ["master", "main"]
+  schedule:
+    # Run weekly (Mondays at 06:00 UTC) even without a push.
+    - cron: "0 6 * * 1"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
@@ -85,3 +88,27 @@ jobs:
           fi
 
           echo "✅  No protected files touched. Guard passed."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SECURITY: Scan pinned dependencies for known vulnerabilities (CVEs).
+  # Fails the build on high/critical advisories. Runs on every push/PR and
+  # weekly via the schedule trigger above so new advisories are caught even
+  # when the codebase is idle.
+  # ─────────────────────────────────────────────────────────────────────────────
+  cargo-audit:
+    name: "Security — cargo audit"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        # --deny warnings fails the job on any advisory (high/critical included).
+        # Known false positives are ignored via cargo-audit.toml with justification.
+        run: cargo audit --deny warnings

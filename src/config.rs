@@ -58,6 +58,12 @@ pub enum OtpProviderKind {
 #[derive(Clone, Debug)]
 pub struct AppConfig {
     pub database_url: String,
+    /// Upper bound on pooled Postgres connections. Under concurrent load
+    /// (merchants withdrawing while the poll worker runs) the old hardcoded
+    /// ceiling of 5 made requests queue; this is now tunable per deployment.
+    pub database_max_connections: u32,
+    /// Connections kept warm so bursts don't pay full connect latency.
+    pub database_min_connections: u32,
     pub bind_addr: String,
     pub jwt_secret: SecretString,
     pub webhook_secret: SecretString,
@@ -170,8 +176,21 @@ impl AppConfig {
             );
         }
 
+        let database_max_connections = number("DATABASE_MAX_CONNECTIONS", 10)?;
+        let database_min_connections = number("DATABASE_MIN_CONNECTIONS", 2)?;
+        if database_max_connections == 0 {
+            return Err("DATABASE_MAX_CONNECTIONS must be greater than 0".into());
+        }
+        if database_min_connections > database_max_connections {
+            return Err(format!(
+                "DATABASE_MIN_CONNECTIONS ({database_min_connections}) must not exceed DATABASE_MAX_CONNECTIONS ({database_max_connections})"
+            ));
+        }
+
         Ok(Self {
             database_url: env("DATABASE_URL")?,
+            database_max_connections,
+            database_min_connections,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
             jwt_secret: secret("JWT_SECRET")?,
             webhook_secret: secret("WEBHOOK_SECRET")?,
@@ -287,6 +306,16 @@ fn validate_origin(origin: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn number(name: &str, default: u32) -> Result<u32, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{name} must be a positive integer, got `{value}`")),
+    }
+}
+
 fn flag(name: &str, default: bool) -> Result<bool, String> {
     match std::env::var(name) {
         Err(_) => Ok(default),
@@ -301,6 +330,17 @@ fn flag(name: &str, default: bool) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_parses_with_default() {
+        std::env::remove_var("AFRAMP_TEST_NUMBER");
+        assert_eq!(number("AFRAMP_TEST_NUMBER", 10).unwrap(), 10);
+        std::env::set_var("AFRAMP_TEST_NUMBER", "25");
+        assert_eq!(number("AFRAMP_TEST_NUMBER", 10).unwrap(), 25);
+        std::env::set_var("AFRAMP_TEST_NUMBER", "lots");
+        assert!(number("AFRAMP_TEST_NUMBER", 10).is_err());
+        std::env::remove_var("AFRAMP_TEST_NUMBER");
+    }
 
     #[test]
     fn cors_origins_are_validated() {
@@ -440,6 +480,8 @@ mod tests {
             "{:?}",
             AppConfig {
                 database_url: "postgres://localhost".to_string(),
+                database_max_connections: 10,
+                database_min_connections: 2,
                 bind_addr: "127.0.0.1:3000".to_string(),
                 jwt_secret: SecretString::new("jwt-secret-value".to_string()),
                 webhook_secret: SecretString::new("webhook-secret-value".to_string()),
