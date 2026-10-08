@@ -92,9 +92,7 @@ async fn cross_origin_get(
 /// actual request when that header is absent, which is the correct behaviour.
 #[tokio::test]
 async fn preflight_from_unlisted_origin_has_no_acao_header() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = cors_app(state, &[ALLOWED_ORIGIN]);
 
     let (_status, headers) =
@@ -117,9 +115,7 @@ async fn preflight_from_unlisted_origin_has_no_acao_header() {
 /// for cookie-carrying requests).
 #[tokio::test]
 async fn preflight_from_listed_origin_returns_correct_cors_headers() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = cors_app(state, &[ALLOWED_ORIGIN]);
 
     let (status, headers) =
@@ -159,9 +155,7 @@ async fn preflight_from_listed_origin_returns_correct_cors_headers() {
 /// the response body.
 #[tokio::test]
 async fn get_me_from_listed_origin_with_token_succeeds() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     // Build a bare (no-CORS) router just for the sign-up flow — the token is
     // all we need; no cross-origin headers are required here.
     let bare_app = aframp::router(state.clone());
@@ -198,9 +192,7 @@ async fn get_me_from_listed_origin_with_token_succeeds() {
 /// underlying handler would have returned 200.
 #[tokio::test]
 async fn get_me_from_unlisted_origin_has_no_acao_header() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let bare_app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&bare_app, "cors_me_blocked").await;
 

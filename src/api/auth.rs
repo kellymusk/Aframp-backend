@@ -6,10 +6,7 @@ use axum::Json;
 use crate::auth::extractor::Session;
 use crate::auth::jwt;
 use crate::auth::password;
-use crate::error::{
-    bad_request, bad_request_field, internal,
-    ApiResult,
-};
+use crate::error::{bad_request, bad_request_field, internal, unauthorized, ApiResult, ErrorCode};
 use crate::models::{AuthResponse, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
 use crate::services::otp::{self, VerifiedOutcome};
 use crate::services::users;
@@ -152,40 +149,4 @@ pub async fn refresh(State(state): State<AppState>, Session(claims): Session) ->
 fn authenticated(state: &AppState, body: AuthResponse) -> ApiResult<impl IntoResponse> {
     let cookie = state.cookie.session(&body.token).map_err(internal)?;
     Ok(([(header::SET_COOKIE, cookie)], Json(body)))
-}
-
-fn map_user_error(err: UserError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
-    match err {
-        UserError::InvalidCredentials => {
-            unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
-        }
-        UserError::AccountLocked { until } => {
-            let msg = format!(
-                "account locked due to too many failed login attempts; try again after {}",
-                until.format("%Y-%m-%dT%H:%M:%SZ")
-            );
-            crate::error::forbidden(ErrorCode::Forbidden, &msg)
-        }
-        UserError::MerchantSuspended => {
-            crate::error::forbidden(ErrorCode::Forbidden, "this merchant account has been suspended")
-        }
-        UserError::Database(_) => internal(err),
-    }
-}
-
-fn map_otp_error(err: OtpError) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
-    match err {
-        OtpError::RateLimited => {
-            too_many_requests(ErrorCode::TooManyRequests, "too many requests, please try again shortly")
-        }
-        OtpError::ChallengeNotFound => {
-            not_found(ErrorCode::OtpChallengeNotFound, "otp challenge not found or already used")
-        }
-        OtpError::Expired => bad_request(ErrorCode::OtpExpired, "otp code has expired"),
-        OtpError::Locked => bad_request(ErrorCode::OtpLocked, "too many incorrect attempts — request a new code"),
-        OtpError::InvalidCode => bad_request(ErrorCode::OtpInvalid, "incorrect code"),
-        OtpError::EmailTaken => conflict(ErrorCode::EmailTaken, "email already registered"),
-        OtpError::PhoneTaken => conflict(ErrorCode::PhoneTaken, "phone number already registered"),
-        OtpError::SendFailed(_) | OtpError::Database(_) => internal(err),
-    }
 }

@@ -34,8 +34,8 @@ pub struct MeView {
     /// Wallet address for the merchant, or `null` if no wallet has been
     /// created yet. Populated in the same round-trip as the profile.
     pub wallet: Option<String>,
-    /// Balance summary for the merchant's wallet, or `null` if no wallet
-    /// exists yet.
+    /// XLM balance summary for the merchant's Stellar wallet, or `null` if no
+    /// wallet exists yet. Other assets are listed by `GET /balance`.
     pub balances: Option<BalanceSummary>,
 }
 
@@ -57,7 +57,7 @@ struct WalletBalanceRow {
 }
 
 pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<MeView>> {
-    let user = users::user_profile_by_id(&state.db, auth.user_id)
+    let user = users::user_by_id(&state.db, auth.user_id)
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(ErrorCode::UserNotFound, "user not found"))?;
@@ -72,12 +72,13 @@ pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Jso
         r#"
         SELECT
             w.address AS wallet_address,
-            b.available AS available,
-            b.pending AS pending
+            COALESCE(b.available, 0) AS available,
+            COALESCE(b.pending, 0) AS pending
         FROM merchants m
-        LEFT JOIN wallets w ON w.merchant_id = m.id
-        LEFT JOIN wallet_balances b ON b.wallet_id = w.id
-        WHERE m.user_id = $1
+        LEFT JOIN wallets w ON w.merchant_id = m.id AND w.network = 'stellar'
+        LEFT JOIN balances b ON b.merchant_id = m.id AND b.asset = 'XLM'
+        WHERE m.user_id = $1 AND w.id IS NOT NULL
+        LIMIT 1
         "#,
     )
     .bind(auth.user_id)

@@ -75,9 +75,7 @@ fn assert_me_matches_join(me: &Value, row: &UserWithMerchantRow) {
 
 #[tokio::test]
 async fn me_response_matches_single_join_query() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "me_join").await;
 
@@ -100,9 +98,7 @@ async fn me_response_matches_single_join_query() {
 
 #[tokio::test]
 async fn me_response_includes_verified_phone_fields() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "me_phone").await;
 
@@ -120,9 +116,7 @@ async fn me_join_returns_none_merchant_fields_when_no_merchant_row() {
     // Signup always creates a merchant today, so synthesize the edge case
     // the LEFT JOIN must handle: a user with no merchants row. We delete the
     // merchant after signup and confirm both /me and the JOIN agree.
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "me_join_orphan").await;
 

@@ -1,0 +1,8 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "amount must be positive",
+  "code": "INVALID_AMOUNT"
+}

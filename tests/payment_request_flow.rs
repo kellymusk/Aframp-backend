@@ -147,7 +147,7 @@ async fn payment_request_list_is_scoped_to_the_authenticated_merchant() {
 
     let (status, list_a) = send(app.clone(), "GET", "/payment-requests", Some(&token_a), None).await;
     assert_eq!(status, StatusCode::OK, "list failed: {list_a}");
-    let rows = list_a.as_array().unwrap();
+    let rows = list_a["data"].as_array().unwrap();
     assert_eq!(rows.len(), 2, "merchant A should see only their own two requests");
     // Newest first.
     assert_eq!(rows[0]["amount_stroops"], 20_000_000);
@@ -159,7 +159,7 @@ async fn payment_request_list_is_scoped_to_the_authenticated_merchant() {
 
     let (status, list_b) = send(app.clone(), "GET", "/payment-requests", Some(&token_b), None).await;
     assert_eq!(status, StatusCode::OK);
-    let rows_b = list_b.as_array().unwrap();
+    let rows_b = list_b["data"].as_array().unwrap();
     assert_eq!(rows_b.len(), 1, "merchant B must not see merchant A's requests");
     assert_eq!(rows_b[0]["amount_stroops"], 99_000_000);
 }
@@ -171,98 +171,6 @@ async fn payment_request_list_requires_auth() {
     let (status, _) = send(app.clone(), "GET", "/payment-requests", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
-
-#[tokio::test]
-async fn payment_request_list_xlm_sep7_uri_is_non_null() {
-    let Some(state) = state().await else {
-        return;
-    };
-    let app = aframp::router(state.clone());
-    let (token, _) = ensure_merchant(&app, "pr_list_sep7_nonnull").await;
-    create_wallet(&app, &token).await;
-
-    // Create two XLM payment requests.
-    for amount in [5_000_000i64, 10_000_000i64] {
-        let (status, json) = send(
-            app.clone(),
-            "POST",
-            "/payment-requests",
-            Some(&token),
-            Some(json!({ "amount_stroops": amount })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "create failed: {json}");
-    }
-
-    let (status, list) = send(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "list failed: {list}");
-    let rows = list.as_array().expect("list response should be an array");
-    assert!(!rows.is_empty(), "should have at least one payment request in the list");
-
-    for row in rows {
-        assert_eq!(row["asset"], "XLM", "test only creates XLM requests");
-        let uri = row["sep7_uri"].as_str().unwrap_or_else(|| {
-            panic!(
-                "sep7_uri must be non-null for XLM request id={} — \
-                 if this is null the list query is missing the wallet JOIN",
-                row["id"]
-            )
-        });
-        assert!(
-            uri.starts_with("web+stellar:pay?destination="),
-            "sep7_uri should be a valid SEP-0007 URI: {uri}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn payment_request_list_sep7_uri_matches_get_by_id() {
-    let Some(state) = state().await else {
-        return;
-    };
-    let app = aframp::router(state.clone());
-    let (token, _) = ensure_merchant(&app, "pr_list_sep7_match").await;
-    create_wallet(&app, &token).await;
-
-    let (status, created) = send(
-        app.clone(),
-        "POST",
-        "/payment-requests",
-        Some(&token),
-        Some(json!({ "amount_stroops": 15_000_000 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "create failed: {created}");
-    let id = created["id"].as_str().unwrap();
-
-    // Fetch the single request publicly (as a customer wallet would).
-    let (status, by_id) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
-    assert_eq!(status, StatusCode::OK, "GET by id failed: {by_id}");
-    let sep7_by_id = by_id["sep7_uri"]
-        .as_str()
-        .expect("GET by id should return a sep7_uri for XLM");
-
-    // Fetch via the authenticated list endpoint.
-    let (status, list) = send(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "list failed: {list}");
-    let rows = list.as_array().expect("list response should be an array");
-
-    let list_row = rows
-        .iter()
-        .find(|r| r["id"] == id)
-        .expect("the created request should appear in the list");
-
-    let sep7_in_list = list_row["sep7_uri"]
-        .as_str()
-        .expect("sep7_uri must be non-null in the list for an XLM request");
-
-    assert_eq!(
-        sep7_by_id, sep7_in_list,
-        "sep7_uri from GET /payment-requests/{{id}} must match the value in the list \
-         — a mismatch means the list query uses a different address or parameters"
-    );
-}
-
 
 #[tokio::test]
 async fn payment_request_marked_paid_on_memo_correlated_deposit() {
@@ -325,11 +233,49 @@ async fn payment_request_marked_paid_on_memo_correlated_deposit() {
 
 #[tokio::test]
 async fn expired_payment_request_is_not_matched_by_deposit_memo() {
-async fn payment_request_memos_are_unique_and_fit_a_text_memo() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_expired_deposit").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 25_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let memo = created["memo"].as_str().unwrap();
+
+    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // This is the lookup blockchain::worker::process_deposit uses to decide
+    // which request a memo-matched deposit pays — an expired one must not match.
+    let wallet_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT wallet_id FROM payment_requests WHERE id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(&state.db, wallet_id, memo)
+        .await
+        .unwrap();
+    assert!(pending.is_none(), "an expired request must not be matched to a deposit");
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["status"], "expired");
+}
+
 async fn amount_stroops_rejects_float_string_and_negative() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_expired_deposit").await;
     let (token, _) = ensure_merchant(&app, "pr_memo_batch").await;
@@ -395,9 +341,7 @@ async fn amount_stroops_rejects_float_string_and_negative() {
 
 #[tokio::test]
 async fn status_endpoint_reports_pending_expired_and_paid() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_status_poll").await;
     create_wallet(&app, &token).await;
@@ -407,14 +351,6 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
         "POST",
         "/payment-requests",
         Some(&token),
-        Some(json!({ "amount_stroops": 25_000_000 })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "create failed: {created}");
-    let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
-    let memo = created["memo"].as_str().unwrap();
-
-    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1")
         Some(json!({ "amount_stroops": 15_000_000 })),
     )
     .await;
@@ -447,22 +383,6 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
         .await
         .unwrap();
 
-    // This is the lookup blockchain::worker::process_deposit uses to decide
-    // which request a memo-matched deposit pays — an expired one must not match.
-    let wallet_id: uuid::Uuid =
-        sqlx::query_scalar("SELECT wallet_id FROM payment_requests WHERE id = $1")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap();
-    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(&state.db, wallet_id, memo)
-        .await
-        .unwrap();
-    assert!(pending.is_none(), "an expired request must not be matched to a deposit");
-
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["status"], "expired");
     let (status, body) = send(
         app.clone(),
         "GET",
@@ -523,9 +443,7 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
 
 #[tokio::test]
 async fn status_endpoint_404_for_unknown_id() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state);
     let missing = uuid::Uuid::new_v4();
     let (status, json) = send(
@@ -538,4 +456,115 @@ async fn status_endpoint_404_for_unknown_id() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json["code"], "PAYMENT_REQUEST_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn payment_request_memos_are_unique_and_fit_a_text_memo() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_memo_batch").await;
+    create_wallet(&app, &token).await;
+
+    let mut memos = std::collections::HashSet::new();
+    for _ in 0..50 {
+        let (status, created) = send(
+            app.clone(),
+            "POST",
+            "/payment-requests",
+            Some(&token),
+            Some(json!({ "amount_stroops": 10_000_000 })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create failed: {created}");
+        let memo = created["memo"].as_str().unwrap().to_string();
+        assert_eq!(memo.len(), 28, "memo must fit Stellar's 28-byte MEMO_TEXT");
+        assert!(memos.insert(memo), "memo repeated within one wallet");
+    }
+}
+
+#[tokio::test]
+async fn payment_request_list_xlm_sep7_uri_is_non_null() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_list_sep7_nonnull").await;
+    create_wallet(&app, &token).await;
+
+    // Create two XLM payment requests.
+    for amount in [5_000_000i64, 10_000_000i64] {
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/payment-requests",
+            Some(&token),
+            Some(json!({ "amount_stroops": amount })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create failed: {json}");
+    }
+
+    let (status, list) = send(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "list failed: {list}");
+    let rows = list["data"].as_array().expect("list response should carry a data array");
+    assert!(!rows.is_empty(), "should have at least one payment request in the list");
+
+    for row in rows {
+        assert_eq!(row["asset"], "XLM", "test only creates XLM requests");
+        let uri = row["sep7_uri"].as_str().unwrap_or_else(|| {
+            panic!(
+                "sep7_uri must be non-null for XLM request id={} — \
+                 if this is null the list query is missing the wallet JOIN",
+                row["id"]
+            )
+        });
+        assert!(
+            uri.starts_with("web+stellar:pay?destination="),
+            "sep7_uri should be a valid SEP-0007 URI: {uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn payment_request_list_sep7_uri_matches_get_by_id() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_list_sep7_match").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 15_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap();
+
+    // Fetch the single request publicly (as a customer wallet would).
+    let (status, by_id) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK, "GET by id failed: {by_id}");
+    let sep7_by_id = by_id["sep7_uri"]
+        .as_str()
+        .expect("GET by id should return a sep7_uri for XLM");
+
+    // Fetch via the authenticated list endpoint.
+    let (status, list) = send(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "list failed: {list}");
+    let rows = list["data"].as_array().expect("list response should carry a data array");
+
+    let list_row = rows
+        .iter()
+        .find(|r| r["id"] == id)
+        .expect("the created request should appear in the list");
+
+    let sep7_in_list = list_row["sep7_uri"]
+        .as_str()
+        .expect("sep7_uri must be non-null in the list for an XLM request");
+
+    assert_eq!(
+        sep7_by_id, sep7_in_list,
+        "sep7_uri from GET /payment-requests/{{id}} must match the value in the list \
+         — a mismatch means the list query uses a different address or parameters"
+    );
 }

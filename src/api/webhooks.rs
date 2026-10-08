@@ -2,8 +2,9 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 
-use crate::error::{forbidden, ApiResult, ErrorCode};
+use crate::error::{forbidden, internal, ApiResult, ErrorCode};
 use crate::otp::termii::TermiiWebhookEvent;
+use crate::payments::paystack::{PaystackWebhookEvent, TransferWebhookOutcome};
 use crate::AppState;
 
 /// Termii's delivery-status webhook (SMS sent/delivered/failed/etc. — see
@@ -72,22 +73,37 @@ pub async fn paystack(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if !state
-        .payments
-        .verify_paystack_webhook_signature(&body, signature)
-    {
+    if !state.payment_provider.verify_webhook_signature(&body, signature) {
         return Err(forbidden(ErrorCode::Forbidden, "invalid webhook signature"));
     }
 
-    match serde_json::from_slice::<crate::services::payments::PaystackWebhookEvent>(&body) {
+    match serde_json::from_slice::<PaystackWebhookEvent>(&body) {
         Ok(event) => {
-            if let Err(err) = state.payments.handle_paystack_webhook_event(event).await {
-                tracing::error!(error = %err, "paystack webhook: failed to reconcile transfer event");
-                return Err(err);
+            let status = match event.outcome() {
+                Some(TransferWebhookOutcome::Success) => "completed",
+                Some(TransferWebhookOutcome::Failed) => "failed",
+                Some(TransferWebhookOutcome::Reversed) => "failed",
+                None => return Ok(StatusCode::NO_CONTENT),
+            };
+            let Some(reference) = event.data.transfer_code.as_deref() else {
+                tracing::warn!(event = %event.event, "paystack webhook: transfer event without transfer_code");
+                return Ok(StatusCode::NO_CONTENT);
+            };
+            let failure_reason = (status == "failed").then(|| event.event.clone());
+            let updated = crate::services::withdrawals::reconcile_withdrawal_status(
+                &state.db,
+                reference,
+                status,
+                failure_reason.as_deref(),
+            )
+            .await
+            .map_err(internal)?;
+            if updated.is_none() {
+                tracing::warn!(reference, "paystack webhook: no withdrawal for transfer");
             }
         }
         Err(err) => {
-            tracing::warn!(error = %err, body = %String::from_utf8_lossy(&body), "paystack webhook: unrecognized payload shape");
+            tracing::warn!(error = %err, "paystack webhook: unrecognized payload shape");
         }
     }
 

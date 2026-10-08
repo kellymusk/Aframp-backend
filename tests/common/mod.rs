@@ -73,6 +73,7 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
             secure: true,
             same_site: aframp::SameSite::Lax,
         },
+        admin_events: tokio::sync::broadcast::channel(16).0,
     })
 }
 

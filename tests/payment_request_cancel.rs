@@ -19,9 +19,7 @@ fn list_rows(list: &serde_json::Value) -> &Vec<serde_json::Value> {
 
 #[tokio::test]
 async fn payment_request_cancel_sets_cancelled_at() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_cancel").await;
     create_wallet(&app, &token).await;
@@ -63,9 +61,7 @@ async fn payment_request_cancel_sets_cancelled_at() {
 
 #[tokio::test]
 async fn payment_request_cancel_rejects_other_merchants() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token_a, _) = ensure_merchant(&app, "pr_cancel_a").await;
     create_wallet(&app, &token_a).await;
@@ -95,9 +91,7 @@ async fn payment_request_cancel_rejects_other_merchants() {
 
 #[tokio::test]
 async fn payment_request_list_excludes_cancelled_by_default() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_list_cancel").await;
     create_wallet(&app, &token).await;
@@ -153,9 +147,7 @@ async fn payment_request_list_excludes_cancelled_by_default() {
 
 #[tokio::test]
 async fn payment_request_hard_delete_job_removes_old_expired_cancelled() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_hard_del").await;
     create_wallet(&app, &token).await;

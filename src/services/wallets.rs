@@ -70,7 +70,6 @@ pub async fn create_wallet(
         return Err(CreateWalletError::DuplicateNetwork(network.to_string()));
     }
 
-    let generated = keypair::generate_keypair();
     let generated = keypair::generate_keypair()?;
     let secret_key_encrypted = wallet_crypto::encrypt(encryption_key, &generated.secret_seed)
         .map_err(CreateWalletError::Encryption)?;
@@ -94,7 +93,7 @@ pub async fn create_wallet(
     .await
     .map_err(|err| {
         // Postgres error code 23505 = unique_violation.  The
-        // `wallets_merchant_id_unique` constraint means the merchant already
+        // `wallets_merchant_id_network_unique` constraint means the merchant already
         // has a wallet; surface this as a distinct variant so the handler can
         // return 409 instead of 500.
         if let sqlx::Error::Database(ref db_err) = err {

@@ -13,9 +13,6 @@ async fn app() -> axum::Router {
 async fn termii_webhook_valid_signature_acknowledged() {
     // #1132 — MockOtpProvider treats `mock-signature` as the configurable
     // expected signature (see scripts/mock_otp.ts + CONTRIBUTING.md).
-    let Some(app) = app().await else {
-        return;
-    };
     let app = app().await;
     let (status, _) = send_with_signature(
         &app,
@@ -35,9 +32,6 @@ async fn termii_webhook_valid_signature_acknowledged() {
 #[tokio::test]
 async fn termii_webhook_wrong_signature_rejected() {
     // #1132 — any signature other than the mock sentinel must 403.
-    let Some(app) = app().await else {
-        return;
-    };
     let app = app().await;
     let (status, body) = send_with_signature(
         &app,

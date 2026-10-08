@@ -122,68 +122,6 @@ async fn signup_duplicate_email_conflicts_after_verification() {
 }
 
 #[tokio::test]
-async fn signup_oversized_name_rejected_before_work() {
-    let Some(app) = app().await else {
-        return;
-    };
-    let (email, phone_number, _) = fresh_identity("longname");
-    let name = "N".repeat(101);
-    let (status, body) = send(
-        app.clone(),
-        "POST",
-        "/signup",
-        None,
-        Some(json!({ "email": email, "password": "password123", "name": name, "phone_number": phone_number })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["field"], "name");
-}
-
-#[tokio::test]
-async fn signup_oversized_email_local_part_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
-    let (_, phone_number, _) = fresh_identity("longemail");
-    // Local-part longer than 64 is rejected by is_valid_email (and by RFC 5321).
-    let email = format!("{}@example.com", "a".repeat(65));
-    let (status, body) = send(
-        app.clone(),
-        "POST",
-        "/signup",
-        None,
-        Some(json!({ "email": email, "password": "password123", "name": "Long Email", "phone_number": phone_number })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["field"], "email");
-}
-
-#[tokio::test]
-async fn signup_oversized_phone_rejected() {
-    let Some(app) = app().await else {
-        return;
-    };
-    let (email, _, _) = fresh_identity("longphone");
-    let (status, body) = send(
-        app.clone(),
-        "POST",
-        "/signup",
-        None,
-        Some(json!({
-            "email": email,
-            "password": "password123",
-            "name": "Long Phone",
-            "phone_number": format!("080{}", "1".repeat(40))
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["field"], "phone_number");
-}
-
-#[tokio::test]
 async fn signup_weak_password_rejected() {
     let app = app().await;
     let (_, phone_number, _) = fresh_identity("weak");
@@ -567,49 +505,6 @@ async fn me_returns_profile_for_a_valid_token() {
 }
 
 #[tokio::test]
-async fn admin_users_list_never_includes_password_hash() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
-    let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
-    let password = "legacy-password-123";
-    let hash = aframp_password_hash_for_tests();
-    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin User', true)")
-        .bind(&email)
-        .bind(&hash)
-        .execute(&db)
-        .await
-        .unwrap();
-
-    let (status, login) = send(
-        app.clone(),
-        "POST",
-        "/login",
-        None,
-        Some(json!({ "email": email, "password": password })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "admin login failed: {login}");
-    let token = login["token"]
-        .as_str()
-        .expect("legacy admin login should return a token");
-
-    let (status, users) = send(app.clone(), "GET", "/admin/users", Some(token), None).await;
-    assert_eq!(status, StatusCode::OK, "admin users failed: {users}");
-    let rows = users
-        .as_array()
-        .expect("/admin/users should return an array");
-    let current_admin = rows
-        .iter()
-        .find(|row| row["email"].as_str() == Some(email.as_str()))
-        .expect("newly-created admin should be visible in /admin/users");
-    assert!(
-        current_admin.get("password_hash").is_none(),
-        "/admin/users must never leak password hashes"
-    );
-}
-
-#[tokio::test]
 async fn login_sets_an_http_only_session_cookie_that_authenticates() {
     let app = app().await;
     let (email, normalized_phone, _) = signup_and_verify(&app, "cookie").await;
@@ -661,10 +556,6 @@ async fn login_sets_an_http_only_session_cookie_that_authenticates() {
 
 #[tokio::test]
 async fn logout_clears_the_session_cookie() {
-    let Some(app) = app().await else {
-        return;
-    };
-    let (status, _, cookies) = send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
     let app = app().await;
     let (status, _, cookies) =
         send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
@@ -704,92 +595,106 @@ async fn me_requires_a_valid_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// Signs a token with the integration-test secret, bypassing the app, so
-/// tests can present tokens the server would never issue itself.
-fn forge_token(sub: Uuid, iat: i64, exp: i64, orig_iat: i64) -> String {
-    jsonwebtoken::encode(
-        &jsonwebtoken::Header::default(),
-        &json!({
-            "sub": sub,
-            "merchant_id": null,
-            "is_admin": false,
-            "iat": iat,
-            "exp": exp,
-            "orig_iat": orig_iat,
-        }),
-        &jsonwebtoken::EncodingKey::from_secret(b"integration-test-secret"),
+#[tokio::test]
+async fn admin_users_list_never_includes_password_hash() {
+    let (app, db) = app_and_db().await;
+    let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
+    let password = "legacy-password-123";
+    let hash = aframp_password_hash_for_tests();
+    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin User', true)")
+        .bind(&email)
+        .bind(&hash)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (status, login) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": password })),
     )
-    .unwrap()
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin login failed: {login}");
+    let token = login["token"]
+        .as_str()
+        .expect("legacy admin login should return a token");
+
+    let (status, users) = send(app.clone(), "GET", "/admin/users", Some(token), None).await;
+    assert_eq!(status, StatusCode::OK, "admin users failed: {users}");
+    let rows = users
+        .as_array()
+        .expect("/admin/users should return an array");
+    let current_admin = rows
+        .iter()
+        .find(|row| row["email"].as_str() == Some(email.as_str()))
+        .expect("newly-created admin should be visible in /admin/users");
+    assert!(
+        current_admin.get("password_hash").is_none(),
+        "/admin/users must never leak password hashes"
+    );
 }
 
 #[tokio::test]
-async fn refresh_issues_a_working_token() {
-    let Some(state) = common::state().await else {
-        return;
-    };
-    let app = aframp::router(state);
-    let (token, merchant_id) = common::ensure_merchant(&app, "refresh_ok").await;
-
-    let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "refresh failed: {body}");
-    assert_eq!(body["merchant_id"], merchant_id);
-    let refreshed = body["token"].as_str().unwrap();
-
-    let (status, me) = send(app.clone(), "GET", "/me", Some(refreshed), None).await;
-    assert_eq!(status, StatusCode::OK, "refreshed token rejected: {me}");
+async fn signup_oversized_name_rejected_before_work() {
+    let app = app().await;
+    let (email, phone_number, _) = fresh_identity("longname");
+    let name = "N".repeat(101);
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": name, "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "name");
 }
 
 #[tokio::test]
-async fn refresh_after_logout_has_no_session_to_refresh() {
-    let Some(app) = app().await else {
-        return;
-    };
-    let (token, _) = common::ensure_merchant(&app, "refresh_logout").await;
-    let cookie = format!("aframp_session={token}");
-
-    let (status, _, set_cookie) = send_with_cookie(app.clone(), "POST", "/logout", Some(&cookie), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(set_cookie.iter().any(|c| c.starts_with("aframp_session=;")), "logout clears the cookie");
-
-    // The browser now holds the cleared cookie, so there's nothing to refresh.
-    let (status, _, _) = send_with_cookie(app.clone(), "POST", "/auth/refresh", Some("aframp_session="), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+async fn signup_oversized_email_local_part_rejected() {
+    let app = app().await;
+    let (_, phone_number, _) = fresh_identity("longemail");
+    // Local-part longer than 64 is rejected by is_valid_email (and by RFC 5321).
+    let email = format!("{}@example.com", "a".repeat(65));
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": "password123", "name": "Long Email", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "email");
 }
 
 #[tokio::test]
-async fn refresh_rejects_an_expired_token() {
-    let Some(app) = app().await else {
-        return;
-    };
-    let now = chrono::Utc::now().timestamp();
-    let expired = forge_token(Uuid::new_v4(), now - 2 * 86_400, now - 86_400, now - 2 * 86_400);
-
-    let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&expired), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+async fn signup_oversized_phone_rejected() {
+    let app = app().await;
+    let (email, _, _) = fresh_identity("longphone");
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({
+            "email": email,
+            "password": "password123",
+            "name": "Long Phone",
+            "phone_number": format!("080{}", "1".repeat(40))
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "phone_number");
 }
 
-#[tokio::test]
-async fn refresh_stops_after_the_seven_day_session_window() {
-    let Some(app) = app().await else {
-        return;
-    };
-    // Forge the token for a real, active account: tokens for unknown or
-    // deleted users are rejected before the session window is checked.
-    let (_, _, verified) = signup_and_verify(&app, "refresh_window").await;
-    let sub: Uuid = verified["user_id"].as_str().unwrap().parse().unwrap();
-    let now = chrono::Utc::now().timestamp();
-    // Still unexpired, but the session started eight days ago.
-    let stale = forge_token(sub, now - 3_600, now + 3_600, now - 8 * 86_400);
-
-    let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&stale), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert!(body["error"].as_str().unwrap().contains("log in again"), "{body}");
-}
 #[tokio::test]
 async fn verified_signup_challenge_is_deleted() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, normalized_phone) = fresh_identity("challenge_gone");
 
     let (status, challenge) = send(
@@ -835,9 +740,7 @@ async fn verified_signup_challenge_is_deleted() {
 
 #[tokio::test]
 async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     let (email, phone_number, _) = fresh_identity("stale_purge");
     let (status, challenge) = send(
         app.clone(),
@@ -882,9 +785,7 @@ async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
 
 #[tokio::test]
 async fn revoking_admin_takes_effect_on_the_next_request() {
-    let Some((app, db)) = app_and_db().await else {
-        return;
-    };
+    let (app, db) = app_and_db().await;
     // A legacy (no-phone) account logs in without OTP, which keeps this test
     // focused on the admin check.
     let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
@@ -920,3 +821,76 @@ async fn revoking_admin_takes_effect_on_the_next_request() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
+/// Signs a token with the integration-test secret, bypassing the app, so
+/// tests can present tokens the server would never issue itself.
+fn forge_token(sub: Uuid, iat: i64, exp: i64, orig_iat: i64) -> String {
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &json!({
+            "sub": sub,
+            "merchant_id": null,
+            "is_admin": false,
+            "iat": iat,
+            "exp": exp,
+            "orig_iat": orig_iat,
+        }),
+        &jsonwebtoken::EncodingKey::from_secret(b"integration-test-secret"),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn refresh_issues_a_working_token() {
+    let state = common::state().await;
+    let app = aframp::router(state);
+    let (token, merchant_id) = common::ensure_merchant(&app, "refresh_ok").await;
+
+    let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "refresh failed: {body}");
+    assert_eq!(body["merchant_id"], merchant_id);
+    let refreshed = body["token"].as_str().unwrap();
+
+    let (status, me) = send(app.clone(), "GET", "/me", Some(refreshed), None).await;
+    assert_eq!(status, StatusCode::OK, "refreshed token rejected: {me}");
+}
+
+#[tokio::test]
+async fn refresh_after_logout_has_no_session_to_refresh() {
+    let app = app().await;
+    let (token, _) = common::ensure_merchant(&app, "refresh_logout").await;
+    let cookie = format!("aframp_session={token}");
+
+    let (status, _, set_cookie) = send_with_cookie(app.clone(), "POST", "/logout", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(set_cookie.iter().any(|c| c.starts_with("aframp_session=;")), "logout clears the cookie");
+
+    // The browser now holds the cleared cookie, so there's nothing to refresh.
+    let (status, _, _) = send_with_cookie(app.clone(), "POST", "/auth/refresh", Some("aframp_session="), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn refresh_rejects_an_expired_token() {
+    let app = app().await;
+    let now = chrono::Utc::now().timestamp();
+    let expired = forge_token(Uuid::new_v4(), now - 2 * 86_400, now - 86_400, now - 2 * 86_400);
+
+    let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&expired), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn refresh_stops_after_the_seven_day_session_window() {
+    let app = app().await;
+    // Forge the token for a real, active account: tokens for unknown or
+    // deleted users are rejected before the session window is checked.
+    let (_, _, verified) = signup_and_verify(&app, "refresh_window").await;
+    let sub: Uuid = verified["user_id"].as_str().unwrap().parse().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    // Still unexpired, but the session started eight days ago.
+    let stale = forge_token(sub, now - 3_600, now + 3_600, now - 8 * 86_400);
+
+    let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&stale), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body["error"].as_str().unwrap().contains("log in again"), "{body}");
+}

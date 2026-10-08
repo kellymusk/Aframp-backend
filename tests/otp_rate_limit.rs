@@ -207,12 +207,16 @@ async fn consumed_challenge_cannot_be_reused() {
     let (status, json) = verify(&app, challenge_id, &code).await;
     assert_eq!(status, StatusCode::OK, "first verify should succeed: {json}");
 
-    let consumed: bool = sqlx::query_scalar("SELECT consumed_at IS NOT NULL FROM otp_challenges WHERE id = $1::uuid")
-        .bind(challenge_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert!(consumed, "a verified challenge must be marked consumed");
+    // Verification deletes the challenge (it may hold a pending password
+    // hash), so nothing claimable may remain for this id.
+    let claimable: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM otp_challenges WHERE id = $1::uuid AND consumed_at IS NULL",
+    )
+    .bind(challenge_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(claimable, 0, "a verified challenge must not remain claimable");
 
     // Replaying the exact same, previously-valid code must not mint a second session.
     let (status, json) = verify(&app, challenge_id, &code).await;

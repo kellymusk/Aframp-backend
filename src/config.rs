@@ -148,8 +148,6 @@ impl AppConfig {
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
             jwt_secret: secret("JWT_SECRET")?,
             webhook_secret: secret("WEBHOOK_SECRET")?,
-            jwt_secret: SecretString::new(secret_min32("JWT_SECRET")?),
-            webhook_secret: SecretString::new(secret_min32("WEBHOOK_SECRET")?),
             stellar_system_wallet: Arc::new(env("STELLAR_SYSTEM_WALLET_ADDRESS")?),
             stellar_horizon_url: std::env::var("STELLAR_HORIZON_URL")
                 .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".into()),
@@ -204,21 +202,6 @@ fn secret(name: &str) -> Result<SecretString, String> {
         ));
     }
     Ok(SecretString::new(value))
-/// Reads an environment variable and rejects it if it is shorter than 32
-/// characters. HMAC-SHA256 is only as strong as its key; keys below 32 bytes
-/// fall below the NIST SP 800-107 minimum recommendation.
-///
-/// Generate a safe value with: `openssl rand -hex 32`
-fn secret_min32(name: &str) -> Result<String, String> {
-    let value = env(name)?;
-    if value.len() < 32 {
-        return Err(format!(
-            "{name} must be at least 32 characters (got {}). \
-             Generate a strong secret with: openssl rand -hex 32",
-            value.len()
-        ));
-    }
-    Ok(value)
 }
 
 fn flag(name: &str, default: bool) -> Result<bool, String> {
@@ -257,7 +240,11 @@ mod tests {
     fn set_valid_env() {
         // A 64-char hex string — well above the 32-char minimum.
         let long_secret = "a".repeat(64);
-        std::env::set_var("DATABASE_URL", "postgres://localhost/test");
+        // Don't clobber a real DATABASE_URL: `#[sqlx::test]` tests in the same
+        // process read it concurrently to provision their databases.
+        if std::env::var("DATABASE_URL").is_err() {
+            std::env::set_var("DATABASE_URL", "postgres://localhost/test");
+        }
         std::env::set_var("WALLET_ENCRYPTION_KEY", &long_secret);
         std::env::set_var("STELLAR_SYSTEM_WALLET_ADDRESS", "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN");
         std::env::set_var("PAYSTACK_SECRET_KEY", "sk_test_placeholder");

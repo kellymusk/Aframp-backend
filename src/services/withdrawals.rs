@@ -1,4 +1,3 @@
-use std::time::Duration;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -137,6 +136,13 @@ pub async fn create_withdrawal_idempotent(
     withdrawal: NewWithdrawal,
     idempotency_key: Option<&str>,
 ) -> Result<Withdrawal, WithdrawalError> {
+    let idempotency_key = idempotency_key.or(withdrawal.idempotency_key.as_deref());
+    if let Some(key) = idempotency_key {
+        if let Some(existing) = find_by_idempotency_key(db, withdrawal.merchant_id, key).await? {
+            return Ok(existing);
+        }
+    }
+
     if withdrawal.asset != "cNGN" {
         return Err(WithdrawalError::UnsupportedAsset);
     }
@@ -148,12 +154,7 @@ pub async fn create_withdrawal_idempotent(
     // Hard requirement: resolve the account *before* debiting the balance or
     // creating the withdrawal row. A failed resolution aborts here, so no
     // funds are ever moved against an unverified account.
-    let verified = verify_bank_account(
-        provider,
-        &withdrawal.bank_code,
-        &withdrawal.account_number,
-    )
-    .await?;
+    verify_bank_account(provider, &withdrawal.bank_code, &withdrawal.account_number).await?;
 
     let mut tx = db.begin().await?;
 
@@ -179,9 +180,9 @@ pub async fn create_withdrawal_idempotent(
              merchant_id, amount_stroops, asset, status, bank_code, account_number,
              idempotency_key
          )
-         VALUES ($1, $2, $3, $4, $5, $6)
-         VALUES ($1, $2, $3, 'pending', $4, $5, $6)
-         ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (merchant_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+         DO NOTHING
          RETURNING id, merchant_id, amount_stroops, asset, status, provider,
                    provider_reference, bank_code, account_number, failure_reason,
                    idempotency_key, created_at, updated_at",
@@ -219,7 +220,6 @@ pub async fn create_withdrawal_idempotent(
         .create_payout(&PayoutRequest {
             bank_code: withdrawal.bank_code.clone(),
             account_number: withdrawal.account_number.clone(),
-            account_name: verified.account_name.clone(),
             amount: amount_kobo.to_string(),
             reference: w.id.to_string(),
         })
@@ -256,25 +256,6 @@ pub async fn create_withdrawal_idempotent(
                     }
                 }
             }
-            // If this write fails, the row is left `pending` with no provider
-            // info — recoverable later, and safe: it under-states what happened
-            // (a real transfer may have gone out) rather than erasing the record
-            // that a withdrawal was attempted at all.
-            sqlx::query_as::<_, Withdrawal>(
-                "UPDATE withdrawals
-                    SET provider = $2, provider_reference = $3, status = $4, updated_at = now()
-                  WHERE id = $1
-                  RETURNING id, merchant_id, amount_stroops, asset, status, provider,
-                            provider_reference, bank_code, account_number, failure_reason,
-                            idempotency_key, created_at, updated_at",
-            )
-            .bind(w.id)
-            .bind(&result.provider)
-            .bind(&result.provider_reference)
-            .bind(&result.status)
-            .fetch_one(db)
-            .await
-            .map_err(WithdrawalError::Database)
         }
         Err(err) => {
             // Refund + mark failed as one atomic unit, in a fresh transaction —
@@ -321,13 +302,16 @@ async fn record_payout(
           WHERE id = $1
           RETURNING id, merchant_id, amount_stroops, asset, status, provider,
                     provider_reference, bank_code, account_number, failure_reason,
-                    created_at, updated_at",
+                    idempotency_key, created_at, updated_at",
     )
     .bind(id)
     .bind(&result.provider)
     .bind(&result.provider_reference)
     .bind(&result.status)
     .fetch_one(db)
+    .await
+}
+
 /// Look up a withdrawal previously created with the given idempotency key for
 /// this merchant. Returns `None` when the key has not been used yet.
 pub async fn find_by_idempotency_key(
@@ -391,7 +375,7 @@ pub async fn reconcile_withdrawal_status(
     };
 
     // Already terminal: nothing to do. Keeps duplicate deliveries idempotent.
-    if current.status != "pending" {
+    if current.status != WithdrawalStatus::Pending {
         tx.rollback().await?;
         return Ok(Some(current));
     }

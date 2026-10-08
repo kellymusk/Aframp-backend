@@ -6,9 +6,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn record_deposit_returns_existing_payment_for_duplicate_tx_hash() {
-    let Some(state) = common::state().await else {
-        return;
-    };
+    let state = common::state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = common::ensure_merchant(&app, "deposit_idempotency").await;
 

@@ -10,9 +10,7 @@ use common::{ensure_merchant, send, state};
 
 #[tokio::test]
 async fn new_merchant_with_no_deposits_gets_empty_balance_array() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "bal_empty").await;
 
@@ -27,9 +25,7 @@ async fn new_merchant_with_no_deposits_gets_empty_balance_array() {
 
 #[tokio::test]
 async fn after_one_xlm_deposit_balance_returns_one_entry_with_correct_amounts() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "bal_deposit").await;
     let amount = 25_000_000_i64; // 2.5 XLM in stroops
@@ -60,9 +56,7 @@ async fn after_one_xlm_deposit_balance_returns_one_entry_with_correct_amounts() 
 
 #[tokio::test]
 async fn pending_deposit_shows_pending_gt_zero_and_available_zero() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "bal_pending").await;
     let amount = 10_000_000_i64;

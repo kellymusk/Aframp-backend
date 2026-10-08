@@ -4,8 +4,6 @@ use uuid::Uuid;
 
 use crate::auth::password;
 use crate::models::{Merchant, User, UserProfile};
-use crate::models::merchant::Merchant;
-use crate::models::user::User;
 
 /// Number of consecutive failed login attempts before an account is locked.
 const MAX_FAILED_ATTEMPTS: i32 = 10;
@@ -14,7 +12,7 @@ const LOCKOUT_DURATION_MINS: i64 = 30;
 
 /// Column list shared by all SELECT queries on the users table — keeps the
 /// new lockout columns in sync across every call site.
-const USER_COLS: &str =
+pub(crate) const USER_COLS: &str =
     "id, email, password_hash, name, is_admin, phone_number, phone_verified, \
      failed_login_count, locked_until, created_at, updated_at";
 
@@ -62,7 +60,7 @@ pub async fn create_verified(
     let merchant = sqlx::query_as::<_, Merchant>(
         "INSERT INTO merchants (user_id, name)
          VALUES ($1, $2)
-         RETURNING id, user_id, name, suspended_at, created_at",
+         RETURNING id, user_id, name, suspended_at, created_at, updated_at",
     )
     .bind(user.id)
     .bind(name)
@@ -82,11 +80,6 @@ pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
     }
 }
 
-pub async fn login(
-    db: &PgPool,
-    email: &str,
-    password_raw: &str,
-) -> Result<(User, Option<Merchant>), UserError> {
 /// Authenticate a user by email + password.
 ///
 /// On success: resets `failed_login_count` to 0.
@@ -97,7 +90,7 @@ pub async fn login(
 pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
     let user = sqlx::query_as::<_, User>(
         &format!(
-            "SELECT {USER_COLS} FROM users WHERE email = $1"
+            "SELECT {USER_COLS} FROM users WHERE email = $1 AND deleted_at IS NULL"
         ),
     )
     .bind(email)
@@ -155,7 +148,7 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     .await?;
 
     let merchant = sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, suspended_at, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
+        "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
     .bind(user.id)
     .fetch_optional(db)
@@ -172,20 +165,15 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
 }
 
 pub async fn user_by_id(db: &PgPool, user_id: Uuid) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as::<_, User>(
-        &format!("SELECT {USER_COLS} FROM users WHERE id = $1"),
-pub async fn user_by_id(db: &PgPool, user_id: Uuid) -> sqlx::Result<Option<User>> {
-    sqlx::query_as::<_, User>(
-        "SELECT id, email, name, is_admin, created_at FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(db)
-    .await
+    sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE id = $1"))
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
 }
 
 pub async fn user_profile_by_id(
     db: &PgPool,
-    user_id: uuid::Uuid,
+    user_id: Uuid,
 ) -> Result<Option<UserProfile>, sqlx::Error> {
     sqlx::query_as::<_, UserProfile>(
         "SELECT id, email, name, is_admin, created_at
@@ -196,29 +184,18 @@ pub async fn user_profile_by_id(
     .await
 }
 
-pub async fn merchant_by_user(
-    db: &PgPool,
-    user_id: uuid::Uuid,
-) -> Result<Option<Merchant>, sqlx::Error> {
 pub async fn merchant_by_user(db: &PgPool, user_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, suspended_at, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
-pub async fn merchant_by_user(db: &PgPool, user_id: Uuid) -> sqlx::Result<Option<Merchant>> {
-    sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at, updated_at FROM merchants WHERE user_id = $1",
+        "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
     .bind(user_id)
     .fetch_optional(db)
     .await
 }
 
-pub async fn merchant_by_id(
-    db: &PgPool,
-    merchant_id: uuid::Uuid,
-) -> Result<Option<Merchant>, sqlx::Error> {
 pub async fn merchant_by_id(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, suspended_at, created_at FROM merchants WHERE id = $1",
+        "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE id = $1",
     )
     .bind(merchant_id)
     .fetch_optional(db)
@@ -276,6 +253,8 @@ pub async fn is_active(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::E
         .fetch_optional(db)
         .await?
         .unwrap_or(false))
+}
+
 /// Admin operation: clear a user's account lockout immediately.
 /// Also resets `failed_login_count` so the next bad attempt starts fresh.
 pub async fn admin_unlock(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {

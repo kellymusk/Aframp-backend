@@ -1,0 +1,8 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "email already registered",
+  "code": "EMAIL_TAKEN"
+}

@@ -1,5 +1,4 @@
 use axum::extract::{Path, Query, State};
-use axum::http::header;
 use axum::http::{header, HeaderValue};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -11,10 +10,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, forbidden, internal, not_found, ApiResult, ErrorCode};
-use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
-use crate::models::{CreatePaymentRequestRequest, ListParams, PaymentRequest};
-use crate::error::{bad_request, bad_request_field, internal, not_found, ApiResult, ErrorCode};
+use crate::error::{
+    bad_request, bad_request_field, forbidden, internal, not_found, ApiResult, ErrorCode,
+};
+use crate::models::status::PaymentRequestStatus;
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
 use crate::pagination::{Cursor, Page};
 use crate::services::{payment_requests, wallets};
@@ -62,10 +61,6 @@ pub async fn create(
     let req = CreatePaymentRequestRequest::from_json(&body)
         .map_err(|(field, msg)| bad_request_field(field, msg))?;
 
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-
     // Refuse if the merchant is suspended.
     let merchant = crate::services::users::merchant_by_id(&state.db, merchant_id)
         .await
@@ -78,11 +73,11 @@ pub async fn create(
         ));
     }
 
-    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
+    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id, "stellar")
         .await
         .map_err(internal)?
         .ok_or_else(|| {
-            not_found(
+            bad_request(
                 ErrorCode::WalletNotFound,
                 "create a wallet before generating payment requests",
             )
@@ -139,13 +134,6 @@ pub async fn qr(
 ) -> ApiResult<impl IntoResponse> {
     let size = params.size.unwrap_or(256).clamp(64, 1024) as u32;
 
-/// Public, cache-friendly status-only poll for customer devices after they
-/// scan a QR. Prefer this over `GET /payment-requests/{id}` when only the
-/// payment outcome is needed.
-pub async fn status(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> ApiResult<impl IntoResponse> {
     let pr = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
@@ -167,6 +155,35 @@ pub async fn status(
     let png = qr_png_cached(id, size, &sep7_uri)?;
 
     Ok(([(header::CONTENT_TYPE, "image/png")], png))
+}
+
+/// Public, cache-friendly status-only poll for customer devices after they
+/// scan a QR. Prefer this over `GET /payment-requests/{id}` when only the
+/// payment outcome is needed.
+pub async fn status(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<impl IntoResponse> {
+    let pr = payment_requests::payment_request_by_id(&state.db, id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+
+    let status = effective_status(pr.status, pr.expires_at, pr.cancelled_at);
+    let paid_at = if status == "paid" {
+        Some(pr.updated_at)
+    } else {
+        None
+    };
+
+    let mut response = Json(PaymentRequestStatusView { status, paid_at }).into_response();
+    // Short TTL so CDN/browser can coalesce rapid polls without serving stale
+    // "pending" for long after a payment flips to paid.
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=5"),
+    );
+    Ok(response)
 }
 
 #[derive(serde::Deserialize)]
@@ -206,21 +223,6 @@ fn render_qr_png(contents: &str, size: u32) -> ApiResult<Vec<u8>> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|_| internal("failed to encode QR code as PNG"))?;
     Ok(png)
-    let status = effective_status(&pr.status, pr.expires_at);
-    let paid_at = if status == "paid" {
-        Some(pr.updated_at)
-    } else {
-        None
-    };
-
-    let mut response = Json(PaymentRequestStatusView { status, paid_at }).into_response();
-    // Short TTL so CDN/browser can coalesce rapid polls without serving stale
-    // "pending" for long after a payment flips to paid.
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=5"),
-    );
-    Ok(response)
 }
 
 pub async fn list(
@@ -236,7 +238,6 @@ pub async fn list(
     })?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
     let include_cancelled = params.include_cancelled.unwrap_or(false);
-    let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)
@@ -321,15 +322,15 @@ pub struct ListParams {
 /// A `pending` row whose expiry has passed is reported as `expired` at read
 /// time, so a request going stale needs no background job to flip it.
 /// Cancelled rows report as `cancelled` regardless of expiry.
-fn effective_status(status: &str, expires_at: DateTime<Utc>, cancelled_at: Option<DateTime<Utc>>) -> String {
+fn effective_status(
+    status: PaymentRequestStatus,
+    expires_at: DateTime<Utc>,
+    cancelled_at: Option<DateTime<Utc>>,
+) -> String {
     if cancelled_at.is_some() {
         return "cancelled".to_string();
     }
-    if status == "pending" && expires_at < Utc::now() {
-/// A `pending` row whose expiry has passed is reported as `expired` at read
-/// time, so a request going stale needs no background job to flip it.
-fn effective_status(status: crate::models::status::PaymentRequestStatus, expires_at: DateTime<Utc>) -> String {
-    if status == crate::models::status::PaymentRequestStatus::Pending && expires_at < Utc::now() {
+    if status == PaymentRequestStatus::Pending && expires_at < Utc::now() {
         "expired".to_string()
     } else {
         status.as_str().to_string()
@@ -345,9 +346,7 @@ fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestV
         amount_stroops: pr.amount_stroops,
         asset: pr.asset.clone(),
         memo: pr.memo.clone(),
-        status: effective_status(&pr.status, pr.expires_at, pr.cancelled_at),
-        status: pr.status.clone(),
-        status: effective_status(pr.status, pr.expires_at),
+        status: effective_status(pr.status, pr.expires_at, pr.cancelled_at),
         expires_at: pr.expires_at,
         cancelled_at: pr.cancelled_at,
         created_at: pr.created_at,
@@ -364,9 +363,7 @@ fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentReque
         amount_stroops: row.amount_stroops,
         asset: row.asset.clone(),
         memo: row.memo.clone(),
-        status: effective_status(&row.status, row.expires_at, row.cancelled_at),
-        status: row.status.clone(),
-        status: effective_status(row.status, row.expires_at),
+        status: effective_status(row.status, row.expires_at, row.cancelled_at),
         expires_at: row.expires_at,
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,
@@ -404,17 +401,6 @@ fn percent_encode(value: &str) -> String {
         }
     }
     out
-}
-
-fn map_payment_request_error(
-    err: payment_requests::PaymentRequestError,
-) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
-    match err {
-        payment_requests::PaymentRequestError::InvalidAmount => {
-            bad_request(ErrorCode::InvalidAmount, "amount_stroops must be positive")
-        }
-        payment_requests::PaymentRequestError::Database(e) => internal(e),
-    }
 }
 
 #[cfg(test)]

@@ -13,4 +13,13 @@ impl PaymentProvider for MockProvider {
             status: "pending".into(),
         })
     }
+
+    /// No real signing in tests — a fixed sentinel stands in for "valid".
+    fn verify_webhook_signature(&self, _body: &[u8], signature: &str) -> bool {
+        signature == "mock-signature"
+    }
+
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Mock Account Holder".into())
+    }
 }

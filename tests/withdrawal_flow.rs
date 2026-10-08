@@ -14,6 +14,10 @@ struct FailingProvider;
 
 #[async_trait]
 impl PaymentProvider for FailingProvider {
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err("simulated provider failure".into())
     }
@@ -25,6 +29,10 @@ struct RowVanishingProvider(sqlx::PgPool);
 
 #[async_trait]
 impl PaymentProvider for RowVanishingProvider {
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
     async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
         sqlx::query("DELETE FROM withdrawals WHERE id = $1::uuid")
             .bind(&req.reference)
@@ -36,12 +44,19 @@ impl PaymentProvider for RowVanishingProvider {
             provider_reference: "TRF_vanished".into(),
             status: "processing".into(),
         })
+    }
+}
+
 /// Simulates the Paystack error returned when the destination bank code
 /// isn't a recognized institution code.
 struct InvalidBankCodeProvider;
 
 #[async_trait]
 impl PaymentProvider for InvalidBankCodeProvider {
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err("Invalid bank code".into())
     }
@@ -53,6 +68,10 @@ struct InvalidAccountNumberProvider;
 
 #[async_trait]
 impl PaymentProvider for InvalidAccountNumberProvider {
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err("Could not resolve account number".into())
     }
@@ -64,6 +83,10 @@ struct TimeoutProvider;
 
 #[async_trait]
 impl PaymentProvider for TimeoutProvider {
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err("request to Paystack timed out".into())
     }
@@ -372,9 +395,7 @@ async fn withdrawal_payout_failure_refunds_balance_and_records_reason() {
 /// retry: the withdrawal row is already persisted as `failed`.
 #[tokio::test]
 async fn withdrawal_paystack_failure_returns_documented_502_payout_failed_shape() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(FailingProvider);
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "payout_502_shape").await;
@@ -624,9 +645,7 @@ async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
 
 #[tokio::test]
 async fn withdraw_amount_stroops_rejects_float_and_string() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(MockProvider);
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "wd_amount_types").await;
@@ -666,9 +685,7 @@ async fn withdraw_amount_stroops_rejects_float_and_string() {
 
 #[tokio::test]
 async fn withdrawal_payout_record_failure_is_surfaced_not_refunded() {
-    let Some(mut state) = state().await else {
-        return;
-    };
+    let mut state = state().await;
     state.payment_provider = Arc::new(RowVanishingProvider(state.db.clone()));
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "payout_record_fail").await;

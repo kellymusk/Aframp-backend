@@ -1,0 +1,8 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "upstream provider unavailable",
+  "code": "PAYOUT_FAILED"
+}

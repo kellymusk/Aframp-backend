@@ -6,9 +6,7 @@ use common::state;
 /// the read batch is framed by BEGIN/COMMIT so counts stay consistent.
 #[tokio::test]
 async fn admin_overview_ignores_uncommitted_writes() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
 
     let before = aframp::services::admin::overview_in_transaction(&state.db)
         .await

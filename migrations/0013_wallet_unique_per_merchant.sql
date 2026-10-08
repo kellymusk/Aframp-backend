@@ -9,4 +9,7 @@
 -- services::wallets::create_wallet will now return a unique-constraint error on
 -- a second call for the same merchant, letting the API return a clear 409
 -- instead of creating a new unreachable wallet.
-ALTER TABLE wallets ADD CONSTRAINT wallets_merchant_id_unique UNIQUE (merchant_id);
+--
+-- Scoped per network so a merchant can still hold one wallet per network
+-- (see services::payment_requests::wallet_by_merchant_and_network).
+ALTER TABLE wallets ADD CONSTRAINT wallets_merchant_id_network_unique UNIQUE (merchant_id, network);

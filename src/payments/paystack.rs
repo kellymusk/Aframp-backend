@@ -15,6 +15,7 @@ pub struct PaystackProvider {
     // Cache of resolved account names keyed by (account_number, bank_code) so that
     // repeated withdrawals to the same account don't re-hit the resolution API.
     resolved_cache: Mutex<HashMap<(String, String), String>>,
+    base_url: String,
 }
 
 impl PaystackProvider {
@@ -27,6 +28,7 @@ impl PaystackProvider {
             secret_key,
             http,
             resolved_cache: Mutex::new(HashMap::new()),
+            base_url: BASE_URL.to_string(),
         }
     }
 
@@ -42,6 +44,7 @@ impl PaystackProvider {
             secret_key,
             http,
             base_url,
+            resolved_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -189,6 +192,24 @@ impl PaystackWebhookEvent {
 
 #[async_trait]
 impl PaymentProvider for PaystackProvider {
+    async fn resolve_account(&self, bank_code: &str, account_number: &str) -> Result<String, String> {
+        self.verify_bank_account(account_number, bank_code).await
+    }
+
+    /// Paystack signs webhook bodies with HMAC-SHA512 keyed by the secret key
+    /// and sends the hex digest in `x-paystack-signature`.
+    fn verify_webhook_signature(&self, body: &[u8], signature: &str) -> bool {
+        use hmac::{Hmac, Mac};
+        let Ok(expected) = hex::decode(signature) else {
+            return false;
+        };
+        let Ok(mut mac) = Hmac::<sha2::Sha512>::new_from_slice(self.secret_key.as_bytes()) else {
+            return false;
+        };
+        mac.update(body);
+        mac.verify_slice(&expected).is_ok()
+    }
+
     async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
         let amount_kobo: i64 = req
             .amount

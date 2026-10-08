@@ -177,9 +177,16 @@ mod tests {
     }
 
     /// A 10-digit Nigerian subscriber number (the part after the country code).
+    /// A 10-digit Nigerian mobile subscriber number. Mobile numbers start with
+    /// 7, 8 or 9 (070x, 080x, 081x, 090x, 091x); a leading 0 would collide
+    /// with the national trunk prefix.
     fn subscriber_number() -> impl Strategy<Value = String> {
-        proptest::collection::vec(0u8..10, 10)
-            .prop_map(|digits| digits.into_iter().map(|d| (b'0' + d) as char).collect())
+        (7u8..10, proptest::collection::vec(0u8..10, 9)).prop_map(|(first, rest)| {
+            std::iter::once(first)
+                .chain(rest)
+                .map(|d| (b'0' + d) as char)
+                .collect()
+        })
     }
 
     /// Wraps a subscriber number in one of the supported input shapes, with

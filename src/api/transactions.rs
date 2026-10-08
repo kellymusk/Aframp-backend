@@ -3,7 +3,7 @@ use axum::extract::{Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use futures::stream;
+use futures_util::stream;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
@@ -42,26 +42,6 @@ pub struct ExportParams {
     pub to: Option<String>,
 }
 
-fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
-
-fn payment_csv_row(p: &Payment) -> String {
-    format!(
-        "{},{},{},{},{},{}\n",
-        p.id,
-        csv_escape(&p.status),
-        p.amount,
-        csv_escape(&p.currency),
-        p.created_at.to_rfc3339(),
-        csv_escape(p.description.as_deref().unwrap_or("")),
-    )
-}
-
 pub async fn export(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -98,10 +78,11 @@ pub async fn export(
         .await
         .map_err(internal)?;
 
-    let header = "id,status,amount,currency,created_at,description\n".to_string();
+    let header = format!("{}\n", Payment::CSV_HEADER);
     let body_stream = stream::iter(
         std::iter::once(header)
-            .chain(rows.iter().map(payment_csv_row)),
+            .chain(rows.into_iter().map(|p| format!("{}\n", p.to_csv_record())))
+            .map(Ok::<_, std::convert::Infallible>),
     );
 
     let filename = match (from, to) {
@@ -116,7 +97,7 @@ pub async fn export(
             format!("attachment; filename=\"{}\"", filename),
         )
         .body(Body::from_stream(body_stream))
-        .map_err(|_| internal(anyhow::anyhow!("failed to build export response")))?;
+        .map_err(|_| internal("failed to build export response"))?;
 
     Ok(response)
 }

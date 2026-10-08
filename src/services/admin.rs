@@ -218,7 +218,7 @@ pub async fn suspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<M
         "UPDATE merchants
             SET suspended_at = now()
           WHERE id = $1
-          RETURNING id, user_id, name, suspended_at, created_at",
+          RETURNING id, user_id, name, suspended_at, created_at, updated_at",
     )
     .bind(merchant_id)
     .fetch_optional(db)
@@ -232,7 +232,7 @@ pub async fn unsuspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option
         "UPDATE merchants
             SET suspended_at = NULL
           WHERE id = $1
-          RETURNING id, user_id, name, suspended_at, created_at",
+          RETURNING id, user_id, name, suspended_at, created_at, updated_at",
     )
     .bind(merchant_id)
     .fetch_optional(db)

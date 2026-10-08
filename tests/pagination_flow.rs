@@ -36,9 +36,7 @@ async fn create_payment_request(app: &axum::Router, token: &str) -> String {
 
 #[tokio::test]
 async fn payment_request_pages_are_stable_under_concurrent_inserts() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "page_pr").await;
     let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
@@ -66,9 +64,7 @@ async fn payment_request_pages_are_stable_under_concurrent_inserts() {
 
 #[tokio::test]
 async fn withdrawal_pages_break_timestamp_ties_by_id() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "page_wd").await;
 
@@ -101,9 +97,7 @@ async fn withdrawal_pages_break_timestamp_ties_by_id() {
 
 #[tokio::test]
 async fn an_invalid_cursor_is_rejected() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "page_bad").await;
 

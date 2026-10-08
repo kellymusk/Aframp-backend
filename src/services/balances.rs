@@ -74,7 +74,21 @@ mod tests {
 
     #[sqlx::test]
     async fn credit_confirmed_deposit_sets_available_balance(db: PgPool) {
-        let merchant_id = Uuid::new_v4();
+        // balances.merchant_id references merchants, which references users.
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, name) VALUES ('balance@example.com', 'x', 'Balance Test')
+             RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .expect("user inserted");
+        let merchant_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO merchants (user_id, name) VALUES ($1, 'Balance Test') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&db)
+        .await
+        .expect("merchant inserted");
 
         credit_confirmed_deposit(&db, merchant_id, "USDC", 1_000)
             .await

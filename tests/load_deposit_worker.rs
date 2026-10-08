@@ -39,31 +39,36 @@ async fn test_pool() -> Option<PgPool> {
 
 /// Register `count` merchants, each with a single wallet, and return the
 /// wallet ids. Uses a unique suffix so repeated runs don't collide.
-async fn seed_merchants_and_wallets(pool: &PgPool, count: usize) -> Vec<i64> {
-    let suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+async fn seed_merchants_and_wallets(pool: &PgPool, count: usize) -> Vec<uuid::Uuid> {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
 
     let mut wallet_ids = Vec::with_capacity(count);
 
     for i in 0..count {
-        let merchant_id: i64 = sqlx::query_scalar(
-            "INSERT INTO merchants (name, email, created_at) \
-             VALUES ($1, $2, NOW()) RETURNING id",
+        let user_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, name) VALUES ($1, 'x', $2) RETURNING id",
         )
-        .bind(format!("load-merchant-{suffix}-{i}"))
         .bind(format!("load-{suffix}-{i}@example.test"))
+        .bind(format!("load-merchant-{i}"))
+        .fetch_one(pool)
+        .await
+        .expect("failed to insert user");
+
+        let merchant_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO merchants (user_id, name) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(format!("load-merchant-{i}"))
         .fetch_one(pool)
         .await
         .expect("failed to insert merchant");
 
-        let wallet_id: i64 = sqlx::query_scalar(
-            "INSERT INTO wallets (merchant_id, stellar_account, created_at) \
-             VALUES ($1, $2, NOW()) RETURNING id",
+        let wallet_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
+             VALUES ($1, $2, 'stellar', 'unused') RETURNING id",
         )
         .bind(merchant_id)
-        .bind(format!("GLOAD{suffix}{i:04}"))
+        .bind(format!("GLOAD{}{i:04}", &suffix[..20]))
         .fetch_one(pool)
         .await
         .expect("failed to insert wallet");
@@ -117,7 +122,8 @@ async fn deposit_worker_poll_once_handles_100_merchants_within_budget() {
     let budget = Duration::from_secs(2 * POLL_INTERVAL_SECS);
 
     let started = Instant::now();
-    let result = crate::services::deposit_worker::poll_once(&pool).await;
+    let listener = aframp::blockchain::stellar::StellarListener::new(horizon.base_url());
+    let result = aframp::blockchain::worker::poll_once(&pool, &listener).await;
     let elapsed = started.elapsed();
 
     assert!(

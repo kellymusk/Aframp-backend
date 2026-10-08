@@ -142,6 +142,30 @@ pub async fn payments_by_merchant(
     .await
 }
 
+/// All of a merchant's payments created within the optional `[from, to]`
+/// window, oldest first — the row source for the CSV export.
+pub async fn payments_by_merchant_range(
+    db: &PgPool,
+    merchant_id: Uuid,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<Payment>, sqlx::Error> {
+    sqlx::query_as::<_, Payment>(
+        "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                network, status, confirmations, created_at, updated_at
+           FROM payments
+          WHERE merchant_id = $1
+            AND ($2::timestamptz IS NULL OR created_at >= $2)
+            AND ($3::timestamptz IS NULL OR created_at <= $3)
+          ORDER BY created_at ASC",
+    )
+    .bind(merchant_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(db)
+    .await
+}
+
 /// Keyset-paginated variant of [`payments_by_merchant`]. Orders by
 /// `(created_at, id)` DESC so concurrent inserts can't shift rows across
 /// pages the way an OFFSET-based scan can.

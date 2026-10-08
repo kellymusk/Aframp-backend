@@ -82,14 +82,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     // Background OTP cleanup: deletes challenges older than 24 hours past
     // expiry every hour. Prevents unbounded growth of the otp_challenges table.
-    // See services::otp::cleanup_expired for the retention policy.
+    // See services::otp::purge_stale_challenges for the retention policy.
     {
         let db = state.db.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
             loop {
                 interval.tick().await;
-                match aframp::services::otp::cleanup_expired(&db).await {
+                match aframp::services::otp::purge_stale_challenges(&db).await {
                     Ok(n) => tracing::info!(deleted = n, "otp_challenges cleanup complete"),
                     Err(e) => tracing::error!(error = %e, "otp_challenges cleanup failed"),
                 }
@@ -113,19 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(origins)
-        .allow_credentials(true)
-        .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::PATCH,
-            Method::DELETE,
-        ])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
+    let cors = aframp::cors_layer(origins);
 
     let max_request_body_bytes = max_request_body_bytes();
     tracing::info!(max_request_body_bytes, "request body limit configured");

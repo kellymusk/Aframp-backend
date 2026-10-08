@@ -27,8 +27,12 @@ async fn app() -> axum::Router {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// A fixed valid Nigerian phone number used in every signup request.
-const PHONE: &str = "08011122233";
+/// A fresh valid Nigerian phone number per signup, so the per-number OTP
+/// send limit never turns a validation result into a 429.
+fn fresh_phone() -> String {
+    let n = (uuid::Uuid::new_v4().as_u128() % 100_000_000) as u64;
+    format!("080{n:08}")
+}
 
 /// POST /signup with the given email. Returns the HTTP status code.
 /// Other fields are fixed — we're only varying the email.
@@ -42,7 +46,7 @@ async fn signup_status(app: axum::Router, email: &str) -> StatusCode {
             "email": email,
             "password": "ValidPass123!",
             "name": "Test User",
-            "phone_number": PHONE,
+            "phone_number": fresh_phone(),
         })),
     )
     .await;
@@ -147,7 +151,7 @@ async fn accepts_maximum_length_domain() {
 }
 
 // ---------------------------------------------------------------------------
-// Invalid email formats — should be rejected (HTTP 422 Unprocessable Entity)
+// Invalid email formats — should be rejected (HTTP 400 with code INVALID_PARAMETERS)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -156,7 +160,7 @@ async fn rejects_missing_at_sign() {
     let status = signup_status(app, "notanemail.com").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "address without '@' must be rejected"
     );
 }
@@ -167,7 +171,7 @@ async fn rejects_double_at_sign() {
     let status = signup_status(app, "user@@example.com").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "address with double '@' must be rejected"
     );
 }
@@ -178,7 +182,7 @@ async fn rejects_trailing_dot_in_domain() {
     let status = signup_status(app, "user@example.com.").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "domain with trailing dot must be rejected"
     );
 }
@@ -189,7 +193,7 @@ async fn rejects_leading_dot_in_local_part() {
     let status = signup_status(app, ".user@example.com").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "local part with leading dot must be rejected"
     );
 }
@@ -200,7 +204,7 @@ async fn rejects_trailing_dot_in_local_part() {
     let status = signup_status(app, "user.@example.com").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "local part with trailing dot must be rejected"
     );
 }
@@ -211,7 +215,7 @@ async fn rejects_consecutive_dots_in_local_part() {
     let status = signup_status(app, "user..name@example.com").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "local part with consecutive dots must be rejected"
     );
 }
@@ -223,7 +227,7 @@ async fn rejects_domain_with_no_dot() {
     let status = signup_status(app, "user@localhost").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "domain without a dot must be rejected"
     );
 }
@@ -236,7 +240,7 @@ async fn rejects_local_part_exceeding_64_chars() {
     let status = signup_status(app, &email).await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "local part longer than 64 chars must be rejected"
     );
 }
@@ -251,7 +255,7 @@ async fn rejects_domain_exceeding_255_chars() {
     let status = signup_status(app, &email).await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "domain longer than 255 chars must be rejected"
     );
 }
@@ -262,7 +266,7 @@ async fn rejects_empty_local_part() {
     let status = signup_status(app, "@example.com").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "empty local part must be rejected"
     );
 }
@@ -273,7 +277,7 @@ async fn rejects_empty_string() {
     let status = signup_status(app, "").await;
     assert_eq!(
         status,
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
         "empty email string must be rejected"
     );
 }

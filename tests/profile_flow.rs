@@ -14,9 +14,7 @@ fn fresh_phone() -> (String, String) {
 
 #[tokio::test]
 async fn patch_me_updates_the_name() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "profile_name").await;
 
@@ -31,9 +29,7 @@ async fn patch_me_updates_the_name() {
 
 #[tokio::test]
 async fn patch_me_changes_the_phone_only_after_otp_verification() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let db = state.db.clone();
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "profile_phone").await;
@@ -66,9 +62,7 @@ async fn patch_me_changes_the_phone_only_after_otp_verification() {
 
 #[tokio::test]
 async fn patch_me_rejects_invalid_input() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "profile_invalid").await;
 
@@ -89,9 +83,7 @@ async fn patch_me_rejects_invalid_input() {
 
 #[tokio::test]
 async fn patch_me_refuses_a_phone_owned_by_another_account() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let db = state.db.clone();
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "profile_taken").await;
@@ -110,9 +102,7 @@ async fn patch_me_refuses_a_phone_owned_by_another_account() {
 
 #[tokio::test]
 async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let db = state.db.clone();
     let app = aframp::router(state);
     let (token, merchant_id) = ensure_merchant(&app, "profile_delete").await;
@@ -178,9 +168,7 @@ async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
 
 #[tokio::test]
 async fn delete_me_requires_authentication() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state);
     let (status, _) = send(app.clone(), "DELETE", "/me", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

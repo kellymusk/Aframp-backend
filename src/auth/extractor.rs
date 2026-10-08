@@ -31,10 +31,6 @@ impl FromRequestParts<AppState> for Session {
     }
 }
 
-/// Same session proof as [`AuthUser`], but additionally requires the `is_admin`
-/// JWT claim. The claim is baked in at login and not re-checked against the
-/// database, so revoking admin access takes up to [`jwt::TOKEN_TTL_HOURS`] to
-/// take effect on outstanding tokens.
 /// Same session proof as [`AuthUser`], but additionally requires admin rights.
 /// The `is_admin` JWT claim is only a cheap first filter: every admin request
 /// also re-reads `users.is_admin`, so revoking admin access in the database
@@ -61,25 +57,28 @@ async fn authenticate_api_key(
     if !token.starts_with("sk_test_") && !token.starts_with("sk_live_") {
         return Ok(None);
     }
-    let key_hash = crate::auth::api_key::hash(token);
+    let secret_hash = crate::auth::api_key::hash(token);
     let row = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
-        "SELECT id, merchant_id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL",
+        "SELECT m.user_id, k.merchant_id
+           FROM api_keys k
+           JOIN merchants m ON m.id = k.merchant_id
+          WHERE k.secret_hash = $1 AND k.revoked_at IS NULL",
     )
-    .bind(&key_hash)
+    .bind(&secret_hash)
     .fetch_optional(&state.db)
     .await
     .map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
-                code: ErrorCode::Internal,
+                code: ErrorCode::InternalError,
                 error: "failed to verify api key".into(),
                 field: None,
             }),
         )
     })?;
 
-    let Some((_key_id, merchant_id)) = row else {
+    let Some((user_id, merchant_id)) = row else {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ApiError {
@@ -91,7 +90,7 @@ async fn authenticate_api_key(
     };
 
     Ok(Some(AuthUser {
-        user_id: merchant_id,
+        user_id,
         merchant_id: Some(merchant_id),
     }))
 }
@@ -129,7 +128,6 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let claims = authenticate_active(parts, state).await?;
         // Merchant API keys take precedence over session JWTs so server-to-server
         // integrations can authenticate without an OTP login.
         if let Some(token) = bearer_token(parts) {
@@ -137,7 +135,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 return Ok(user);
             }
         }
-        let claims = authenticate(parts, state)?;
+        let claims = authenticate_active(parts, state).await?;
         Ok(AuthUser {
             user_id: claims.sub,
             merchant_id: claims.merchant_id,

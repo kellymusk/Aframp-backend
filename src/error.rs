@@ -12,6 +12,7 @@ pub enum ErrorCode {
     InsufficientBalance,
     UnsupportedAsset,
     PayoutFailed,
+    AccountVerificationFailed,
     EmailTaken,
     InvalidCredentials,
     UserNotFound,
@@ -43,6 +44,7 @@ impl ErrorCode {
             ErrorCode::InsufficientBalance => "INSUFFICIENT_BALANCE",
             ErrorCode::UnsupportedAsset => "UNSUPPORTED_ASSET",
             ErrorCode::PayoutFailed => "PAYOUT_FAILED",
+            ErrorCode::AccountVerificationFailed => "ACCOUNT_VERIFICATION_FAILED",
             ErrorCode::EmailTaken => "EMAIL_TAKEN",
             ErrorCode::InvalidCredentials => "INVALID_CREDENTIALS",
             ErrorCode::UserNotFound => "USER_NOT_FOUND",
@@ -156,6 +158,16 @@ impl From<crate::services::users::UserError> for (StatusCode, Json<ApiError>) {
             UserError::InvalidCredentials => {
                 unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
             }
+            UserError::AccountLocked { until } => forbidden(
+                ErrorCode::Forbidden,
+                &format!(
+                    "account locked due to too many failed login attempts; try again after {}",
+                    until.format("%Y-%m-%dT%H:%M:%SZ")
+                ),
+            ),
+            UserError::MerchantSuspended => {
+                forbidden(ErrorCode::Forbidden, "this merchant account has been suspended")
+            }
             UserError::Database(_) => internal(err),
         }
     }
@@ -199,6 +211,10 @@ impl From<crate::services::withdrawals::WithdrawalError> for (StatusCode, Json<A
                 ErrorCode::InvalidAmount,
                 "amount_stroops must be a whole number of kobo",
             ),
+            WithdrawalError::AccountVerificationFailed(msg) => bad_request(
+                ErrorCode::AccountVerificationFailed,
+                &format!("bank account could not be verified: {msg}"),
+            ),
             WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
             WithdrawalError::Database(e) => internal(e),
         }
@@ -212,9 +228,15 @@ impl From<crate::services::payment_requests::PaymentRequestError> for (StatusCod
             PaymentRequestError::InvalidAmount => {
                 bad_request(ErrorCode::InvalidAmount, "amount_stroops must be positive")
             }
+            PaymentRequestError::WalletNotFound(network) => bad_request(
+                ErrorCode::WalletNotFound,
+                &format!("create a {network} wallet before generating payment requests"),
+            ),
             PaymentRequestError::Database(e) => internal(e),
         }
     }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +336,7 @@ mod tests {
             ErrorCode::InsufficientBalance,
             ErrorCode::UnsupportedAsset,
             ErrorCode::PayoutFailed,
+            ErrorCode::AccountVerificationFailed,
             ErrorCode::EmailTaken,
             ErrorCode::InvalidCredentials,
             ErrorCode::UserNotFound,

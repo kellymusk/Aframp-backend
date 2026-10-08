@@ -12,8 +12,8 @@ use tower::ServiceExt;
 
 use common::state;
 
-async fn app() -> Option<axum::Router> {
-    state().await.map(aframp::router)
+async fn app() -> axum::Router {
+    aframp::router(state().await)
 }
 
 /// Sends a raw request with explicit control over the `Content-Type` header
@@ -45,9 +45,7 @@ async fn raw_send(
 
 #[tokio::test]
 async fn login_with_no_content_type_but_a_body_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     // No Content-Type, non-empty body — the middleware must reject it before the
     // handler ever runs.
     let status = raw_send(
@@ -63,9 +61,7 @@ async fn login_with_no_content_type_but_a_body_returns_415() {
 
 #[tokio::test]
 async fn login_with_text_plain_body_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let status = raw_send(
         app,
         "POST",
@@ -79,9 +75,7 @@ async fn login_with_text_plain_body_returns_415() {
 
 #[tokio::test]
 async fn login_415_error_body_has_expected_shape() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let body_str = r#"{"email":"x@x.com","password":"password123"}"#;
     let request = Request::builder()
         .method("POST")
@@ -118,9 +112,7 @@ async fn login_415_error_body_has_expected_shape() {
 
 #[tokio::test]
 async fn payment_requests_post_with_application_xml_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let body_str = r#"{"amount_stroops":25000000}"#;
     let status = raw_send(
         app,
@@ -135,9 +127,7 @@ async fn payment_requests_post_with_application_xml_returns_415() {
 
 #[tokio::test]
 async fn payment_requests_post_with_text_plain_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let status = raw_send(
         app,
         "POST",
@@ -151,9 +141,7 @@ async fn payment_requests_post_with_text_plain_returns_415() {
 
 #[tokio::test]
 async fn payment_requests_post_with_no_content_type_but_body_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let status = raw_send(
         app,
         "POST",
@@ -169,9 +157,7 @@ async fn payment_requests_post_with_no_content_type_but_body_returns_415() {
 
 #[tokio::test]
 async fn withdraw_post_with_text_plain_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let body_str = r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
     let status = raw_send(app, "POST", "/withdraw", Some("text/plain"), body_str).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -179,9 +165,7 @@ async fn withdraw_post_with_text_plain_returns_415() {
 
 #[tokio::test]
 async fn withdraw_post_with_application_xml_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let body_str = r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
     let status = raw_send(app, "POST", "/withdraw", Some("application/xml"), body_str).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -189,9 +173,7 @@ async fn withdraw_post_with_application_xml_returns_415() {
 
 #[tokio::test]
 async fn withdraw_post_with_no_content_type_but_body_returns_415() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     let body_str = r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
     let status = raw_send(app, "POST", "/withdraw", None, body_str).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -201,9 +183,7 @@ async fn withdraw_post_with_no_content_type_but_body_returns_415() {
 
 #[tokio::test]
 async fn login_with_json_content_type_is_not_rejected_by_middleware() {
-    let Some(app) = app().await else {
-        return;
-    };
+    let app = app().await;
     // This request has a valid Content-Type. The middleware must pass it through.
     // The handler will likely return 401 (bad credentials) but NOT 415.
     let body_str = r#"{"email":"nobody@example.com","password":"password123"}"#;

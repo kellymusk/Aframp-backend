@@ -6,7 +6,7 @@ use uuid::Uuid;
 /// Maximum number of characters allowed in a user or merchant name.
 ///
 /// This mirrors the `CHECK (char_length(name) <= 100)` constraints added to
-/// the `users` and `merchants` tables in `migrations/0009_name_length_check.sql`
+/// the `users` and `merchants` tables in `migrations/0011_name_length_check.sql`
 /// and the application-level check in `validate_name`.
 pub const MAX_NAME_LENGTH: usize = 100;
 

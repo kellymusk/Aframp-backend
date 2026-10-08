@@ -24,6 +24,10 @@ struct FailingMockProvider;
 
 #[async_trait]
 impl PaymentProvider for FailingMockProvider {
+    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
     async fn create_payout(&self, _req: &PayoutRequest) -> Result<PayoutResult, String> {
         Err(PROVIDER_ERROR.into())
     }

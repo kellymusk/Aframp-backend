@@ -134,7 +134,7 @@ async fn assert_limit_matrix(
     path: &str,
 ) {
     // Missing limit → default 50
-    let (status, json) = send(app.clone(), path, Some(token), None).await;
+    let (status, json) = send(app.clone(), "GET", path, Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "default limit on {path}: {json}");
     assert_eq!(
         page_items(&json).len(),
@@ -143,7 +143,7 @@ async fn assert_limit_matrix(
     );
 
     // limit=0 → clamped to 1
-    let (status, json) = send(app.clone(), &format!("{path}?limit=0"), Some(token), None).await;
+    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=0"), Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=0: {json}");
     assert_eq!(
         page_items(&json).len(),
@@ -152,17 +152,17 @@ async fn assert_limit_matrix(
     );
 
     // limit=1
-    let (status, json) = send(app.clone(), &format!("{path}?limit=1"), Some(token), None).await;
+    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=1"), Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=1: {json}");
     assert_eq!(page_items(&json).len(), 1);
 
     // limit=200
-    let (status, json) = send(app.clone(), &format!("{path}?limit=200"), Some(token), None).await;
+    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=200"), Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=200: {json}");
     assert_eq!(page_items(&json).len(), 200);
 
     // limit=201 → clamped to 200
-    let (status, json) = send(app.clone(), &format!("{path}?limit=201"), Some(token), None).await;
+    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=201"), Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=201: {json}");
     assert_eq!(
         page_items(&json).len(),
@@ -171,15 +171,13 @@ async fn assert_limit_matrix(
     );
 
     // limit=abc → 400, never 500
-    let (status, json) = send(app.clone(), &format!("{path}?limit=abc"), Some(token), None).await;
+    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=abc"), Some(token), None).await;
     assert_bad_limit(status, &json);
 }
 
 #[tokio::test]
 async fn transactions_limit_boundaries() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "lim_tx").await;
     let address = ensure_wallet(&app, &token).await;
@@ -189,9 +187,7 @@ async fn transactions_limit_boundaries() {
 
 #[tokio::test]
 async fn withdrawals_limit_boundaries() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "lim_wd").await;
     let _address = ensure_wallet(&app, &token).await;
@@ -201,9 +197,7 @@ async fn withdrawals_limit_boundaries() {
 
 #[tokio::test]
 async fn payment_requests_limit_boundaries() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "lim_pr").await;
     let address = ensure_wallet(&app, &token).await;

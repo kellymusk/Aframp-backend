@@ -48,7 +48,7 @@ async fn simulate_deposit(
     .await
     .expect("record_deposit should succeed");
 
-    assert_eq!(payment.status, "detected");
+    assert_eq!(payment.status.as_str(), "detected");
 
     payments::set_status(&state.db, payment.id, UpdatePaymentStatus::Verified)
         .await
@@ -107,9 +107,7 @@ async fn simulate_deposit(
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn deposit_with_matching_memo_and_exact_amount_marks_request_paid() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id_str) = ensure_merchant(&app, "corr_paid").await;
     let merchant_id: Uuid = merchant_id_str.parse().unwrap();
@@ -124,7 +122,7 @@ async fn deposit_with_matching_memo_and_exact_amount_marks_request_paid() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "wallet create: {wallet_json}");
-    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
+    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id, "stellar")
         .await
         .unwrap()
         .expect("wallet should exist after create");
@@ -169,9 +167,7 @@ async fn deposit_with_matching_memo_and_exact_amount_marks_request_paid() {
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn deposit_with_matching_memo_but_smaller_amount_marks_request_partial() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id_str) = ensure_merchant(&app, "corr_partial").await;
     let merchant_id: Uuid = merchant_id_str.parse().unwrap();
@@ -185,7 +181,7 @@ async fn deposit_with_matching_memo_but_smaller_amount_marks_request_partial() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
+    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id, "stellar")
         .await
         .unwrap()
         .expect("wallet should exist");
@@ -228,9 +224,7 @@ async fn deposit_with_matching_memo_but_smaller_amount_marks_request_partial() {
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn deposit_with_non_matching_memo_does_not_affect_payment_request() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id_str) = ensure_merchant(&app, "corr_nomatch").await;
     let merchant_id: Uuid = merchant_id_str.parse().unwrap();
@@ -244,7 +238,7 @@ async fn deposit_with_non_matching_memo_does_not_affect_payment_request() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
+    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id, "stellar")
         .await
         .unwrap()
         .expect("wallet should exist");
@@ -286,9 +280,7 @@ async fn deposit_with_non_matching_memo_does_not_affect_payment_request() {
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn deposit_with_no_memo_does_not_affect_payment_request() {
-    let Some(state) = state().await else {
-        return;
-    };
+    let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id_str) = ensure_merchant(&app, "corr_nomemo").await;
     let merchant_id: Uuid = merchant_id_str.parse().unwrap();
@@ -302,7 +294,7 @@ async fn deposit_with_no_memo_does_not_affect_payment_request() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id)
+    let wallet = wallets::wallet_by_merchant(&state.db, merchant_id, "stellar")
         .await
         .unwrap()
         .expect("wallet should exist");

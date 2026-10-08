@@ -39,7 +39,7 @@ impl Payment {
             self.amount_stroops.to_string(),
             csv_escape(&self.asset),
             csv_escape(&self.network),
-            csv_escape(&self.status),
+            csv_escape(self.status.as_str()),
             self.confirmations.to_string(),
             self.created_at.to_rfc3339(),
             self.updated_at.to_rfc3339(),

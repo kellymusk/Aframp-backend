@@ -1,12 +1,11 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::extract::{Path, Query, State};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Html;
 use axum::Json;
-use futures::stream::{self, Stream};
+use futures_util::stream::Stream;
 use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
@@ -16,8 +15,7 @@ use crate::auth::extractor::AdminUser;
 use crate::error::{internal, not_found, ApiResult, ErrorCode};
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
-    AdminWalletRow, AdminWithdrawalRow, ListParams,
-    AdminWalletRow, AdminWithdrawalRow, Merchant,
+    AdminWalletRow, AdminWithdrawalRow, ListParams, Merchant,
 };
 use crate::services::admin;
 use crate::AppState;
@@ -88,18 +86,20 @@ pub async fn payment_requests(
 
 /// Server-Sent Events stream of live admin activity. Protected by `AdminUser`,
 /// so only authenticated admins can subscribe. Events are broadcast from
-/// `AppState::events` and forwarded to every connected client.
+/// `AppState::admin_events` and forwarded to every connected client.
 pub async fn events(
     State(state): State<AppState>,
     _admin: AdminUser,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let receiver = state.events.subscribe();
+    let receiver = state.admin_events.subscribe();
     let stream = BroadcastStream::new(receiver).filter_map(|msg| match msg {
-        Ok(event) => Some(Ok(Event::default().event(event.kind).data(event.data))),
+        Ok(event) => Some(Ok(Event::default().event(event.name()).data("{}"))),
         // A lagging client missed some events; skip rather than terminate.
         Err(_) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
 /// `POST /admin/merchants/{id}/suspend` — suspend a merchant account.
 /// The merchant will receive 403 on /login, /payment-requests, and /withdraw
 /// until unsuspended.

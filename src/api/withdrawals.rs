@@ -2,29 +2,17 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_gateway, bad_request, bad_request_field, internal, ApiResult, ErrorCode};
-use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
-use serde::{Deserialize, Serialize};
-use serde::Deserialize;
-use serde_json::Value;
-
-use crate::auth::extractor::AuthUser;
 use crate::error::{bad_request, bad_request_field, internal, ApiResult, ErrorCode};
-use crate::models::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};
+use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
 use crate::pagination::{Cursor, Page};
 use crate::services::withdrawals;
 use crate::validation::{is_valid_account_number, is_valid_bank_code};
 use crate::AppState;
-
-#[derive(Deserialize)]
-pub struct ListParams {
-    pub limit: Option<i64>,
-    pub cursor: Option<String>,
-}
 
 #[derive(serde::Serialize)]
 pub struct WithdrawalView {
@@ -40,6 +28,8 @@ pub struct WithdrawalView {
     pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Deserialize)]
 pub struct VerifyBankParams {
     pub bank_code: String,
@@ -71,13 +61,12 @@ pub async fn verify_bank(
             "must be a 10-digit NUBAN account number",
         ));
     }
-    let resolved = withdrawals::resolve_account(
+    let resolved = withdrawals::verify_bank_account(
         state.payment_provider.as_ref(),
         &params.bank_code,
         &params.account_number,
     )
-    .await
-    .map_err(map_withdrawal_error)?;
+    .await?;
     Ok(Json(VerifiedAccount {
         account_name: resolved.account_name,
         bank_code: params.bank_code,
@@ -88,24 +77,18 @@ pub async fn verify_bank(
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
-    Json(req): Json<CreateWithdrawalRequest>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
 ) -> ApiResult<Json<WithdrawalView>> {
+    let req = CreateWithdrawalRequest::from_json(&body)
+        .map_err(|(field, msg)| bad_request_field(field, msg))?;
+
     let merchant_id = auth.merchant_id.ok_or_else(|| {
         bad_request(
             ErrorCode::MerchantNotFound,
             "no merchant associated with this account",
         )
     })?;
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> ApiResult<Json<Withdrawal>> {
-    let req = CreateWithdrawalRequest::from_json(&body)
-        .map_err(|(field, msg)| bad_request_field(field, msg))?;
-
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
-
     // Refuse if the merchant is suspended.
     let merchant = crate::services::users::merchant_by_id(&state.db, merchant_id)
         .await
@@ -139,7 +122,7 @@ pub async fn create(
         .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned);
-    let withdrawal = withdrawals::create_withdrawal(
+    let withdrawal = withdrawals::create_withdrawal_idempotent(
         &state.db,
         state.payment_provider.as_ref(),
         NewWithdrawal {
@@ -148,14 +131,12 @@ pub async fn create(
             asset: req.asset.unwrap_or_else(|| "cNGN".into()),
             bank_code: req.bank_code,
             account_number: req.account_number,
-            idempotency_key,
+            idempotency_key: idempotency_key.clone(),
         },
+        idempotency_key.as_deref(),
     )
-    .await
-    .map_err(map_withdrawal_error)?;
-    Ok(Json(to_view(&withdrawal)))
     .await?;
-    Ok(Json(withdrawal))
+    Ok(Json(to_view(&withdrawal)))
 }
 
 pub async fn list(
@@ -169,11 +150,6 @@ pub async fn list(
             "no merchant associated with this account",
         )
     })?;
-    let limit = params.limit.unwrap_or(50).clamp(1, 200);
-) -> ApiResult<Json<Page<Withdrawal>>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
     let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
@@ -199,7 +175,7 @@ fn to_view(withdrawal: &Withdrawal) -> WithdrawalView {
         merchant_id: withdrawal.merchant_id,
         amount_stroops: withdrawal.amount_stroops,
         asset: withdrawal.asset.clone(),
-        status: withdrawal.status.clone(),
+        status: withdrawal.status.to_string(),
         provider: withdrawal.provider.clone(),
         provider_reference: withdrawal.provider_reference.clone(),
         bank_code: withdrawal.bank_code.clone(),
@@ -217,28 +193,4 @@ fn mask_account_number(account_number: &str) -> String {
     let last4_start = account_number.len().saturating_sub(4);
     let last4 = &account_number[last4_start..];
     format!("****{last4}")
-}
-
-fn map_withdrawal_error(
-    err: WithdrawalError,
-) -> (axum::http::StatusCode, Json<crate::error::ApiError>) {
-    match err {
-        WithdrawalError::InsufficientBalance => bad_request(
-            ErrorCode::InsufficientBalance,
-            "insufficient available balance",
-        ),
-        WithdrawalError::UnsupportedAsset => bad_request(
-            ErrorCode::UnsupportedAsset,
-            "withdrawals are only supported for the cNGN asset",
-        ),
-        WithdrawalError::InvalidAmountPrecision => bad_request(
-            ErrorCode::InvalidAmount,
-            "amount_stroops must be a whole number of kobo",
-        ),
-        WithdrawalError::AccountResolutionFailed(msg) => {
-            bad_request(ErrorCode::AccountResolutionFailed, &msg)
-        }
-        WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
-        WithdrawalError::Database(e) => internal(e),
-    }
 }

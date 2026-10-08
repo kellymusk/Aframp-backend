@@ -1,9 +1,4 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
-use sqlx::FromRow;
-use uuid::Uuid;
-
-#[derive(Debug, Clone, FromRow)]
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::FromRow;

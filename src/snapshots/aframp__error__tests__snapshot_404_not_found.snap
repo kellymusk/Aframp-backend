@@ -1,0 +1,8 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "user not found",
+  "code": "USER_NOT_FOUND"
+}

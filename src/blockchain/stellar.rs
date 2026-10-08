@@ -24,6 +24,12 @@ pub struct DetectedDeposit {
 #[async_trait]
 pub trait BlockchainListener: Send + Sync {
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String>;
+
+    /// Addresses the worker should leave out of this poll cycle (e.g. wallets
+    /// in an unfunded backoff window). Listeners without backoff skip nothing.
+    fn skipped_addresses(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Per-request timeout for Horizon calls, so one slow node can't stall the
@@ -72,18 +78,6 @@ impl StellarListener {
             .is_some_and(|s| s.next_poll_at > Instant::now())
     }
 
-    /// Addresses currently inside their unfunded backoff window. The worker
-    /// excludes these before loading wallets so they are neither read from the
-    /// DB nor sent to Horizon this cycle.
-    pub fn skipped_addresses(&self) -> Vec<String> {
-        let now = Instant::now();
-        let map = self.unfunded_backoff.lock().unwrap();
-        map.iter()
-            .filter(|(_, s)| s.next_poll_at > now)
-            .map(|(addr, _)| addr.clone())
-            .collect()
-    }
-
     /// Record a consecutive 404 for the address and compute the next allowed
     /// poll time using exponential backoff:  base * 2^n  capped at MAX_BACKOFF.
     fn record_unfunded(&self, address: &str) {
@@ -117,6 +111,18 @@ impl StellarListener {
 
 #[async_trait]
 impl BlockchainListener for StellarListener {
+    /// Addresses currently inside their unfunded backoff window. The worker
+    /// excludes these before loading wallets so they are neither read from the
+    /// DB nor sent to Horizon this cycle.
+    fn skipped_addresses(&self) -> Vec<String> {
+        let now = Instant::now();
+        let map = self.unfunded_backoff.lock().unwrap();
+        map.iter()
+            .filter(|(_, s)| s.next_poll_at > now)
+            .map(|(addr, _)| addr.clone())
+            .collect()
+    }
+
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
         let mut deposits = Vec::new();
         for address in addresses {
@@ -359,8 +365,9 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
         .map_err(|_| format!("invalid amount: {amount}"))?;
 
     // Checked multiply: whole_val * 10_000_000 must fit in i64.
-    let whole_stroops: i64 = (whole_val as i64)
-        .checked_mul(10_000_000)
+    let whole_stroops: i64 = i64::try_from(whole_val)
+        .ok()
+        .and_then(|w| w.checked_mul(10_000_000))
         .ok_or_else(|| format!("amount overflows i64: {amount}"))?;
 
     whole_stroops
@@ -616,13 +623,17 @@ mod tests {
     // --------------------------------------------------------------------------
 
     /// A whole-part value large enough to overflow i64 when multiplied by
-    /// 10_000_000 (the stroops factor).  i64::MAX / 10_000_000 ≈ 922_337_203,
-    /// so "922337204.0" is the smallest whole XLM value that overflows.
+    /// 10_000_000 (the stroops factor).  i64::MAX / 10_000_000 ≈ 922_337_203_685,
+    /// so "922337203686.0" is the smallest whole XLM value that overflows.
     #[test]
     fn parse_amount_overflow_returns_err() {
-        // 922_337_204 * 10_000_000 > i64::MAX — must not silently truncate.
+        // 922_337_203_686 * 10_000_000 > i64::MAX — must not silently truncate.
         assert!(
-            parse_amount_to_stroops("922337204.0").is_err(),
+            parse_amount_to_stroops("922337203685.0").is_ok(),
+            "the largest whole value that fits must still parse"
+        );
+        assert!(
+            parse_amount_to_stroops("922337203686.0").is_err(),
             "overflow should return Err"
         );
 
@@ -712,6 +723,8 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2), "the slow address must time out");
         assert_eq!(deposits.len(), 1, "the other wallet is still polled");
         assert_eq!(deposits[0].tx_hash, "fast-tx");
+    }
+
     // --------------------------------------------------------------------------
     // #1045 — backoff duration calculation: 30 * 2^n capped at MAX_BACKOFF
     //
