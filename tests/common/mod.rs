@@ -65,7 +65,7 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
         db,
         jwt_secret: aframp::SecretString::new("integration-test-secret".into()),
         webhook_secret: aframp::SecretString::new("integration-test-webhook".into()),
-        wallet_encryption_key: Arc::new([7u8; 32]),
+        wallet_encryption_key: Arc::new(zeroize::Zeroizing::new([7u8; 32])),
         payment_provider: Arc::new(aframp::payments::mock::MockProvider),
         otp_provider: Arc::new(aframp::otp::mock::MockOtpProvider),
         otp_hmac_secret: aframp::SecretString::new("integration-test-otp-secret".into()),

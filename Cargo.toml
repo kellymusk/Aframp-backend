@@ -38,6 +38,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 httpmock = "0.7"

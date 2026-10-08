@@ -15,6 +15,8 @@ const STROOPS_PER_KOBO: i64 = 100_000;
 
 /// How many times to try recording a successful payout before giving up.
 const PAYOUT_RECORD_ATTEMPTS: u32 = 3;
+/// How many times to try committing the refund for a failed payout.
+const REFUND_ATTEMPTS: u32 = 3;
 /// How long a resolved account name stays valid in the in-process cache.
 const VERIFICATION_TTL: Duration = Duration::from_secs(600);
 
@@ -304,33 +306,61 @@ pub async fn create_withdrawal_idempotent(
             // the original debit is already committed, so this is a compensating
             // action, not a rollback. Keeps an audit trail instead of pretending
             // the attempt never happened.
-            let mut refund_tx = db.begin().await?;
-            sqlx::query(
-                "UPDATE balances
-                    SET available = available + $2, updated_at = now()
-                  WHERE merchant_id = $1 AND asset = $3",
-            )
-            .bind(withdrawal.merchant_id)
-            .bind(withdrawal.amount_stroops)
-            .bind(&withdrawal.asset)
-            .execute(&mut *refund_tx)
-            .await?;
-
-            sqlx::query(
-                "UPDATE withdrawals
-                    SET status = $2, failure_reason = $3, updated_at = now()
-                  WHERE id = $1",
-            )
-            .bind(w.id)
-            .bind(WithdrawalStatus::Failed)
-            .bind(&err)
-            .execute(&mut *refund_tx)
-            .await?;
-
-            refund_tx.commit().await?;
+            let mut attempt = 0;
+            loop {
+                attempt += 1;
+                match refund_failed_payout(db, &w, &err).await {
+                    Ok(()) => break,
+                    Err(e) if attempt < REFUND_ATTEMPTS => {
+                        tracing::warn!(withdrawal_id = %w.id, attempt, error = %e, "retrying refund after failed payout");
+                        tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt - 1))).await;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            withdrawal_id = %w.id,
+                            merchant_id = %w.merchant_id,
+                            error = %e,
+                            "payout failed and the refund could not be committed; balance needs manual reconciliation"
+                        );
+                        return Err(WithdrawalError::Database(e));
+                    }
+                }
+            }
             Err(WithdrawalError::PayoutFailed(err))
         }
     }
+}
+
+/// Refund a failed payout and mark the withdrawal failed, atomically.
+/// Idempotent, so it is safe to retry after an ambiguous commit failure:
+/// the balance is only credited when this call moves the row out of a
+/// non-failed state.
+async fn refund_failed_payout(db: &PgPool, w: &Withdrawal, reason: &str) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let flipped = sqlx::query(
+        "UPDATE withdrawals
+            SET status = $2, failure_reason = $3, updated_at = now()
+          WHERE id = $1 AND status <> $2",
+    )
+    .bind(w.id)
+    .bind(WithdrawalStatus::Failed)
+    .bind(reason)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if flipped == 1 {
+        sqlx::query(
+            "UPDATE balances
+                SET available = available + $2, updated_at = now()
+              WHERE merchant_id = $1 AND asset = $3",
+        )
+        .bind(w.merchant_id)
+        .bind(w.amount_stroops)
+        .bind(&w.asset)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
 }
 
 async fn record_payout(

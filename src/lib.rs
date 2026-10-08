@@ -53,7 +53,7 @@ pub struct AppState {
     /// TODO: wire `decrypt_wallet_secret` into the settlement/sweep feature
     /// so the platform wallet can sign outbound transactions on behalf of a
     /// merchant.  See PRD §settlement-sweep.
-    pub wallet_encryption_key: std::sync::Arc<[u8; 32]>,
+    pub wallet_encryption_key: std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>,
     pub payment_provider: std::sync::Arc<dyn payments::PaymentProvider>,
     pub otp_provider: std::sync::Arc<dyn otp::OtpProvider>,
     pub otp_hmac_secret: SecretString,
@@ -99,7 +99,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         db,
         jwt_secret: config.jwt_secret.clone(),
         webhook_secret: config.webhook_secret.clone(),
-        wallet_encryption_key: std::sync::Arc::new(wallet_encryption_key),
+        wallet_encryption_key: std::sync::Arc::new(zeroize::Zeroizing::new(wallet_encryption_key)),
         payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::new(
             config.paystack_secret_key.as_str().to_string(),
         )),
@@ -220,7 +220,7 @@ mod cors_tests {
             db,
             jwt_secret: SecretString::new("test-jwt-secret".to_string()),
             webhook_secret: SecretString::new("test-webhook-secret".to_string()),
-            wallet_encryption_key: std::sync::Arc::new([0u8; 32]),
+            wallet_encryption_key: std::sync::Arc::new(zeroize::Zeroizing::new([0u8; 32])),
             payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::new(
                 "test-paystack-key".to_string(),
             )),
