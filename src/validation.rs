@@ -121,7 +121,7 @@ pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
 /// costs about the same as a normal one — the point is bounding the cost of
 /// an oversized input, not accommodating longer passphrases.
 ///
-/// The `RequestBodyLimitLayer::new(1024 * 1024)` in `main.rs` is the primary
+/// The `RequestBodyLimitLayer` in `main.rs` (MAX_REQUEST_BODY_BYTES) is the primary
 /// defence against a huge request body; this is defence in depth against the
 /// `password` field specifically, which is the one field whose cost to
 /// process scales with its size regardless of body limits.

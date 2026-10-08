@@ -638,6 +638,11 @@ const poll = setInterval(async () => {
 
 `404` if the id doesn't exist **or** belongs to another merchant — the two are deliberately indistinguishable, so guessing ids reveals nothing.
 
+### `GET /withdrawals/{id}`
+Auth required. Fetches a single withdrawal so a merchant can poll status without listing every withdrawal. Scoped to the authenticated merchant — another merchant's withdrawal id returns `404`.
+
+`200` → the same withdrawal object shape as `GET /withdrawals`. `404` → `{ "error": "withdrawal not found" }`.
+
 ---
 
 ## Building the POS flow
