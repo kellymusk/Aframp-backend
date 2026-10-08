@@ -7,6 +7,12 @@ use super::OtpProvider;
 
 const BASE_URL: &str = "https://api.ng.termii.com/api";
 
+/// Build the Termii Messaging send URL. Kept as a pure function so tests can
+/// assert the API key is never placed in the URL or query string.
+pub fn sms_send_url() -> String {
+    format!("{BASE_URL}/sms/send")
+}
+
 /// The event body Termii POSTs to the dashboard-configured webhook URL for
 /// SMS delivery status (sent/delivered/failed/etc.) — see
 /// https://developers.termii.com/events-and-reports. Deserialized leniently:
@@ -53,10 +59,32 @@ struct SendResponse {
 #[async_trait]
 impl OtpProvider for TermiiProvider {
     async fn send_sms(&self, phone: &str, message: &str) -> Result<(), String> {
+        // SECURITY (#1120 / #1122):
+        // Termii's Messaging API requires `api_key` in the JSON body — their
+        // docs do not support Bearer / Authorization-header auth for this
+        // endpoint (see https://developers.termii.com/messaging-api). The
+        // Token API has the same body-key requirement. We therefore cannot
+        // move the secret to a header without breaking sends.
+        //
+        // Mitigations:
+        // - Transport is always HTTPS (hard-coded base URL).
+        // - The key is never placed in the URL or query string (see tests).
+        // - Operators should disable request-body logging on any egress
+        //   proxy/WAF/APM between this service and Termii.
+        // - Prefer Termii's Token API as a follow-up for OTP lifecycle; it
+        //   still needs the body key but avoids embedding the OTP in our
+        //   own message-formatting path. See docs/SECURITY.md.
+        let url = sms_send_url();
+        debug_assert!(
+            !url.contains(&self.api_key) && !url.contains('?'),
+            "Termii send URL must never carry the API key or query params"
+        );
+
         let response = self
             .http
-            .post(format!("{BASE_URL}/sms/send"))
+            .post(&url)
             .json(&serde_json::json!({
+                // Required by Termii — do not move to a query string.
                 "api_key": self.api_key,
                 "to": phone,
                 "from": self.sender_id,
@@ -99,5 +127,41 @@ impl OtpProvider for TermiiProvider {
         };
         mac.update(body);
         mac.verify_slice(&sig_bytes).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sms_send_url_does_not_embed_api_key_or_query() {
+        let url = sms_send_url();
+        let fake_key = "termii-secret-key-should-never-appear";
+        assert!(
+            !url.contains(fake_key),
+            "send URL must not contain an API key: {url}"
+        );
+        assert!(
+            !url.contains('?') && !url.contains("api_key"),
+            "send URL must not use query params for auth: {url}"
+        );
+        assert!(
+            url.starts_with("https://"),
+            "Termii traffic must be HTTPS: {url}"
+        );
+        assert_eq!(url, "https://api.ng.termii.com/api/sms/send");
+    }
+
+    #[test]
+    fn provider_send_url_never_includes_configured_key() {
+        let key = "super-secret-termii-key-xyz";
+        // Constructing the provider must not bake the key into any URL we log.
+        let _provider = TermiiProvider::new(key.to_string(), "Aframp".into());
+        let url = sms_send_url();
+        assert!(
+            !url.contains(key),
+            "configured api_key must not appear in the request URL: {url}"
+        );
     }
 }
