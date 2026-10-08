@@ -1,4 +1,4 @@
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -7,7 +7,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, bad_request_field, internal, ApiResult, ErrorCode};
+use crate::error::{bad_request, bad_request_field, internal, not_found, ApiResult, ErrorCode};
 use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
 use crate::pagination::{Cursor, Page};
 use crate::services::withdrawals;
@@ -168,6 +168,28 @@ pub async fn create(
         state.daily_withdrawal_limit_stroops,
     )
     .await?;
+    Ok(Json(to_view(&withdrawal)))
+}
+
+/// A single withdrawal by id, so a frontend polling the status of the row it
+/// just created doesn't have to pull the whole list and search it.
+pub async fn get(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<WithdrawalView>> {
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
+    let withdrawal = withdrawals::withdrawal_by_id_for_merchant(&state.db, id, merchant_id)
+        .await
+        .map_err(internal)?
+        // Someone else's withdrawal answers the same way a nonexistent one
+        // does, so a guessed id reveals nothing about whether it exists.
+        .ok_or_else(|| not_found(ErrorCode::WithdrawalNotFound, "withdrawal not found"))?;
     Ok(Json(to_view(&withdrawal)))
 }
 

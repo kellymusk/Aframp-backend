@@ -1238,3 +1238,45 @@ async fn withdrawal_fee_endpoint_reports_fee_and_net() {
     let (status, json) = send(app, "GET", "/withdrawal-fee?amount_stroops=0", None, None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
 }
+
+/// #1004 — GET /withdrawals/{id} is merchant-scoped: another merchant's id is a 404.
+#[tokio::test]
+async fn get_withdrawal_by_id_is_scoped_to_the_merchant() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "withdraw_get_by_id").await;
+    let (other_token, _) = ensure_merchant(&app, "withdraw_get_by_id_other").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap();
+
+    let (status, fetched) = send(app.clone(), "GET", &format!("/withdrawals/{id}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    assert_eq!(fetched["id"], id);
+    assert_eq!(fetched["account_number"], "****6789");
+
+    let (status, json) = send(app.clone(), "GET", &format!("/withdrawals/{id}"), Some(&other_token), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+    assert_eq!(json["code"], "WITHDRAWAL_NOT_FOUND");
+}

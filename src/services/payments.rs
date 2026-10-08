@@ -12,6 +12,7 @@ pub enum PaymentError {
     Database(#[from] sqlx::Error),
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %payment.merchant_id, tx_hash = %payment.tx_hash))]
 pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment, PaymentError> {
     let existing = sqlx::query_as::<_, Payment>(
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
@@ -48,6 +49,7 @@ pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment,
     .map_err(PaymentError::Database)
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_id = %id))]
 pub async fn set_status(
     db: &PgPool,
     id: Uuid,
@@ -123,6 +125,7 @@ pub async fn record_sweep(
     .map_err(PaymentError::Database)
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, limit))]
 pub async fn payments_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
@@ -227,6 +230,7 @@ pub async fn payments_by_merchant_cursor(
     }
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_id = %id))]
 pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sqlx::Error> {
     sqlx::query_as::<_, Payment>(
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,

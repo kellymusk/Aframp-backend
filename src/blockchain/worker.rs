@@ -37,6 +37,7 @@ pub async fn run(
 ///
 /// Generic over [`BlockchainListener`] so tests can inject a mock listener
 /// (e.g. to simulate a fake deposit) without hitting a real chain.
+#[tracing::instrument(skip_all, err)]
 pub async fn poll_once<L: BlockchainListener>(
     db: &PgPool,
     listener: &L,
@@ -84,6 +85,7 @@ pub async fn poll_once<L: BlockchainListener>(
     Ok(())
 }
 
+#[tracing::instrument(skip_all, err, fields(tx_hash = %d.tx_hash, destination = %d.destination, amount_stroops = d.amount_stroops, asset = %d.asset))]
 pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), String> {
     let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
     else {

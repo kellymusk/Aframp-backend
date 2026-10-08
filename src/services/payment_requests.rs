@@ -74,6 +74,7 @@ pub async fn wallet_by_merchant_and_network(
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, wallet_id = %wallet_id, %asset))]
 pub async fn create_payment_request(
     db: &PgPool,
     merchant_id: Uuid,
@@ -157,6 +158,7 @@ pub struct PaymentRequestWithWallet {
 
 /// Lists a merchant's payment requests, newest first. Cancelled (soft-deleted)
 /// requests are hidden unless `include_cancelled` is set.
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, limit))]
 pub async fn payment_requests_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
@@ -228,6 +230,7 @@ pub async fn payment_requests_by_merchant_cursor(
     }
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_request_id = %id))]
 pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<PaymentRequest>, sqlx::Error> {
     sqlx::query_as::<_, PaymentRequest>(&format!(
         "SELECT {PR_COLS} FROM payment_requests WHERE id = $1"
@@ -261,6 +264,7 @@ pub async fn cancel_payment_request(
 
 /// Looks up the pending request a detected deposit's memo correlates to, if any.
 /// Expired and cancelled requests are never matched.
+#[tracing::instrument(skip_all, err, fields(wallet_id = %wallet_id))]
 pub async fn find_pending_by_wallet_and_memo(
     db: &PgPool,
     wallet_id: Uuid,
@@ -280,6 +284,7 @@ pub async fn find_pending_by_wallet_and_memo(
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_request_id = %id, %payment_id))]
 pub async fn mark_paid(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE payment_requests SET status = $2, payment_id = $3, updated_at = now() WHERE id = $1",
@@ -292,6 +297,7 @@ pub async fn mark_paid(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sq
     .map(|_| ())
 }
 
+#[tracing::instrument(skip_all, err, fields(payment_request_id = %id, %payment_id))]
 pub async fn mark_partial(db: &PgPool, id: Uuid, payment_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE payment_requests SET status = $2, payment_id = $3, updated_at = now() WHERE id = $1",

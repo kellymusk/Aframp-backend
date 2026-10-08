@@ -87,6 +87,7 @@ pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
 /// [`LOCKOUT_DURATION_MINS`] minutes after [`MAX_FAILED_ATTEMPTS`] failures.
 /// Returns [`UserError::AccountLocked`] when the account is currently locked,
 /// regardless of whether the supplied password is correct.
+#[tracing::instrument(skip_all, err)]
 pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
     let user = sqlx::query_as::<_, User>(
         &format!(
@@ -164,6 +165,7 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     Ok((user, merchant))
 }
 
+#[tracing::instrument(skip_all, err, fields(%user_id))]
 pub async fn user_by_id(db: &PgPool, user_id: Uuid) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE id = $1"))
         .bind(user_id)
@@ -184,6 +186,7 @@ pub async fn user_profile_by_id(
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(%user_id))]
 pub async fn merchant_by_user(db: &PgPool, user_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
@@ -193,6 +196,7 @@ pub async fn merchant_by_user(db: &PgPool, user_id: Uuid) -> Result<Option<Merch
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(%merchant_id))]
 pub async fn merchant_by_id(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE id = $1",
