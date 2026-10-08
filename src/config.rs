@@ -89,6 +89,8 @@ pub struct AppConfig {
     /// `RequestBodyLimitLayer`; requests over this limit are rejected with a
     /// 413 before reaching a handler. Defaults to 1MB.
     pub max_request_body_bytes: usize,
+    /// Per-merchant daily withdrawal limit in stroops.
+    pub daily_withdrawal_limit_stroops: Option<i64>,
 }
 
 impl AppConfig {
@@ -143,6 +145,14 @@ impl AppConfig {
             return Err("MAX_REQUEST_BODY_BYTES must be greater than 0".into());
         }
 
+        let daily_withdrawal_limit_stroops = match std::env::var("DAILY_WITHDRAWAL_LIMIT_STROOPS") {
+            Ok(val) => match val.trim().parse::<i64>() {
+                Ok(limit) => Some(limit),
+                Err(e) => return Err(format!("DAILY_WITHDRAWAL_LIMIT_STROOPS must be an integer: {e}")),
+            },
+            Err(_) => None,
+        };
+
         Ok(Self {
             database_url: env("DATABASE_URL")?,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
@@ -173,6 +183,7 @@ impl AppConfig {
                 same_site: cookie_same_site,
             },
             max_request_body_bytes,
+            daily_withdrawal_limit_stroops,
         })
     }
 }
@@ -352,6 +363,7 @@ mod tests {
                     same_site: SameSite::Lax,
                 },
                 max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+                daily_withdrawal_limit_stroops: None,
             }
         );
         assert!(!config_debug.contains("jwt-secret-value"));

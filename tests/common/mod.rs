@@ -74,6 +74,7 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
             same_site: aframp::SameSite::Lax,
         },
         admin_events: tokio::sync::broadcast::channel(16).0,
+        daily_withdrawal_limit_stroops: None,
     })
 }
 

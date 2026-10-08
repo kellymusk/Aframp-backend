@@ -28,6 +28,8 @@ pub enum WithdrawalError {
     InvalidAmountPrecision,
     #[error("bank account could not be verified: {0}")]
     AccountVerificationFailed(String),
+    #[error("daily withdrawal limit exceeded")]
+    DailyLimitExceeded,
     #[error("payout provider failed: {0}")]
     PayoutFailed(String),
     #[error(transparent)]
@@ -138,8 +140,9 @@ pub async fn create_withdrawal(
     db: &PgPool,
     provider: &dyn PaymentProvider,
     withdrawal: NewWithdrawal,
+    daily_limit_stroops: Option<i64>,
 ) -> Result<Withdrawal, WithdrawalError> {
-    create_withdrawal_idempotent(db, provider, withdrawal, None).await
+    create_withdrawal_idempotent(db, provider, withdrawal, None, daily_limit_stroops).await
 }
 
 /// Create a withdrawal, optionally guarded by an idempotency key.
@@ -153,6 +156,7 @@ pub async fn create_withdrawal_idempotent(
     provider: &dyn PaymentProvider,
     withdrawal: NewWithdrawal,
     idempotency_key: Option<&str>,
+    daily_limit_stroops: Option<i64>,
 ) -> Result<Withdrawal, WithdrawalError> {
     let idempotency_key = idempotency_key.or(withdrawal.idempotency_key.as_deref());
     if let Some(key) = idempotency_key {
@@ -191,6 +195,26 @@ pub async fn create_withdrawal_idempotent(
     if updated == 0 {
         tx.rollback().await?;
         return Err(WithdrawalError::InsufficientBalance);
+    }
+
+    // Checked after the debit so the balance row lock serializes concurrent
+    // withdrawals for this merchant — two requests can't both slip under it.
+    if let Some(limit) = daily_limit_stroops {
+        let today: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(amount_stroops), 0)::bigint
+               FROM withdrawals
+              WHERE merchant_id = $1
+                AND status <> 'failed'
+                AND created_at >= date_trunc('day', now(), 'UTC')",
+        )
+        .bind(withdrawal.merchant_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if today + withdrawal.amount_stroops > limit {
+            tx.rollback().await?;
+            return Err(WithdrawalError::DailyLimitExceeded);
+        }
     }
 
     let w = sqlx::query_as::<_, Withdrawal>(
@@ -326,6 +350,24 @@ async fn record_payout(
     .bind(&result.provider)
     .bind(&result.provider_reference)
     .bind(&result.status)
+    .fetch_one(db)
+    .await
+}
+
+/// Total of a merchant's withdrawals today (UTC) that count toward the daily
+/// limit: everything except failed (refunded) attempts.
+pub async fn withdrawals_today_stroops(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(SUM(amount_stroops), 0)
+           FROM withdrawals
+          WHERE merchant_id = $1
+            AND status <> 'failed'
+            AND created_at >= date_trunc('day', now(), 'UTC')",
+    )
+    .bind(merchant_id)
     .fetch_one(db)
     .await
 }

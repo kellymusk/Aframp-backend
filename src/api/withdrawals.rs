@@ -134,6 +134,7 @@ pub async fn create(
             idempotency_key: idempotency_key.clone(),
         },
         idempotency_key.as_deref(),
+        state.daily_withdrawal_limit_stroops,
     )
     .await?;
     Ok(Json(to_view(&withdrawal)))

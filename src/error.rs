@@ -13,6 +13,7 @@ pub enum ErrorCode {
     UnsupportedAsset,
     PayoutFailed,
     AccountVerificationFailed,
+    DailyLimitExceeded,
     EmailTaken,
     InvalidCredentials,
     UserNotFound,
@@ -45,6 +46,7 @@ impl ErrorCode {
             ErrorCode::UnsupportedAsset => "UNSUPPORTED_ASSET",
             ErrorCode::PayoutFailed => "PAYOUT_FAILED",
             ErrorCode::AccountVerificationFailed => "ACCOUNT_VERIFICATION_FAILED",
+            ErrorCode::DailyLimitExceeded => "DAILY_LIMIT_EXCEEDED",
             ErrorCode::EmailTaken => "EMAIL_TAKEN",
             ErrorCode::InvalidCredentials => "INVALID_CREDENTIALS",
             ErrorCode::UserNotFound => "USER_NOT_FOUND",
@@ -215,6 +217,9 @@ impl From<crate::services::withdrawals::WithdrawalError> for (StatusCode, Json<A
                 ErrorCode::AccountVerificationFailed,
                 &format!("bank account could not be verified: {msg}"),
             ),
+            WithdrawalError::DailyLimitExceeded => {
+                bad_request(ErrorCode::DailyLimitExceeded, "daily withdrawal limit exceeded")
+            }
             WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
             WithdrawalError::Database(e) => internal(e),
         }
@@ -337,6 +342,7 @@ mod tests {
             ErrorCode::UnsupportedAsset,
             ErrorCode::PayoutFailed,
             ErrorCode::AccountVerificationFailed,
+            ErrorCode::DailyLimitExceeded,
             ErrorCode::EmailTaken,
             ErrorCode::InvalidCredentials,
             ErrorCode::UserNotFound,

@@ -59,6 +59,8 @@ pub struct AppState {
     pub otp_hmac_secret: SecretString,
     pub cookie: CookieConfig,
     pub admin_events: broadcast::Sender<AdminEvent>,
+    /// Optional per-merchant cap on withdrawals per UTC day, in stroops.
+    pub daily_withdrawal_limit_stroops: Option<i64>,
 }
 
 impl AppState {
@@ -105,6 +107,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         otp_hmac_secret: config.otp_hmac_secret.clone(),
         cookie: config.cookie,
         admin_events,
+        daily_withdrawal_limit_stroops: config.daily_withdrawal_limit_stroops,
     })
 }
 
@@ -225,6 +228,7 @@ mod cors_tests {
             otp_hmac_secret: SecretString::new("test-otp-hmac-secret".to_string()),
             cookie: CookieConfig { secure: true, same_site: SameSite::Lax },
             admin_events: broadcast::channel(16).0,
+            daily_withdrawal_limit_stroops: None,
         }
     }
 
