@@ -558,6 +558,12 @@ Auth required. Debits the merchant's balance and initiates a Nigerian bank payou
 
 `200` → a withdrawal object with `status`, `provider`, `provider_reference`.
 
+**Optional `Idempotency-Key` header.** Send a client-generated key (a UUID is fine) to make a retried request safe: resubmitting the same key returns the original withdrawal instead of creating a second one and debiting the balance twice. Without it, pressing "Withdraw" twice due to a slow network response can create two separate withdrawals. Max 255 characters; a header present but blank is treated the same as omitting it.
+
+```
+Idempotency-Key: 5b1c9e0a-2f3d-4b7a-9c1e-8a2d6f0b1c3d
+```
+
 Validation errors (`400`): `"insufficient available balance"`, `"withdrawals are only supported for the cNGN asset"`, `"amount_stroops must be a whole number of kobo"`, `"positive amount_stroops, bank_code, and a 10-digit account_number are required"`.
 
 #### `502 Bad Gateway` — Paystack / payout provider failure

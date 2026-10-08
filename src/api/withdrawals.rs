@@ -11,7 +11,7 @@ use crate::error::{bad_request, bad_request_field, internal, not_found, ApiResul
 use crate::models::{CreateWithdrawalRequest, ListParams, NewWithdrawal, Withdrawal};
 use crate::pagination::{Cursor, Page};
 use crate::services::withdrawals;
-use crate::validation::{is_valid_account_number, is_valid_bank_code};
+use crate::validation::{is_valid_account_number, is_valid_bank_code, MAX_IDEMPOTENCY_KEY_LEN};
 use crate::AppState;
 
 #[derive(serde::Serialize)]
@@ -153,6 +153,12 @@ pub async fn create(
         .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned);
+    if idempotency_key.as_ref().is_some_and(|k| k.len() > MAX_IDEMPOTENCY_KEY_LEN) {
+        return Err(bad_request_field(
+            "Idempotency-Key",
+            "must be at most 255 characters",
+        ));
+    }
     let withdrawal = withdrawals::create_withdrawal_idempotent(
         &state.db,
         state.payment_provider.as_ref(),

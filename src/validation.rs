@@ -112,6 +112,11 @@ pub fn normalize_ng_phone_number(input: &str) -> Result<String, &'static str> {
 
 pub const MAX_NAME_LEN: usize = 100;
 
+/// A client-generated idempotency key is arbitrary but bounded — 255 covers
+/// a UUID, a ULID, or a descriptive client request id, while capping how much
+/// an unbounded header value could cost to store and index.
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
+
 /// Well above any real password, but small enough that Argon2 hashing it
 /// costs about the same as a normal one — the point is bounding the cost of
 /// an oversized input, not accommodating longer passphrases.

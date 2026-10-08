@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::blockchain::{keypair, wallet_crypto};
-use crate::models::{NewWallet, Wallet};
+use crate::models::{NewWallet, Wallet, WalletSecretRow};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CreateWalletError {
@@ -48,14 +48,10 @@ pub async fn decrypt_wallet_secret(
     wallet_id: Uuid,
     key: &[u8; 32],
 ) -> Result<String, DecryptWalletError> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT secret_key_encrypted FROM wallets WHERE id = $1",
-    )
-    .bind(wallet_id)
-    .fetch_optional(db)
-    .await?;
-
-    let (secret_key_encrypted,) = row.ok_or(DecryptWalletError::NotFound)?;
+    let row = wallet_secret_by_id(db, wallet_id)
+        .await?
+        .ok_or(DecryptWalletError::NotFound)?;
+    let secret_key_encrypted = row.secret_key_encrypted;
     wallet_crypto::decrypt(key, &secret_key_encrypted)
         .map_err(DecryptWalletError::Decryption)
 }
@@ -224,4 +220,20 @@ pub async fn update_last_polled_cursor(
         .execute(db)
         .await
         .map(|_| ())
+}
+
+/// Loads a wallet's row including its encrypted secret seed. The only
+/// function that should select `secret_key_encrypted` — everything else uses
+/// the [`Wallet`] shape, which has no such field. For the blockchain module
+/// (signing outbound transactions); an API handler must never call this.
+pub async fn wallet_secret_by_id(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<WalletSecretRow>, sqlx::Error> {
+    sqlx::query_as::<_, WalletSecretRow>(
+        "SELECT id, merchant_id, address, network, secret_key_encrypted FROM wallets WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
 }
