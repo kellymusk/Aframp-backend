@@ -1224,3 +1224,17 @@ async fn withdrawal_daily_limit_counts_pending_withdrawals() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "pending withdrawal must count: {json}");
     assert_eq!(json["code"], "DAILY_LIMIT_EXCEEDED");
 }
+
+/// #1002 — fee preview: Paystack's flat ₦100 (10,000 kobo) fee and the net amount.
+#[tokio::test]
+async fn withdrawal_fee_endpoint_reports_fee_and_net() {
+    let state = state().await;
+    let app = aframp::router(state);
+    let (status, json) = send(app.clone(), "GET", "/withdrawal-fee?amount_stroops=5000000000", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["fee_stroops"], 1_000_000_000);
+    assert_eq!(json["net_amount_stroops"], 4_000_000_000i64);
+
+    let (status, json) = send(app, "GET", "/withdrawal-fee?amount_stroops=0", None, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+}

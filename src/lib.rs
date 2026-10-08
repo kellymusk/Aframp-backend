@@ -154,6 +154,7 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::get(api::transactions::export),
         )
         .route("/withdraw", axum::routing::post(api::withdrawals::create))
+        .route("/withdrawal-fee", axum::routing::get(api::withdrawals::withdrawal_fee))
         .route("/withdrawals", axum::routing::get(api::withdrawals::list))
         .route(
             "/withdrawals/verify-bank",

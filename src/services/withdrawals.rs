@@ -19,6 +19,11 @@ const PAYOUT_RECORD_ATTEMPTS: u32 = 3;
 const REFUND_ATTEMPTS: u32 = 3;
 /// How long a resolved account name stays valid in the in-process cache.
 const VERIFICATION_TTL: Duration = Duration::from_secs(600);
+/// Paystack flat fee in kobo (₦100 = 10,000 kobo)
+const PAYSTACK_FLAT_FEE_KOBO: i64 = 10_000;
+
+/// Paystack flat fee in stroops
+const PAYSTACK_FEE_STROOPS: i64 = PAYSTACK_FLAT_FEE_KOBO * STROOPS_PER_KOBO;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WithdrawalError {
@@ -136,6 +141,15 @@ pub enum ReconciledStatus {
     Processing,
     Pending,
     FailedAndRefunded,
+}
+
+/// Calculate withdrawal fee and net amount.
+/// Returns (fee_stroops, net_amount_stroops).
+/// Fee is Paystack's flat ₦100 fee.
+pub fn calculate_withdrawal_fee(amount_stroops: i64) -> (i64, i64) {
+    let fee = PAYSTACK_FEE_STROOPS;
+    let net = amount_stroops.saturating_sub(fee).max(0);
+    (fee, net)
 }
 
 pub async fn create_withdrawal(
