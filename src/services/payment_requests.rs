@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -72,6 +72,26 @@ pub async fn wallet_by_merchant_and_network(
     .bind(network)
     .fetch_optional(db)
     .await
+}
+
+/// A `pending` row whose expiry has passed is reported as `expired` at read
+/// time, so a request going stale needs no background job to flip it.
+/// Cancelled rows report as `cancelled` regardless of expiry. Lives in the
+/// service layer so any caller (a webhook handler, a scheduled job) can use
+/// it without importing from `api::payment_requests`.
+pub fn effective_status(
+    status: PaymentRequestStatus,
+    expires_at: DateTime<Utc>,
+    cancelled_at: Option<DateTime<Utc>>,
+) -> String {
+    if cancelled_at.is_some() {
+        return "cancelled".to_string();
+    }
+    if status == PaymentRequestStatus::Pending && expires_at < Utc::now() {
+        "expired".to_string()
+    } else {
+        status.as_str().to_string()
+    }
 }
 
 #[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, wallet_id = %wallet_id, %asset))]

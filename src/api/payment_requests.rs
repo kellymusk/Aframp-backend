@@ -169,7 +169,7 @@ pub async fn status(
         .map_err(internal)?
         .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
 
-    let status = effective_status(pr.status, pr.expires_at, pr.cancelled_at);
+    let status = payment_requests::effective_status(pr.status, pr.expires_at, pr.cancelled_at);
     let paid_at = if status == "paid" {
         Some(pr.updated_at)
     } else {
@@ -319,24 +319,6 @@ pub struct ListParams {
     pub include_cancelled: Option<bool>,
 }
 
-/// A `pending` row whose expiry has passed is reported as `expired` at read
-/// time, so a request going stale needs no background job to flip it.
-/// Cancelled rows report as `cancelled` regardless of expiry.
-fn effective_status(
-    status: PaymentRequestStatus,
-    expires_at: DateTime<Utc>,
-    cancelled_at: Option<DateTime<Utc>>,
-) -> String {
-    if cancelled_at.is_some() {
-        return "cancelled".to_string();
-    }
-    if status == PaymentRequestStatus::Pending && expires_at < Utc::now() {
-        "expired".to_string()
-    } else {
-        status.as_str().to_string()
-    }
-}
-
 fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestView {
     PaymentRequestView {
         id: pr.id,
@@ -346,7 +328,7 @@ fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestV
         amount_stroops: pr.amount_stroops,
         asset: pr.asset.clone(),
         memo: pr.memo.clone(),
-        status: effective_status(pr.status, pr.expires_at, pr.cancelled_at),
+        status: payment_requests::effective_status(pr.status, pr.expires_at, pr.cancelled_at),
         expires_at: pr.expires_at,
         cancelled_at: pr.cancelled_at,
         created_at: pr.created_at,
@@ -363,7 +345,7 @@ fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentReque
         amount_stroops: row.amount_stroops,
         asset: row.asset.clone(),
         memo: row.memo.clone(),
-        status: effective_status(row.status, row.expires_at, row.cancelled_at),
+        status: payment_requests::effective_status(row.status, row.expires_at, row.cancelled_at),
         expires_at: row.expires_at,
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,
