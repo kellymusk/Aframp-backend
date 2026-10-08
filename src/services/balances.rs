@@ -18,22 +18,35 @@ pub async fn get_balances(
 }
 
 pub async fn apply_delta(db: &PgPool, delta: &UpdateBalance) -> Result<(), sqlx::Error> {
+    // Not a single INSERT .. ON CONFLICT DO UPDATE: Postgres checks the
+    // proposed INSERT row against the non-negative CHECK constraints before
+    // resolving the conflict, so a negative delta (e.g. pending -> available)
+    // would always be rejected. Ensure the row exists, then apply the delta;
+    // the CHECK still rejects any delta that would drive a balance negative.
+    let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (merchant_id, asset)
-         DO UPDATE SET
-           available = balances.available + $3,
-           pending = balances.pending + $4,
-           updated_at = now()",
+         VALUES ($1, $2, 0, 0)
+         ON CONFLICT (merchant_id, asset) DO NOTHING",
+    )
+    .bind(delta.merchant_id)
+    .bind(&delta.asset)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE balances
+            SET available = available + $3,
+                pending = pending + $4,
+                updated_at = now()
+          WHERE merchant_id = $1 AND asset = $2",
     )
     .bind(delta.merchant_id)
     .bind(&delta.asset)
     .bind(delta.available_delta)
     .bind(delta.pending_delta)
-    .execute(db)
-    .await
-    .map(|_| ())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
 /// Credits a confirmed deposit directly to the merchant's available balance in a

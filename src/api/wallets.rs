@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::Json;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, conflict, internal, not_found, ApiResult, ErrorCode};
+use crate::error::{bad_request, bad_request_field, conflict, internal, not_found, ApiResult, ErrorCode};
 use crate::models::{CreateWalletRequest, Wallet};
 use crate::services::wallets::{self, CreateWalletError};
 use crate::AppState;
@@ -19,6 +19,15 @@ pub async fn create(
         )
     })?;
     let network = req.network.unwrap_or_else(|| "stellar".into());
+
+    // Issue #948: only networks the deposit worker actually polls.
+    if network != "stellar" {
+        return Err(bad_request_field(
+            "network",
+            "unsupported network (only 'stellar' is supported)",
+        ));
+    }
+
     let wallet = wallets::create_wallet(&state.db, merchant_id, &network, &state.wallet_encryption_key)
         .await
         .map_err(|err| match err {

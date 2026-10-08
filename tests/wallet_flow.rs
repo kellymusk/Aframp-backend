@@ -173,3 +173,21 @@ async fn second_wallet_create_returns_409() {
         "existing wallet address must be preserved after a rejected duplicate create"
     );
 }
+
+/// #948 — wallets can only be created on networks the deposit worker polls.
+#[tokio::test]
+async fn wallet_create_rejects_unsupported_network() {
+    let app = app().await;
+    let (token, _) = ensure_merchant(&app, "wallet_bad_network").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({ "network": "ethereum" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(json["field"], "network");
+}
