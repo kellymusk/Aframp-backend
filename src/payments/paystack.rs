@@ -566,3 +566,38 @@ mod contract_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod response_shape_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_ok_response_shape() {
+        let body = r#"{
+            "status": true,
+            "message": "Account resolved",
+            "data": {
+                "account_name": "Jane Doe"
+            }
+        }"#;
+
+        let parsed: PaystackResponse<ResolvedAccount> = serde_json::from_str(body).unwrap();
+        assert!(parsed.status);
+        assert_eq!(parsed.data.unwrap().account_name, "Jane Doe");
+    }
+
+    #[test]
+    fn transfer_response_deserializes_with_transfer_code() {
+        let body = r#"{
+            "status": true,
+            "message": "Transfer queued",
+            "data": {
+                "transfer_code": "TRF_123",
+                "status": "pending"
+            }
+        }"#;
+
+        let parsed: PaystackResponse<Transfer> = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.data.unwrap().transfer_code, "TRF_123");
+    }
+}
