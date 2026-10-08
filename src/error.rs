@@ -28,6 +28,7 @@ pub enum ErrorCode {
     OtpLocked,
     TooManyRequests,
     PayloadTooLarge,
+    AccountLocked,
     InternalError,
 }
 
@@ -61,6 +62,7 @@ impl ErrorCode {
             ErrorCode::OtpLocked => "OTP_LOCKED",
             ErrorCode::TooManyRequests => "TOO_MANY_REQUESTS",
             ErrorCode::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            ErrorCode::AccountLocked => "ACCOUNT_LOCKED",
             ErrorCode::InternalError => "INTERNAL_ERROR",
         }
     }
@@ -72,6 +74,10 @@ pub struct ApiError {
     pub code: ErrorCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    /// Present on `423 Locked` responses: seconds remaining until the account
+    /// may attempt login again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 pub type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
@@ -88,7 +94,7 @@ pub fn bad_request_field(field: &str, message: &str) -> (StatusCode, Json<ApiErr
         Json(ApiError {
             error: message.into(),
             code: ErrorCode::InvalidParameters,
-            field: Some(field.into()),
+            field: Some(field.into()), retry_after_secs: None
         }),
     )
 }
@@ -128,6 +134,21 @@ pub fn payload_too_large(message: &str) -> (StatusCode, Json<ApiError>) {
     error(StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge, message)
 }
 
+/// `423 Locked`: the account is temporarily locked (too many failed logins).
+/// `retry_at` is when the lock expires.
+pub fn locked(retry_at: chrono::DateTime<chrono::Utc>) -> (StatusCode, Json<ApiError>) {
+    let remaining = (retry_at - chrono::Utc::now()).num_seconds().max(0);
+    (
+        StatusCode::LOCKED,
+        Json(ApiError {
+            error: "account temporarily locked due to too many failed login attempts".into(),
+            code: ErrorCode::AccountLocked,
+            field: None,
+            retry_after_secs: Some(remaining as u64),
+        }),
+    )
+}
+
 pub fn internal<E: std::fmt::Display>(err: E) -> (StatusCode, Json<ApiError>) {
     tracing::error!(error = %err, "internal error");
     error(
@@ -143,7 +164,7 @@ fn error(status: StatusCode, code: ErrorCode, message: &str) -> (StatusCode, Jso
         Json(ApiError {
             error: message.into(),
             code,
-            field: None,
+            field: None, retry_after_secs: None
         }),
     )
 }
@@ -160,13 +181,7 @@ impl From<crate::services::users::UserError> for (StatusCode, Json<ApiError>) {
             UserError::InvalidCredentials => {
                 unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
             }
-            UserError::AccountLocked { until } => forbidden(
-                ErrorCode::Forbidden,
-                &format!(
-                    "account locked due to too many failed login attempts; try again after {}",
-                    until.format("%Y-%m-%dT%H:%M:%SZ")
-                ),
-            ),
+            UserError::AccountLocked { until } => locked(until),
             UserError::MerchantSuspended => {
                 forbidden(ErrorCode::Forbidden, "this merchant account has been suspended")
             }
@@ -356,6 +371,7 @@ mod tests {
             ErrorCode::OtpChallengeNotFound,
             ErrorCode::OtpLocked,
             ErrorCode::TooManyRequests,
+            ErrorCode::AccountLocked,
             ErrorCode::InternalError,
         ];
         for code in codes {

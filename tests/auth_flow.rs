@@ -586,6 +586,70 @@ async fn a_garbage_session_cookie_is_rejected() {
 }
 
 #[tokio::test]
+async fn expired_jwt_is_rejected() {
+    let app = app().await;
+    let (_, _, verified) = signup_and_verify(&app, "expired").await;
+    let user_id: Uuid = verified["user_id"].as_str().unwrap().parse().unwrap();
+    let merchant_id = verified["merchant_id"].as_str().map(|s| s.parse::<Uuid>().unwrap());
+
+    // Already expired, and by more than jsonwebtoken's default 60s leeway.
+    let token = aframp::auth::jwt::sign_with_ttl(
+        "integration-test-secret",
+        user_id,
+        merchant_id,
+        false,
+        chrono::Duration::seconds(-120),
+    )
+    .expect("signing the short-lived token must succeed");
+
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "an expired JWT must be rejected");
+}
+
+#[tokio::test]
+async fn account_locks_after_repeated_failed_logins() {
+    let app = app().await;
+    let (email, _, _) = signup_and_verify(&app, "lock").await;
+
+    // The first MAX_FAILED_ATTEMPTS - 1 failed logins return 401.
+    for _ in 0..9 {
+        let (status, _) = send(
+            app.clone(),
+            "POST",
+            "/login",
+            None,
+            Some(json!({ "email": email, "password": "not-the-password" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // The 10th consecutive failure locks the account (423 + retry time).
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": "not-the-password" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the locking attempt itself is a bad password: {body}");
+
+    // From here on even the correct password is refused until the lock lapses.
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": "password123" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::LOCKED, "{body}");
+    assert_eq!(body["code"], "ACCOUNT_LOCKED");
+    assert!(body["retry_after_secs"].as_u64().is_some_and(|s| s > 0));
+}
+
+#[tokio::test]
 async fn me_requires_a_valid_token() {
     let app = app().await;
     let (status, _) = send(app.clone(), "GET", "/me", None, None).await;

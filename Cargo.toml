@@ -3,6 +3,11 @@ name = "aframp"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.cargo-audit]
+# RUSTSEC advisories accepted as low-risk. The CI `cargo audit` job fails on
+# any advisory not listed here.
+ignore = []
+
 [dependencies]
 aes-gcm = "0.11.0"
 argon2 = "0.5"

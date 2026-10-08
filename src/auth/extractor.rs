@@ -73,7 +73,7 @@ async fn authenticate_api_key(
             Json(ApiError {
                 code: ErrorCode::InternalError,
                 error: "failed to verify api key".into(),
-                field: None,
+                field: None, retry_after_secs: None
             }),
         )
     })?;
@@ -84,7 +84,7 @@ async fn authenticate_api_key(
             Json(ApiError {
                 code: ErrorCode::InvalidCredentials,
                 error: "invalid or revoked api key".into(),
-                field: None,
+                field: None, retry_after_secs: None
             }),
         ));
     };
@@ -100,9 +100,9 @@ fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, 
     // cookie, which JS on the page cannot read. Either proves the session.
     let token = bearer_token(parts)
         .or_else(|| cookie::from_headers(&parts.headers))
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "missing session cookie or bearer token".into(), field: None })))?;
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "missing session cookie or bearer token".into(), field: None, retry_after_secs: None })))?;
     jwt::verify(&state.jwt_secret, token)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })))
+        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None, retry_after_secs: None })))
 }
 
 /// Verifies the token and that its account still exists and hasn't been
@@ -115,7 +115,7 @@ async fn authenticate_active(
     if !users::is_active(&state.db, claims.sub).await.map_err(internal)? {
         return Err((
             StatusCode::UNAUTHORIZED,
-            Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None }),
+            Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None, retry_after_secs: None }),
         ));
     }
     Ok(claims)

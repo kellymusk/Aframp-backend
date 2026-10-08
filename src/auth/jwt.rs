@@ -40,6 +40,18 @@ pub fn sign(
     merchant_id: Option<Uuid>,
     is_admin: bool,
 ) -> Result<String, jsonwebtoken::errors::Error> {
+    sign_with_ttl(secret, user_id, merchant_id, is_admin, Duration::hours(TOKEN_TTL_HOURS))
+}
+
+/// Like [`sign`] but with an explicit token lifetime. Primarily used by tests
+/// that need a token expiring almost immediately (e.g. JWT-expiry enforcement).
+pub fn sign_with_ttl(
+    secret: &str,
+    user_id: Uuid,
+    merchant_id: Option<Uuid>,
+    is_admin: bool,
+    ttl: Duration,
+) -> Result<String, jsonwebtoken::errors::Error> {
     let now = Utc::now();
     let iat = now.timestamp() as usize;
     let claims = Claims {
@@ -47,7 +59,7 @@ pub fn sign(
         merchant_id,
         is_admin,
         iat,
-        exp: (now + Duration::hours(TOKEN_TTL_HOURS)).timestamp() as usize,
+        exp: (now + ttl).timestamp() as usize,
         orig_iat: iat,
     };
     encode(
