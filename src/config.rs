@@ -153,6 +153,22 @@ impl AppConfig {
             Err(_) => None,
         };
 
+        let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".into());
+        if app_env.trim().eq_ignore_ascii_case("production") && !cookie_secure {
+            // This server speaks plain HTTP; it relies on a TLS-terminating reverse
+            // proxy (Caddy/nginx) in front of it. COOKIE_SECURE=false in production
+            // means the session cookie would be sent unencrypted, so refuse to start.
+            tracing::error!(
+                "REFUSING TO START: APP_ENV=production but COOKIE_SECURE=false. \
+                 The session cookie would be sent over plain HTTP. Run this service \
+                 behind a TLS-terminating reverse proxy (Caddy or nginx) and set \
+                 COOKIE_SECURE=true (the default) once TLS is in place. See README.md."
+            );
+            return Err(
+                "APP_ENV=production requires COOKIE_SECURE=true (see README.md for the reverse-proxy/TLS setup)".into(),
+            );
+        }
+
         Ok(Self {
             database_url: env("DATABASE_URL")?,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
@@ -270,6 +286,18 @@ mod tests {
         std::env::set_var("JWT_SECRET", &long_secret);
         std::env::set_var("WEBHOOK_SECRET", &long_secret);
         guard
+    }
+
+    #[test]
+    fn production_refuses_insecure_session_cookie() {
+        let _env = set_valid_env();
+        std::env::set_var("APP_ENV", "production");
+        std::env::set_var("COOKIE_SECURE", "false");
+        let result = AppConfig::from_env();
+        std::env::remove_var("APP_ENV");
+        std::env::remove_var("COOKIE_SECURE");
+        let err = result.unwrap_err();
+        assert!(err.contains("COOKIE_SECURE=true"), "unexpected error: {err}");
     }
 
     #[test]
