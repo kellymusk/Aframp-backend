@@ -10,7 +10,7 @@ use crate::error::{bad_request, bad_request_field, internal, unauthorized, ApiRe
 use crate::models::{AuthResponse, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
 use crate::services::otp::{self, VerifiedOutcome};
 use crate::services::users;
-use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name, validate_password};
+use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name, validate_password, MAX_PASSWORD_LEN};
 use crate::AppState;
 
 /// Validates and hashes the credentials, then hands off to an OTP challenge
@@ -22,6 +22,11 @@ pub async fn signup(
 ) -> ApiResult<Json<OtpChallengeResponse>> {
     if !is_valid_email(&req.email) {
         return Err(bad_request_field("email", "must be a valid email address"));
+    }
+    // Argon2's cost scales with input size, so cap the password before it
+    // reaches the hasher (defence in depth behind the request body limit).
+    if req.password.len() > MAX_PASSWORD_LEN {
+        return Err(bad_request_field("password", "must be at most 1024 characters"));
     }
     if let Err(errors) = validate_password(&req.password) {
         let message = format!("password {}", errors.join(", "));
@@ -56,6 +61,11 @@ pub async fn login(
 ) -> ApiResult<Response> {
     if !is_valid_email(&req.email) {
         return Err(bad_request_field("email", "must be a valid email address"));
+    }
+    // Argon2's cost scales with input size, so cap the password before it
+    // reaches the hasher (defence in depth behind the request body limit).
+    if req.password.len() > MAX_PASSWORD_LEN {
+        return Err(bad_request_field("password", "must be at most 1024 characters"));
     }
     let (user, merchant) = users::login(&state.db, &req.email, &req.password)
         .await?;

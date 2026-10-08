@@ -3,7 +3,7 @@ pub mod auth;
 pub mod blockchain;
 mod config;
 mod error;
-mod middleware;
+pub mod middleware;
 pub mod models;
 mod pagination;
 pub mod otp;
@@ -173,6 +173,10 @@ pub fn router(state: AppState) -> axum::Router {
             "/payment-requests",
             axum::routing::post(api::payment_requests::create)
                 .get(api::payment_requests::list),
+        )
+        .route(
+            "/payment-requests/{id}/expire",
+            axum::routing::post(api::payment_requests::expire),
         )
         .route(
             "/payment-requests/{id}/qr",

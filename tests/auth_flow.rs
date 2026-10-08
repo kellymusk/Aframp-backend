@@ -958,3 +958,21 @@ async fn refresh_stops_after_the_seven_day_session_window() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(body["error"].as_str().unwrap().contains("log in again"), "{body}");
 }
+
+/// #987 — oversized passwords are rejected before they reach Argon2.
+#[tokio::test]
+async fn oversized_password_is_rejected() {
+    let app = app().await;
+    let (email, phone_number, _) = fresh_identity("huge_password");
+    let password = format!("Aa1!{}", "x".repeat(2000));
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/signup",
+        None,
+        Some(json!({ "email": email, "password": password, "name": "Big", "phone_number": phone_number })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(json["field"], "password");
+}

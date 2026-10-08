@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use aframp::{build_state, router, AppConfig};
-use axum::http::{header, HeaderValue, Method};
-use tower_http::cors::CorsLayer;
+use axum::http::{HeaderName, HeaderValue, Request};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
 /// Default maximum request body size (1MB) used when `MAX_REQUEST_BODY_BYTES`
@@ -131,7 +131,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = router((*state).clone())
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        // X-Request-ID: set before Trace so the id is on the request span,
+        // propagated after so it lands on the response. Incoming ids are
+        // only trusted if they're valid UUIDs (see SanitizingRequestId).
+        .layer(SetRequestIdLayer::new(
+            HeaderName::from_static("x-request-id"),
+            aframp::middleware::SanitizingRequestId,
+        ))
+        .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<axum::body::Body>| {
+            let request_id = req
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            tracing::info_span!(
+                "request",
+                method = %req.method(),
+                uri = %req.uri(),
+                request_id = %request_id,
+            )
+        }))
+        .layer(PropagateRequestIdLayer::new(HeaderName::from_static("x-request-id")))
         .layer(RequestBodyLimitLayer::new(max_request_body_bytes));
 
     let address: SocketAddr = config.bind_addr.parse()?;

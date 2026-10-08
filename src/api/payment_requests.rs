@@ -266,6 +266,35 @@ pub async fn list(
     )))
 }
 
+/// `POST /payment-requests/{id}/expire` — end a pending request immediately.
+pub async fn expire(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<PaymentRequestView>> {
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account")
+    })?;
+    let pr = payment_requests::expire(&state.db, id, merchant_id)
+        .await
+        .map_err(|err| match err {
+            // Missing and "belongs to another merchant" look the same.
+            payment_requests::ExpireError::NotFound => {
+                not_found(ErrorCode::PaymentRequestNotFound, "payment request not found")
+            }
+            payment_requests::ExpireError::NotPending => bad_request(
+                ErrorCode::InvalidParameters,
+                "only a pending payment request can be expired",
+            ),
+            payment_requests::ExpireError::Database(e) => internal(e),
+        })?;
+    let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| internal("payment request references a missing wallet"))?;
+    Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+}
+
 /// Soft-delete (archive) a payment request owned by the authenticated merchant.
 /// Sets `cancelled_at`; the row remains until the cleanup job hard-deletes
 /// expired+cancelled rows older than 30 days.

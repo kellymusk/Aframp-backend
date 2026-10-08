@@ -236,6 +236,15 @@ wallet secret seeds are never recorded on a span, even at `trace` level.
 > outgoing request headers — including the `Authorization: Bearer sk_live_…` header carrying the
 > Paystack secret key. Prefer a target-scoped filter such as `aframp=debug` in any environment
 > holding a live key.
+### Request correlation
+
+Every response carries an `X-Request-ID` header — a UUID either generated for the request or echoed
+back if the client already sent a well-formed one. Include it when reporting a bug or searching logs;
+it's on the `TraceLayer` span (`request_id`) for every log line the request produces, so it correlates
+a support ticket straight to the exact server-side trace.
+
+An incoming `X-Request-ID` that isn't a valid UUID is discarded and replaced rather than trusted
+as-is — a client can't use it to inject arbitrary values into the logs.
 
 ## API reference
 

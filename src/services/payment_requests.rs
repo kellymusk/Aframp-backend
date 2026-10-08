@@ -260,6 +260,43 @@ pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payme
     .await
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ExpireError {
+    #[error("payment request not found")]
+    NotFound,
+    #[error("only a pending payment request can be expired")]
+    NotPending,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Ends a pending request now, merchant-scoped — e.g. the customer abandoned
+/// the session and the merchant wants a fresh QR without waiting out the TTL.
+/// Expiry stays a read-time state (see [`effective_status`]); this just moves
+/// `expires_at` to now, so the row reads `expired` from here on and can no
+/// longer be matched by a late deposit.
+pub async fn expire(db: &PgPool, id: Uuid, merchant_id: Uuid) -> Result<PaymentRequest, ExpireError> {
+    let updated = sqlx::query_as::<_, PaymentRequest>(&format!(
+        "UPDATE payment_requests
+            SET expires_at = now(), updated_at = now()
+          WHERE id = $1 AND merchant_id = $2
+            AND status = 'pending' AND expires_at > now() AND cancelled_at IS NULL
+      RETURNING {PR_COLS}"
+    ))
+    .bind(id)
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await?;
+    if let Some(pr) = updated {
+        return Ok(pr);
+    }
+    // Distinguish "not yours / missing" from "not pending" for the caller.
+    match payment_request_by_id(db, id).await? {
+        Some(pr) if pr.merchant_id == merchant_id => Err(ExpireError::NotPending),
+        _ => Err(ExpireError::NotFound),
+    }
+}
+
 /// Soft-delete: sets `cancelled_at` for a request owned by `merchant_id`.
 /// Returns the updated row, or `None` if it does not exist / is not owned /
 /// was already cancelled.

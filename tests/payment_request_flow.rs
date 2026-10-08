@@ -568,3 +568,35 @@ async fn payment_request_list_sep7_uri_matches_get_by_id() {
          — a mismatch means the list query uses a different address or parameters"
     );
 }
+
+/// #985 — a merchant can end a pending request early; it then reads `expired`.
+#[tokio::test]
+async fn payment_request_can_be_expired_by_its_merchant() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_expire").await;
+    let (other_token, _) = ensure_merchant(&app, "pr_expire_other").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap();
+    let path = format!("/payment-requests/{id}/expire");
+
+    let (status, json) = send(app.clone(), "POST", &path, Some(&other_token), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
+
+    let (status, json) = send(app.clone(), "POST", &path, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["status"], "expired");
+
+    let (status, json) = send(app.clone(), "POST", &path, Some(&token), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "already expired: {json}");
+}
