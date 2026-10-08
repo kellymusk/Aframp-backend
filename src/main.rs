@@ -49,6 +49,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
+    // `--rotate-key` runs the WALLET_ENCRYPTION_KEY rotation and exits —
+    // it never starts the HTTP server or the deposit worker. See
+    // src/rotate_key.rs for the full operational sequence.
+    if std::env::args().nth(1).as_deref() == Some("--rotate-key") {
+        return aframp::rotate_key::run().await;
+    }
+
     let config = AppConfig::from_env()?;
     let state = Arc::new(build_state(&config).await?);
 

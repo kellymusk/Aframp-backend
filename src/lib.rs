@@ -8,6 +8,7 @@ pub mod models;
 mod pagination;
 pub mod otp;
 pub mod payments;
+pub mod rotate_key;
 pub mod services;
 pub mod validation;
 
