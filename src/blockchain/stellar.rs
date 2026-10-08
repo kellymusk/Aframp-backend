@@ -21,9 +21,50 @@ pub struct DetectedDeposit {
     pub memo: Option<String>,
 }
 
+/// One wallet address to poll, along with the paging cursor of the last
+/// operation already processed for it (`None` on a wallet's first poll).
+#[derive(Debug, Clone)]
+pub struct AddressCursor {
+    pub address: String,
+    pub cursor: Option<String>,
+}
+
+/// Result of polling a single address: the deposits found and the cursor to
+/// persist so the next poll doesn't re-fetch them.
+#[derive(Debug, Clone)]
+pub struct AddressPollResult {
+    pub address: String,
+    pub deposits: Vec<DetectedDeposit>,
+    pub next_cursor: Option<String>,
+}
+
 #[async_trait]
 pub trait BlockchainListener: Send + Sync {
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String>;
+
+    /// Cursor-aware polling: fetch only operations after each address's
+    /// stored cursor and report the cursor to persist. Listeners without
+    /// cursor support fall back to [`Self::fetch_deposits`] and keep the
+    /// cursor unchanged.
+    async fn fetch_deposits_since(
+        &self,
+        addresses: &[AddressCursor],
+    ) -> Result<Vec<AddressPollResult>, String> {
+        let plain: Vec<String> = addresses.iter().map(|a| a.address.clone()).collect();
+        let deposits = self.fetch_deposits(&plain).await?;
+        Ok(addresses
+            .iter()
+            .map(|a| AddressPollResult {
+                address: a.address.clone(),
+                deposits: deposits
+                    .iter()
+                    .filter(|d| d.destination == a.address)
+                    .cloned()
+                    .collect(),
+                next_cursor: a.cursor.clone(),
+            })
+            .collect())
+    }
 
     /// Addresses the worker should leave out of this poll cycle (e.g. wallets
     /// in an unfunded backoff window). Listeners without backoff skip nothing.
@@ -124,16 +165,37 @@ impl BlockchainListener for StellarListener {
     }
 
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
-        let mut deposits = Vec::new();
-        for address in addresses {
+        let entries: Vec<AddressCursor> = addresses
+            .iter()
+            .map(|address| AddressCursor { address: address.clone(), cursor: None })
+            .collect();
+        Ok(self
+            .fetch_deposits_since(&entries)
+            .await?
+            .into_iter()
+            .flat_map(|r| r.deposits)
+            .collect())
+    }
+
+    async fn fetch_deposits_since(
+        &self,
+        addresses: &[AddressCursor],
+    ) -> Result<Vec<AddressPollResult>, String> {
+        let mut results = Vec::new();
+        for entry in addresses {
+            let address = &entry.address;
             // Skip wallets that are in their unfunded backoff window.
             if self.should_skip(address) {
                 continue;
             }
-            match fetch_for_address(&self.http, &self.horizon_url, address).await {
-                Ok(FetchResult::Funded(found)) => {
+            match fetch_for_address(&self.http, &self.horizon_url, address, entry.cursor.as_deref()).await {
+                Ok(FetchResult::Funded(deposits, next_cursor)) => {
                     self.clear_backoff(address);
-                    deposits.extend(found);
+                    results.push(AddressPollResult {
+                        address: address.clone(),
+                        deposits,
+                        next_cursor: next_cursor.or_else(|| entry.cursor.clone()),
+                    });
                 }
                 Ok(FetchResult::Unfunded) => {
                     self.record_unfunded(address);
@@ -145,7 +207,7 @@ impl BlockchainListener for StellarListener {
                 }
             }
         }
-        Ok(deposits)
+        Ok(results)
     }
 }
 
@@ -162,6 +224,8 @@ struct Embedded {
 
 #[derive(Debug, Deserialize)]
 struct OperationRecord {
+    #[serde(default)]
+    paging_token: Option<String>,
     #[serde(rename = "type")]
     op_type: String,
     transaction_successful: bool,
@@ -211,7 +275,8 @@ struct EmbeddedTransaction {
 /// Distinguishes a funded account (200 OK) from an unfunded one (404) so the
 /// caller can apply backoff for the latter.
 enum FetchResult {
-    Funded(Vec<DetectedDeposit>),
+    /// Deposits found, plus the paging token of the newest record seen.
+    Funded(Vec<DetectedDeposit>, Option<String>),
     Unfunded,
 }
 
@@ -224,15 +289,26 @@ enum FetchResult {
 /// `claimable_balance_created` and `path_payment_strict_send` are also handled —
 /// the former delivers funds via claimable balances (not payment ops), and the
 /// latter uses a `destination` field instead of `to`.
+///
+/// When `cursor` is `None` (a wallet's first poll) the most recent 20
+/// operations are fetched. Once a cursor is known, only operations after it
+/// are fetched (ascending order), so already-processed payments are never
+/// re-fetched.
 async fn fetch_for_address(
     http: &reqwest::Client,
     horizon_url: &str,
     address: &str,
+    cursor: Option<&str>,
 ) -> Result<FetchResult, String> {
-    let url = format!(
-        "{}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions",
-        horizon_url.trim_end_matches('/')
-    );
+    let base = horizon_url.trim_end_matches('/');
+    let url = match cursor {
+        Some(cursor) => format!(
+            "{base}/accounts/{address}/payments?order=asc&cursor={cursor}&limit=20&include_failed=false&join=transactions"
+        ),
+        None => format!(
+            "{base}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions"
+        ),
+    };
 
     let response = http.get(&url).send().await.map_err(|e| e.to_string())?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -247,13 +323,22 @@ async fn fetch_for_address(
         .await
         .map_err(|e| e.to_string())?;
 
+    // The newest record's paging token becomes the next cursor: on the first
+    // poll (order=desc) that's the first record; once polling ascending from
+    // a cursor, it's the last one.
+    let next_cursor = match cursor {
+        Some(_) => page.embedded.records.last(),
+        None => page.embedded.records.first(),
+    }
+    .and_then(|r| r.paging_token.clone());
+
     let deposits = page
         .embedded
         .records
         .into_iter()
         .filter_map(|r| record_to_deposit(r, address))
         .collect();
-    Ok(FetchResult::Funded(deposits))
+    Ok(FetchResult::Funded(deposits, next_cursor))
 }
 
 /// Maps a single Horizon operation record to a `DetectedDeposit` if it
@@ -412,7 +497,56 @@ mod tests {
             asset: None,
             claimant: None,
             transaction: None,
+            paging_token: None,
         }
+    }
+
+    /// #937 — the first poll records the newest paging token; later polls ask
+    /// Horizon only for operations after it (ascending).
+    #[tokio::test]
+    async fn cursor_is_reported_and_used_on_the_next_poll() {
+        use std::sync::{Arc, Mutex as StdMutex};
+        const ADDR: &str = "GCURSOR";
+        let seen: Arc<StdMutex<Vec<String>>> = Arc::default();
+        let seen_in_handler = seen.clone();
+        let app = axum::Router::new().route(
+            "/accounts/{address}/payments",
+            axum::routing::get(move |uri: axum::http::Uri| {
+                let seen = seen_in_handler.clone();
+                async move {
+                    seen.lock().unwrap().push(uri.query().unwrap_or("").to_string());
+                    axum::Json(serde_json::json!({
+                        "_embedded": { "records": [{
+                            "type": "payment",
+                            "paging_token": "200",
+                            "transaction_successful": true,
+                            "transaction_hash": "tx-200",
+                            "to": ADDR,
+                            "amount": "1.0000000",
+                            "asset_type": "native"
+                        }] }
+                    }))
+                }
+            }),
+        );
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(server, app).await.unwrap() });
+        let listener = StellarListener::new(url);
+
+        let first = listener
+            .fetch_deposits_since(&[AddressCursor { address: ADDR.into(), cursor: None }])
+            .await
+            .unwrap();
+        assert_eq!(first[0].next_cursor.as_deref(), Some("200"));
+
+        listener
+            .fetch_deposits_since(&[AddressCursor { address: ADDR.into(), cursor: Some("200".into()) }])
+            .await
+            .unwrap();
+        let queries = seen.lock().unwrap().clone();
+        assert!(queries[0].contains("order=desc") && !queries[0].contains("cursor="));
+        assert!(queries[1].contains("order=asc") && queries[1].contains("cursor=200"));
     }
 
     #[test]

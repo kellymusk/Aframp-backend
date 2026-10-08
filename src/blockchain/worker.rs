@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use sqlx::PgPool;
 
-use crate::blockchain::stellar::{BlockchainListener, DetectedDeposit, StellarListener};
+use crate::blockchain::stellar::{AddressCursor, BlockchainListener, DetectedDeposit, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
 use crate::services::{balances, payment_requests, payments, wallets};
 use crate::AppState;
@@ -28,20 +28,43 @@ pub async fn poll_once<L: BlockchainListener>(
     listener: &L,
 ) -> Result<(), String> {
     let skip = listener.skipped_addresses();
-    let addresses: Vec<String> = wallets::pollable_wallets(db, &skip)
+    let wallet_list = wallets::pollable_wallets(db, &skip)
         .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|w| w.address)
-        .collect();
-    if addresses.is_empty() {
+        .map_err(|e| e.to_string())?;
+    if wallet_list.is_empty() {
         return Ok(());
     }
 
-    let deposits = listener.fetch_deposits(&addresses).await?;
-    for deposit in deposits {
-        if let Err(err) = process_deposit(db, deposit).await {
-            tracing::warn!(error = %err, "failed to process deposit");
+    let address_cursors: Vec<AddressCursor> = wallet_list
+        .iter()
+        .map(|w| AddressCursor {
+            address: w.address.clone(),
+            cursor: w.last_polled_cursor.clone(),
+        })
+        .collect();
+
+    let results = listener.fetch_deposits_since(&address_cursors).await?;
+    for result in results {
+        let mut all_processed = true;
+        for deposit in result.deposits {
+            if let Err(err) = process_deposit(db, deposit).await {
+                all_processed = false;
+                tracing::warn!(error = %err, "failed to process deposit");
+            }
+        }
+
+        // Only advance the cursor once every deposit in the page was handled,
+        // so a transient failure is retried on the next poll rather than
+        // skipped forever. Re-processing is safe: deposits dedupe on tx hash.
+        let Some(next_cursor) = result.next_cursor else { continue };
+        let Some(wallet) = wallet_list.iter().find(|w| w.address == result.address) else {
+            continue;
+        };
+        if !all_processed || wallet.last_polled_cursor.as_deref() == Some(next_cursor.as_str()) {
+            continue;
+        }
+        if let Err(err) = wallets::update_last_polled_cursor(db, wallet.id, &next_cursor).await {
+            tracing::warn!(error = %err, address = %result.address, "failed to persist poll cursor");
         }
     }
     Ok(())

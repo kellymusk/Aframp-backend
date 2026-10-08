@@ -83,7 +83,7 @@ pub async fn create_wallet(
     sqlx::query_as::<_, Wallet>(
         "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, merchant_id, address, network, created_at",
+         RETURNING id, merchant_id, address, network, created_at, last_polled_cursor",
     )
     .bind(wallet.merchant_id)
     .bind(&wallet.address)
@@ -111,7 +111,7 @@ pub async fn wallet_by_merchant(
     network: &str,
 ) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor
            FROM wallets
           WHERE merchant_id = $1 AND network = $2
           ORDER BY created_at DESC
@@ -125,7 +125,7 @@ pub async fn wallet_by_merchant(
 
 pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE network = 'stellar'",
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE network = 'stellar'",
     )
     .fetch_all(db)
     .await
@@ -135,7 +135,7 @@ pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
 /// currently backing off so they are not loaded at all.
 pub async fn pollable_wallets(db: &PgPool, skip: &[String]) -> Result<Vec<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets
           WHERE network = 'stellar' AND NOT (address = ANY($1))",
     )
     .bind(skip)
@@ -145,7 +145,7 @@ pub async fn pollable_wallets(db: &PgPool, skip: &[String]) -> Result<Vec<Wallet
 
 pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE id = $1",
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db)
@@ -154,7 +154,7 @@ pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx:
 
 pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE address = $1",
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE address = $1",
     )
     .bind(address)
     .fetch_optional(db)
@@ -206,4 +206,17 @@ mod tests {
         let result = wallet_crypto::decrypt(&key_b, &encrypted);
         assert!(result.is_err(), "wrong key should fail to decrypt");
     }
+}
+
+pub async fn update_last_polled_cursor(
+    db: &PgPool,
+    wallet_id: Uuid,
+    cursor: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE wallets SET last_polled_cursor = $1 WHERE id = $2")
+        .bind(cursor)
+        .bind(wallet_id)
+        .execute(db)
+        .await
+        .map(|_| ())
 }
