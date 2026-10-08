@@ -77,7 +77,14 @@ pub async fn paystack(
         return Err(forbidden(ErrorCode::Forbidden, "invalid webhook signature"));
     }
 
-    match serde_json::from_slice::<PaystackWebhookEvent>(&body) {
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(error = %err, "paystack webhook: body is not JSON");
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    };
+    match serde_json::from_value::<PaystackWebhookEvent>(payload.clone()) {
         Ok(event) => {
             let status = match event.outcome() {
                 Some(TransferWebhookOutcome::Success) => "completed",
@@ -85,21 +92,29 @@ pub async fn paystack(
                 Some(TransferWebhookOutcome::Reversed) => "failed",
                 None => return Ok(StatusCode::NO_CONTENT),
             };
-            let Some(reference) = event.data.transfer_code.as_deref() else {
-                tracing::warn!(event = %event.event, "paystack webhook: transfer event without transfer_code");
+            let data = &event.data;
+            if data.reference.is_none() && data.transfer_code.is_none() {
+                tracing::warn!(event = %event.event, "paystack webhook: transfer event without a reference");
                 return Ok(StatusCode::NO_CONTENT);
-            };
-            let failure_reason = (status == "failed").then(|| event.event.clone());
+            }
+            let failure_reason = (status == "failed")
+                .then(|| data.reason.clone().unwrap_or_else(|| event.event.clone()));
+            let external_id = data.id.as_ref().map(|id| match id {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
             let updated = crate::services::withdrawals::reconcile_withdrawal_status(
                 &state.db,
-                reference,
+                data.reference.as_deref(),
+                data.transfer_code.as_deref(),
                 status,
                 failure_reason.as_deref(),
+                external_id.as_deref().map(|id| (id, &payload)),
             )
             .await
             .map_err(internal)?;
             if updated.is_none() {
-                tracing::warn!(reference, "paystack webhook: no withdrawal for transfer");
+                tracing::warn!(event = %event.event, "paystack webhook: no matching withdrawal");
             }
         }
         Err(err) => {

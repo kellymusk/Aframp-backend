@@ -433,13 +433,21 @@ pub async fn find_by_idempotency_key(
 /// The update is guarded so it is idempotent: a withdrawal that is already in a
 /// terminal state is left untouched, and the balance refund only happens on the
 /// transition out of `pending`. This makes duplicate webhook deliveries safe.
+///
+/// The withdrawal is matched by our own reference (its id, which we send to
+/// Paystack as the transfer reference) or, failing that, the transfer code.
+/// When `event` is given, the raw payload is recorded in `webhook_events`;
+/// a repeat delivery of an already-recorded event changes nothing.
 pub async fn reconcile_withdrawal_status(
     db: &PgPool,
-    provider_reference: &str,
+    reference: Option<&str>,
+    provider_reference: Option<&str>,
     status: &str,
     failure_reason: Option<&str>,
+    event: Option<(&str, &serde_json::Value)>,
 ) -> Result<Option<Withdrawal>, sqlx::Error> {
     let mut tx = db.begin().await?;
+    let reference_id = reference.and_then(|r| Uuid::parse_str(r).ok());
 
     // Lock the row and read its current state so we can decide whether a refund
     // is owed. `FOR UPDATE` serialises concurrent webhook deliveries for the
@@ -449,9 +457,10 @@ pub async fn reconcile_withdrawal_status(
                 provider_reference, bank_code, account_number, failure_reason,
                 idempotency_key, created_at, updated_at
            FROM withdrawals
-          WHERE provider_reference = $1
+          WHERE id = $1 OR ($1 IS NULL AND provider_reference = $2)
           FOR UPDATE",
     )
+    .bind(reference_id)
     .bind(provider_reference)
     .fetch_optional(&mut *tx)
     .await?;
@@ -463,6 +472,25 @@ pub async fn reconcile_withdrawal_status(
             return Ok(None);
         }
     };
+
+    if let Some((external_id, payload)) = event {
+        let recorded = sqlx::query(
+            "INSERT INTO webhook_events (merchant_id, provider, external_id, payload)
+             VALUES ($1, 'paystack', $2, $3)
+             ON CONFLICT (provider, external_id) DO NOTHING",
+        )
+        .bind(current.merchant_id)
+        .bind(external_id)
+        .bind(payload)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if recorded == 0 {
+            // Already processed this delivery.
+            tx.rollback().await?;
+            return Ok(Some(current));
+        }
+    }
 
     // Already terminal: nothing to do. Keeps duplicate deliveries idempotent.
     if current.status != WithdrawalStatus::Pending {

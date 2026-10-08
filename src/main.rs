@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.clone(),
         config.stellar_horizon_url.clone(),
         config.stellar_poll_interval_secs,
+        config.stellar_poll_concurrency,
     );
     tokio::spawn(listener);
 

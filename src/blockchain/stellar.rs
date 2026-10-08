@@ -77,6 +77,9 @@ pub trait BlockchainListener: Send + Sync {
 /// whole poll cycle.
 const HORIZON_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Horizon requests in flight per poll cycle unless configured otherwise.
+const DEFAULT_POLL_CONCURRENCY: usize = 20;
+
 pub struct StellarListener {
     pub horizon_url: String,
     /// Shared client: pools connections across polls and applies the timeout.
@@ -84,6 +87,8 @@ pub struct StellarListener {
     /// Tracks the last time each unfunded wallet was polled so the worker can
     /// apply exponential backoff instead of hammering Horizon every cycle.
     unfunded_backoff: Mutex<HashMap<String, UnfundedState>>,
+    /// Maximum Horizon requests in flight per poll cycle.
+    poll_concurrency: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +113,16 @@ impl StellarListener {
             horizon_url,
             http,
             unfunded_backoff: Mutex::new(HashMap::new()),
+            poll_concurrency: DEFAULT_POLL_CONCURRENCY,
         }
+    }
+
+    /// Cap concurrent Horizon requests per cycle. Cycle time is roughly
+    /// wallets × Horizon latency / concurrency: 1,000 wallets at 300 ms and
+    /// concurrency 20 is ~15 s instead of ~300 s sequentially.
+    pub fn with_concurrency(mut self, poll_concurrency: usize) -> Self {
+        self.poll_concurrency = poll_concurrency.max(1);
+        self
     }
 
     /// Returns `true` if the address is still in its backoff window and should
@@ -181,32 +195,39 @@ impl BlockchainListener for StellarListener {
         &self,
         addresses: &[AddressCursor],
     ) -> Result<Vec<AddressPollResult>, String> {
-        let mut results = Vec::new();
-        for entry in addresses {
-            let address = &entry.address;
-            // Skip wallets that are in their unfunded backoff window.
-            if self.should_skip(address) {
-                continue;
-            }
-            match fetch_for_address(&self.http, &self.horizon_url, address, entry.cursor.as_deref()).await {
-                Ok(FetchResult::Funded(deposits, next_cursor)) => {
-                    self.clear_backoff(address);
-                    results.push(AddressPollResult {
-                        address: address.clone(),
-                        deposits,
-                        next_cursor: next_cursor.or_else(|| entry.cursor.clone()),
-                    });
+        use futures_util::stream::{self, StreamExt};
+        let results = stream::iter(addresses.iter().cloned())
+            .map(|entry| async move {
+                let address = entry.address.as_str();
+                // Skip wallets that are in their unfunded backoff window.
+                if self.should_skip(address) {
+                    return None;
                 }
-                Ok(FetchResult::Unfunded) => {
-                    self.record_unfunded(address);
+                match fetch_for_address(&self.http, &self.horizon_url, address, entry.cursor.as_deref()).await {
+                    Ok(FetchResult::Funded(deposits, next_cursor)) => {
+                        self.clear_backoff(address);
+                        Some(AddressPollResult {
+                            address: entry.address.clone(),
+                            deposits,
+                            next_cursor: next_cursor.or_else(|| entry.cursor.clone()),
+                        })
+                    }
+                    Ok(FetchResult::Unfunded) => {
+                        self.record_unfunded(address);
+                        None
+                    }
+                    Err(err) => {
+                        // One bad/unreachable address must not block deposit detection
+                        // for every other wallet in this poll cycle.
+                        tracing::warn!(error = %err, %address, "failed to fetch deposits for address");
+                        None
+                    }
                 }
-                Err(err) => {
-                    // One bad/unreachable address must not block deposit detection
-                    // for every other wallet in this poll cycle.
-                    tracing::warn!(error = %err, %address, "failed to fetch deposits for address");
-                }
-            }
-        }
+            })
+            .buffer_unordered(self.poll_concurrency)
+            .filter_map(|r| async move { r })
+            .collect::<Vec<_>>()
+            .await;
         Ok(results)
     }
 }
@@ -499,6 +520,43 @@ mod tests {
             transaction: None,
             paging_token: None,
         }
+    }
+
+    /// #998 — Horizon requests for one poll cycle run concurrently, bounded by
+    /// the configured limit.
+    #[tokio::test]
+    async fn horizon_fetches_respect_the_concurrency_limit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let (a, m) = (active.clone(), maximum.clone());
+        let app = axum::Router::new().route(
+            "/accounts/{address}/payments",
+            axum::routing::get(move || {
+                let (active, maximum) = (a.clone(), m.clone());
+                async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(current, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({ "_embedded": { "records": [] } }))
+                }
+            }),
+        );
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", server.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(server, app).await.unwrap() });
+
+        let listener = StellarListener::new(url).with_concurrency(4);
+        let addresses: Vec<AddressCursor> = (0..40)
+            .map(|i| AddressCursor { address: format!("GWALLET{i}"), cursor: None })
+            .collect();
+        listener.fetch_deposits_since(&addresses).await.unwrap();
+
+        let peak = maximum.load(Ordering::SeqCst);
+        assert!(peak > 1, "fetches should overlap, peak was {peak}");
+        assert!(peak <= 4, "concurrency limit exceeded: {peak}");
     }
 
     /// #937 — the first poll records the newest paging token; later polls ask

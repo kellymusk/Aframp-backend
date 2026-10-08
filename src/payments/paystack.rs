@@ -164,6 +164,12 @@ pub struct PaystackWebhookData {
     pub reference: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+    /// Paystack's id for this event; deduplicates repeated deliveries.
+    #[serde(default)]
+    pub id: Option<serde_json::Value>,
+    /// Human-readable failure reason on `transfer.failed`.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// The reconciliation outcome derived from a Paystack transfer webhook event.

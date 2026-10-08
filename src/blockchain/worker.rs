@@ -2,17 +2,31 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::PgPool;
+use tracing::Instrument;
 
 use crate::blockchain::stellar::{AddressCursor, BlockchainListener, DetectedDeposit, StellarListener};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
 use crate::services::{balances, payment_requests, payments, wallets};
 use crate::AppState;
 
-pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: u64) {
-    let listener = StellarListener::new(horizon_url);
+pub async fn run(
+    state: Arc<AppState>,
+    horizon_url: String,
+    poll_interval_secs: u64,
+    poll_concurrency: usize,
+) {
+    let listener = StellarListener::new(horizon_url).with_concurrency(poll_concurrency);
 
     loop {
-        if let Err(err) = poll_once(&state.db, &listener).await {
+        let started = std::time::Instant::now();
+        let span = tracing::info_span!(
+            "stellar_deposit_poll",
+            poll_concurrency,
+            poll_cycle_duration_ms = tracing::field::Empty
+        );
+        let result = poll_once(&state.db, &listener).instrument(span.clone()).await;
+        span.record("poll_cycle_duration_ms", started.elapsed().as_millis() as u64);
+        if let Err(err) = result {
             tracing::warn!(error = %err, "deposit poll failed");
         }
         tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
