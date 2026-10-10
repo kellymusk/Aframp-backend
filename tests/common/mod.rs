@@ -1,13 +1,29 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use aframp::blockchain::stellar::{BlockchainListener, DetectedDeposit};
 use aframp::AppState;
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
+
+/// A [`BlockchainListener`] that hands back a fixed, caller-supplied set of
+/// deposits instead of polling Horizon — lets tests drive the worker's
+/// detect/correlate logic with synthetic deposits.
+pub struct MockBlockchainListener {
+    pub deposits: Vec<DetectedDeposit>,
+}
+
+#[async_trait]
+impl BlockchainListener for MockBlockchainListener {
+    async fn fetch_deposits(&self, _addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
+        Ok(self.deposits.clone())
+    }
+}
 
 static MIGRATION_LOCK: Mutex<()> = Mutex::new(());
 static MIGRATED: AtomicBool = AtomicBool::new(false);

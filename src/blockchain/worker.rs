@@ -19,7 +19,10 @@ pub async fn run(state: Arc<AppState>, horizon_url: String, poll_interval_secs: 
     }
 }
 
-async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String> {
+/// Runs one poll/detect/correlate cycle against any [`BlockchainListener`],
+/// not just Horizon — this is the seam integration tests use to drive the
+/// full deposit flow with a mock listener instead of a real Stellar node.
+pub async fn poll_once(db: &PgPool, listener: &dyn BlockchainListener) -> Result<(), String> {
     let addresses: Vec<String> = wallets::all_wallets(db)
         .await
         .map_err(|e| e.to_string())?
@@ -39,7 +42,7 @@ async fn poll_once(db: &PgPool, listener: &StellarListener) -> Result<(), String
     Ok(())
 }
 
-async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
+pub async fn process_deposit(db: &PgPool, d: crate::blockchain::stellar::DetectedDeposit) -> Result<(), String> {
     let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
     else {
         return Ok(());
