@@ -7,6 +7,12 @@ use super::OtpProvider;
 
 const BASE_URL: &str = "https://api.ng.termii.com/api";
 
+/// Build the Termii Messaging send URL. Kept as a pure function so tests can
+/// assert the API key is never placed in the URL or query string.
+pub fn sms_send_url() -> String {
+    format!("{BASE_URL}/sms/send")
+}
+
 /// The event body Termii POSTs to the dashboard-configured webhook URL for
 /// SMS delivery status (sent/delivered/failed/etc.) — see
 /// https://developers.termii.com/events-and-reports. Deserialized leniently:
@@ -31,16 +37,30 @@ pub struct TermiiWebhookEvent {
 pub struct TermiiProvider {
     api_key: String,
     sender_id: String,
+    /// Dedicated webhook signing secret (`TERMII_WEBHOOK_SECRET`). When
+    /// `None`, webhook verification falls back to `api_key` — see
+    /// [`TermiiProvider::verify_webhook_signature`].
+    webhook_secret: Option<String>,
     http: reqwest::Client,
 }
 
 impl TermiiProvider {
-    pub fn new(api_key: String, sender_id: String) -> Self {
+    /// `webhook_secret` should be the value of `TERMII_WEBHOOK_SECRET`. When
+    /// absent, webhook signature verification falls back to `api_key`; a
+    /// warning is logged so operators know the fallback is in effect.
+    pub fn new(api_key: String, sender_id: String, webhook_secret: Option<String>) -> Self {
+        if webhook_secret.is_none() {
+            tracing::warn!(
+                "TERMII_WEBHOOK_SECRET is not set; falling back to TERMII_API_KEY for Termii \
+                 webhook signature verification. Set TERMII_WEBHOOK_SECRET to decouple webhook \
+                 verification from the API key."
+            );
+        }
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("failed to build Termii HTTP client");
-        Self { api_key, sender_id, http }
+        Self { api_key, sender_id, webhook_secret, http }
     }
 }
 
@@ -53,10 +73,32 @@ struct SendResponse {
 #[async_trait]
 impl OtpProvider for TermiiProvider {
     async fn send_sms(&self, phone: &str, message: &str) -> Result<(), String> {
+        // SECURITY (#1120 / #1122):
+        // Termii's Messaging API requires `api_key` in the JSON body — their
+        // docs do not support Bearer / Authorization-header auth for this
+        // endpoint (see https://developers.termii.com/messaging-api). The
+        // Token API has the same body-key requirement. We therefore cannot
+        // move the secret to a header without breaking sends.
+        //
+        // Mitigations:
+        // - Transport is always HTTPS (hard-coded base URL).
+        // - The key is never placed in the URL or query string (see tests).
+        // - Operators should disable request-body logging on any egress
+        //   proxy/WAF/APM between this service and Termii.
+        // - Prefer Termii's Token API as a follow-up for OTP lifecycle; it
+        //   still needs the body key but avoids embedding the OTP in our
+        //   own message-formatting path. See docs/SECURITY.md.
+        let url = sms_send_url();
+        debug_assert!(
+            !url.contains(&self.api_key) && !url.contains('?'),
+            "Termii send URL must never carry the API key or query params"
+        );
+
         let response = self
             .http
-            .post(format!("{BASE_URL}/sms/send"))
+            .post(&url)
             .json(&serde_json::json!({
+                // Required by Termii — do not move to a query string.
                 "api_key": self.api_key,
                 "to": phone,
                 "from": self.sender_id,
@@ -85,19 +127,59 @@ impl OtpProvider for TermiiProvider {
     }
 
     /// Termii signs webhook payloads as `HMAC-SHA512(secret, raw_body)`, hex
-    /// encoded, in the `X-Termii-Signature` header. Their docs say "your
-    /// secret key" without naming which one — the account API key is the
-    /// only secret both sides are known to share, so that's what's used
-    /// here. Worth double-checking against the dashboard's webhook config
-    /// page if verification ever starts failing on genuine Termii traffic.
+    /// encoded, in the `X-Termii-Signature` header.
+    ///
+    /// The signing secret is read from the `TERMII_WEBHOOK_SECRET`
+    /// environment variable (passed in via [`TermiiProvider::new`]). If that
+    /// variable is unset, verification falls back to `TERMII_API_KEY` for
+    /// backwards compatibility; a warning is emitted at construction time in
+    /// that case. Prefer setting `TERMII_WEBHOOK_SECRET` so that rotating
+    /// the API key does not invalidate webhook verification (and vice versa).
     fn verify_webhook_signature(&self, body: &[u8], signature: &str) -> bool {
         let Ok(sig_bytes) = hex::decode(signature) else {
             return false;
         };
-        let Ok(mut mac) = Hmac::<Sha512>::new_from_slice(self.api_key.as_bytes()) else {
+        let secret = self.webhook_secret.as_deref().unwrap_or(&self.api_key);
+        let Ok(mut mac) = Hmac::<Sha512>::new_from_slice(secret.as_bytes()) else {
             return false;
         };
         mac.update(body);
         mac.verify_slice(&sig_bytes).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sms_send_url_does_not_embed_api_key_or_query() {
+        let url = sms_send_url();
+        let fake_key = "termii-secret-key-should-never-appear";
+        assert!(
+            !url.contains(fake_key),
+            "send URL must not contain an API key: {url}"
+        );
+        assert!(
+            !url.contains('?') && !url.contains("api_key"),
+            "send URL must not use query params for auth: {url}"
+        );
+        assert!(
+            url.starts_with("https://"),
+            "Termii traffic must be HTTPS: {url}"
+        );
+        assert_eq!(url, "https://api.ng.termii.com/api/sms/send");
+    }
+
+    #[test]
+    fn provider_send_url_never_includes_configured_key() {
+        let key = "super-secret-termii-key-xyz";
+        // Constructing the provider must not bake the key into any URL we log.
+        let _provider = TermiiProvider::new(key.to_string(), "Aframp".into());
+        let url = sms_send_url();
+        assert!(
+            !url.contains(key),
+            "configured api_key must not appear in the request URL: {url}"
+        );
     }
 }

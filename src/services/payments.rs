@@ -1,6 +1,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::models::status::PaymentStatus;
 use crate::models::{NewPayment, Payment, UpdatePaymentStatus};
 
 #[derive(Debug, thiserror::Error)]
@@ -11,7 +12,18 @@ pub enum PaymentError {
     Database(#[from] sqlx::Error),
 }
 
-pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment, PaymentError> {
+/// Records a deposit, returning the payment row together with a flag that is
+/// `true` when the row was freshly inserted and `false` when an existing row
+/// was returned by the `tx_hash` idempotency check.
+///
+/// Callers must gate any balance mutation on the returned flag: a `false`
+/// value means this deposit has already been observed (possibly by an earlier
+/// poll cycle that crashed before completing), so re-applying a balance delta
+/// would double-credit the merchant.
+pub async fn record_deposit(
+    db: &PgPool,
+    payment: NewPayment,
+) -> Result<(Payment, bool), PaymentError> {
     let existing = sqlx::query_as::<_, Payment>(
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                 network, status, confirmations, created_at, updated_at
@@ -23,14 +35,14 @@ pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment,
     .await?;
 
     if let Some(p) = existing {
-        return Ok(p);
+        return Ok((p, false));
     }
 
-    sqlx::query_as::<_, Payment>(
+    let inserted = sqlx::query_as::<_, Payment>(
         "INSERT INTO payments (
              merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'detected')
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                    network, status, confirmations, created_at, updated_at",
     )
@@ -41,9 +53,12 @@ pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment,
     .bind(payment.amount_stroops)
     .bind(&payment.asset)
     .bind(&payment.network)
+    .bind(PaymentStatus::Detected)
     .fetch_one(db)
     .await
-    .map_err(PaymentError::Database)
+    .map_err(PaymentError::Database)?;
+
+    Ok((inserted, true))
 }
 
 pub async fn set_status(
@@ -52,9 +67,9 @@ pub async fn set_status(
     new_status: UpdatePaymentStatus,
 ) -> Result<Option<Payment>, sqlx::Error> {
     let status = match new_status {
-        UpdatePaymentStatus::Verified => "verified",
-        UpdatePaymentStatus::Confirmed => "confirmed",
-        UpdatePaymentStatus::Failed => "failed",
+        UpdatePaymentStatus::Verified => PaymentStatus::Verified,
+        UpdatePaymentStatus::Confirmed => PaymentStatus::Confirmed,
+        UpdatePaymentStatus::Failed => PaymentStatus::Failed,
     };
     sqlx::query_as::<_, Payment>(
         "UPDATE payments
@@ -67,6 +82,58 @@ pub async fn set_status(
     .bind(status)
     .fetch_optional(db)
     .await
+}
+
+/// Records a sweep transaction in the payments table with a `sweep` type.
+///
+/// A sweep moves a merchant's custodial balance to the consolidated
+/// settlement wallet (`STELLAR_SYSTEM_WALLET_ADDRESS`). The row is keyed by
+/// the on-chain sweep `tx_hash` so retries are idempotent, mirroring
+/// [`record_deposit`].
+#[allow(clippy::too_many_arguments)]
+pub async fn record_sweep(
+    db: &PgPool,
+    merchant_id: Uuid,
+    wallet_id: Uuid,
+    wallet_address: &str,
+    tx_hash: &str,
+    amount_stroops: i64,
+    asset: &str,
+    network: &str,
+) -> Result<Payment, PaymentError> {
+    let existing = sqlx::query_as::<_, Payment>(
+        "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                network, status, confirmations, created_at, updated_at
+           FROM payments
+          WHERE tx_hash = $1",
+    )
+    .bind(tx_hash)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some(p) = existing {
+        return Ok(p);
+    }
+
+    sqlx::query_as::<_, Payment>(
+        "INSERT INTO payments (
+             merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network,
+             status, payment_type
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'confirmed', 'sweep')
+         RETURNING id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                   network, status, confirmations, created_at, updated_at",
+    )
+    .bind(merchant_id)
+    .bind(wallet_id)
+    .bind(wallet_address)
+    .bind(tx_hash)
+    .bind(amount_stroops)
+    .bind(asset)
+    .bind(network)
+    .fetch_one(db)
+    .await
+    .map_err(PaymentError::Database)
 }
 
 pub async fn payments_by_merchant(
@@ -142,4 +209,80 @@ pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sql
     .bind(id)
     .fetch_optional(db)
     .await
+}
+
+/// Merchant notification preferences relevant to deposit alerts.
+///
+/// Notifications are opt-in: a merchant only receives a deposit email when
+/// `deposit_email_enabled` is true. `unsubscribe_token` is a stable, opaque
+/// value embedded in the email's unsubscribe link so merchants can opt out
+/// without authenticating (GDPR-compliant one-click unsubscribe).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MerchantNotificationPrefs {
+    pub merchant_id: Uuid,
+    pub email: Option<String>,
+    pub deposit_email_enabled: bool,
+    pub unsubscribe_token: Uuid,
+}
+
+/// Loads the notification preferences for a merchant. Returns `None` when the
+/// merchant has no preferences row yet (i.e. has never opted in).
+pub async fn merchant_notification_prefs(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<MerchantNotificationPrefs>, sqlx::Error> {
+    sqlx::query_as::<_, MerchantNotificationPrefs>(
+        "SELECT merchant_id, email, deposit_email_enabled, unsubscribe_token
+           FROM merchant_notification_prefs
+          WHERE merchant_id = $1",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Opts a merchant in (or out) of deposit email notifications. Creates the
+/// preferences row on first call, generating a stable unsubscribe token.
+pub async fn set_deposit_email_enabled(
+    db: &PgPool,
+    merchant_id: Uuid,
+    email: &str,
+    enabled: bool,
+) -> Result<MerchantNotificationPrefs, sqlx::Error> {
+    sqlx::query_as::<_, MerchantNotificationPrefs>(
+        "INSERT INTO merchant_notification_prefs (
+             merchant_id, email, deposit_email_enabled, unsubscribe_token
+         )
+         VALUES ($1, $2, $3, gen_random_uuid())
+         ON CONFLICT (merchant_id) DO UPDATE
+            SET email = EXCLUDED.email,
+                deposit_email_enabled = EXCLUDED.deposit_email_enabled,
+                updated_at = now()
+         RETURNING merchant_id, email, deposit_email_enabled, unsubscribe_token",
+    )
+    .bind(merchant_id)
+    .bind(email)
+    .bind(enabled)
+    .fetch_one(db)
+    .await
+}
+
+/// Disables deposit email notifications using the opaque unsubscribe token
+/// from the email link. Returns `true` when a matching opt-in was disabled.
+/// This is the GDPR-compliant one-click unsubscribe path and requires no
+/// authentication.
+pub async fn unsubscribe_deposit_email(
+    db: &PgPool,
+    token: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE merchant_notification_prefs
+            SET deposit_email_enabled = false, updated_at = now()
+          WHERE unsubscribe_token = $1
+            AND deposit_email_enabled = true",
+    )
+    .bind(token)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }

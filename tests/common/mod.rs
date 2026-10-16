@@ -1,3 +1,6 @@
+// Each test binary only uses a subset of these helpers.
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -14,15 +17,50 @@ static MIGRATED: AtomicBool = AtomicBool::new(false);
 
 pub async fn state() -> Option<AppState> {
     let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        eprintln!("skipping: TEST_DATABASE_URL not set");
         return None;
     };
     let db = match PgPoolOptions::new().max_connections(5).connect(&url).await {
         Ok(pool) => pool,
         Err(err) => {
-            eprintln!("TEST_DATABASE_URL could not be reached: {err}");
+            eprintln!("skipping: TEST_DATABASE_URL could not be reached: {err}");
             return None;
+/// Why the integration-test database couldn't be set up. Returned instead of
+/// silently skipping, so a misconfigured run fails loudly rather than
+/// reporting a false green.
+#[derive(Debug)]
+pub enum TestDbError {
+    /// `TEST_DATABASE_URL` isn't set at all.
+    MissingUrl,
+    /// It's set, but the database couldn't be reached.
+    Unreachable(sqlx::Error),
+}
+
+impl std::fmt::Display for TestDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TestDbError::MissingUrl => write!(
+                f,
+                "TEST_DATABASE_URL is not set — integration tests need a dedicated Postgres \
+                 database (see CONTRIBUTING.md, \"Running tests\")"
+            ),
+            TestDbError::Unreachable(err) => {
+                write!(f, "TEST_DATABASE_URL is set but could not be reached: {err}")
+            }
         }
-    };
+    }
+}
+
+/// Connects to `TEST_DATABASE_URL`, runs migrations once per test binary, and
+/// builds an `AppState` wired to the mock providers. Returns an error rather
+/// than `None` so callers can't mistake "no database" for "nothing to test".
+pub async fn try_state() -> Result<AppState, TestDbError> {
+    let url = std::env::var("TEST_DATABASE_URL").map_err(|_| TestDbError::MissingUrl)?;
+    let db = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&url)
+        .await
+        .map_err(TestDbError::Unreachable)?;
 
     let _guard = MIGRATION_LOCK.lock().unwrap();
     if !MIGRATED.swap(true, Ordering::SeqCst) {
@@ -33,7 +71,7 @@ pub async fn state() -> Option<AppState> {
     }
     drop(_guard);
 
-    Some(AppState {
+    Ok(AppState {
         db,
         jwt_secret: aframp::SecretString::new("integration-test-secret".into()),
         webhook_secret: aframp::SecretString::new("integration-test-webhook".into()),
@@ -48,6 +86,12 @@ pub async fn state() -> Option<AppState> {
     })
 }
 
+/// [`try_state`], failing the calling test if the database isn't configured.
+/// Integration tests never skip: a run without a database is a failed run.
+pub async fn state() -> AppState {
+    try_state().await.unwrap_or_else(|err| panic!("{err}"))
+}
+
 pub async fn send(
     app: Router,
     method: &str,
@@ -55,6 +99,18 @@ pub async fn send(
     token: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    let (status, json, _) = send_with_response_headers(app, method, uri, token, body).await;
+    (status, json)
+}
+
+/// Like [`send`], but also returns response headers (e.g. for Cache-Control checks).
+pub async fn send_with_response_headers(
+    app: Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value, axum::http::HeaderMap) {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
@@ -69,11 +125,12 @@ pub async fn send(
 
     let response = app.oneshot(request).await.unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
         .await
         .unwrap();
     let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
+    (status, json, headers)
 }
 
 /// Like [`send`], but authenticates with a `Cookie` header the way a browser
@@ -161,6 +218,56 @@ pub async fn ensure_merchant(app: &Router, seed: &str) -> (String, String) {
         json["token"].as_str().unwrap().to_string(),
         json["merchant_id"].as_str().unwrap().to_string(),
     )
+}
+
+/// Resolves the shared integration-test [`AppState`], or marks the calling
+/// test as skipped when `TEST_DATABASE_URL` is not configured.
+///
+/// Unlike a bare `let Some(app) = app().await else { return; }`, this macro
+/// makes the skip explicit: it prints a `skipping:` line and returns from the
+/// test without reporting a false "ok". Run with `cargo test -- --ignored`
+/// (or `-q --ignored`) once `TEST_DATABASE_URL` is set to exercise the suite.
+#[macro_export]
+macro_rules! require_db {
+    () => {
+        match $crate::common::state().await {
+            Some(app) => app,
+            None => {
+                eprintln!("skipping: TEST_DATABASE_URL not set");
+                return;
+            }
+        }
+    };
+/// Inserts (or resets) a real balance row for `merchant_id`/`asset`, so
+/// withdrawal tests can start from a known, non-zero available balance
+/// without going through the deposit-detection path.
+pub async fn seed_balance(db: &sqlx::PgPool, merchant_id: &str, asset: &str, available: i64) {
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending) \
+         VALUES ($1::uuid, $2, $3, 0) \
+         ON CONFLICT (merchant_id, asset) DO UPDATE \
+         SET available = EXCLUDED.available, pending = 0",
+    )
+    .bind(merchant_id)
+    .bind(asset)
+    .bind(available)
+    .execute(db)
+    .await
+    .expect("seeding balance failed");
+}
+
+/// Reads back the `available` column for `merchant_id`/`asset`, returning 0
+/// when no row exists yet.
+pub async fn available_balance(db: &sqlx::PgPool, merchant_id: &str, asset: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = $2",
+    )
+    .bind(merchant_id)
+    .bind(asset)
+    .fetch_optional(db)
+    .await
+    .expect("reading balance failed")
+    .unwrap_or(0)
 }
 
 /// Pulls the 6-digit code out of a mock-provider message body, ignoring
