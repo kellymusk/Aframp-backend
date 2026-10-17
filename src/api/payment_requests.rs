@@ -14,6 +14,7 @@ use crate::auth::extractor::AuthUser;
 use crate::error::{bad_request, conflict, internal, not_found, ApiResult, ErrorCode};
 use crate::error::{bad_request, forbidden, internal, not_found, ApiResult, ErrorCode};
 use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
+use crate::models::status::PaymentRequestStatus;
 use crate::models::{CreatePaymentRequestRequest, ListParams, PaymentRequest};
 use crate::error::{bad_request, bad_request_field, internal, not_found, ApiResult, ErrorCode};
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
@@ -167,8 +168,8 @@ pub async fn status(
         return Err(not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"));
     }
 
-    let status = effective_status(&pr.status, pr.expires_at);
-    if status != "pending" {
+    let status = effective_status(pr.status, pr.expires_at, pr.cancelled_at);
+    if status != PaymentRequestStatus::Pending.as_str() {
         return Err(conflict(
             ErrorCode::PaymentRequestNotCancellable,
             "only pending payment requests can be cancelled",
@@ -236,8 +237,8 @@ fn render_qr_png(contents: &str, size: u32) -> ApiResult<Vec<u8>> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|_| internal("failed to encode QR code as PNG"))?;
     Ok(png)
-    let status = effective_status(&pr.status, pr.expires_at);
-    let paid_at = if status == "paid" {
+    let status = effective_status(pr.status, pr.expires_at, pr.cancelled_at);
+    let paid_at = if status == PaymentRequestStatus::Paid.as_str() {
         Some(pr.updated_at)
     } else {
         None
@@ -275,8 +276,8 @@ pub async fn get_status(
         .map_err(internal)?
         .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
 
-    let status = effective_status(&pr.status, pr.expires_at);
-    let paid_at = if status == "paid" {
+    let status = effective_status(pr.status, pr.expires_at, pr.cancelled_at);
+    let paid_at = if status == PaymentRequestStatus::Paid.as_str() {
         Some(pr.updated_at)
     } else {
         None
@@ -387,15 +388,15 @@ pub struct ListParams {
 /// A `pending` row whose expiry has passed is reported as `expired` at read
 /// time, so a request going stale needs no background job to flip it.
 /// Cancelled rows report as `cancelled` regardless of expiry.
-fn effective_status(status: &str, expires_at: DateTime<Utc>, cancelled_at: Option<DateTime<Utc>>) -> String {
+fn effective_status(
+    status: PaymentRequestStatus,
+    expires_at: DateTime<Utc>,
+    cancelled_at: Option<DateTime<Utc>>,
+) -> String {
     if cancelled_at.is_some() {
         return "cancelled".to_string();
     }
-    if status == "pending" && expires_at < Utc::now() {
-/// A `pending` row whose expiry has passed is reported as `expired` at read
-/// time, so a request going stale needs no background job to flip it.
-fn effective_status(status: crate::models::status::PaymentRequestStatus, expires_at: DateTime<Utc>) -> String {
-    if status == crate::models::status::PaymentRequestStatus::Pending && expires_at < Utc::now() {
+    if status == PaymentRequestStatus::Pending && expires_at < Utc::now() {
         "expired".to_string()
     } else {
         status.as_str().to_string()
@@ -411,9 +412,7 @@ fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestV
         amount_stroops: pr.amount_stroops,
         asset: pr.asset.clone(),
         memo: pr.memo.clone(),
-        status: effective_status(&pr.status, pr.expires_at, pr.cancelled_at),
-        status: pr.status.clone(),
-        status: effective_status(pr.status, pr.expires_at),
+        status: effective_status(pr.status, pr.expires_at, pr.cancelled_at),
         expires_at: pr.expires_at,
         cancelled_at: pr.cancelled_at,
         created_at: pr.created_at,
@@ -430,9 +429,7 @@ fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentReque
         amount_stroops: row.amount_stroops,
         asset: row.asset.clone(),
         memo: row.memo.clone(),
-        status: effective_status(&row.status, row.expires_at, row.cancelled_at),
-        status: row.status.clone(),
-        status: effective_status(row.status, row.expires_at),
+        status: effective_status(row.status, row.expires_at, row.cancelled_at),
         expires_at: row.expires_at,
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,

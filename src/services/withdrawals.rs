@@ -20,18 +20,18 @@ const STROOPS_PER_KOBO: i64 = 100_000;
 /// live-mode OTP-required transfers, `"reversed"`, `"abandoned"`), and binding
 /// them directly would violate the CHECK constraint and leave the row stuck in
 /// `pending` with provider info but no status update.
-fn map_paystack_status(status: &str) -> &'static str {
+fn map_paystack_status(status: &str) -> WithdrawalStatus {
     match status.to_ascii_lowercase().as_str() {
-        "success" | "completed" => "completed",
-        "pending" | "ongoing" | "queued" | "received" => "pending",
-        "otp" | "processing" | "sent" | "sending" => "processing",
-        "failed" | "reversed" | "abandoned" | "cancelled" | "canceled" => "failed",
+        "success" | "completed" => WithdrawalStatus::Completed,
+        "pending" | "ongoing" | "queued" | "received" => WithdrawalStatus::Pending,
+        "otp" | "processing" | "sent" | "sending" => WithdrawalStatus::Processing,
+        "failed" | "reversed" | "abandoned" | "cancelled" | "canceled" => WithdrawalStatus::Failed,
         other => {
             tracing::warn!(
                 paystack_status = other,
                 "unknown Paystack transfer status; defaulting to 'processing'"
             );
-            "processing"
+            WithdrawalStatus::Processing
         }
     }
 }
@@ -460,7 +460,7 @@ pub async fn reconcile_withdrawal_status(
     };
 
     // Already terminal: nothing to do. Keeps duplicate deliveries idempotent.
-    if current.status != "pending" {
+    if current.status != WithdrawalStatus::Pending {
         tx.rollback().await?;
         return Ok(Some(current));
     }

@@ -102,8 +102,18 @@ fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, 
     let token = bearer_token(parts)
         .or_else(|| cookie::from_headers(&parts.headers))
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "missing session cookie or bearer token".into(), field: None })))?;
-    jwt::verify(&state.jwt_secret, token)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })))
+    let claims = jwt::verify(&state.jwt_secret, token)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None })))?;
+    // A token presented after `POST /logout` (or any other revocation) is
+    // refused even though its signature and expiry still check out.
+    if crate::auth::revocation::is_revoked(claims.jti) {
+        tracing::warn!(jti = %claims.jti, user_id = %claims.sub, "revoked token presented");
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError { code: ErrorCode::InvalidCredentials, error: "token has been revoked".into(), field: None }),
+        ));
+    }
+    Ok(claims)
 }
 
 /// Verifies the token and that its account still exists and hasn't been

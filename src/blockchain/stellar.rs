@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::task::JoinSet;
 
 /// Maximum backoff for unfunded wallets (10 minutes).  Each consecutive 404
 /// doubles the backoff up to this ceiling.
@@ -122,19 +123,46 @@ impl StellarListener {
 #[async_trait]
 impl BlockchainListener for StellarListener {
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
-        let mut deposits = Vec::new();
+        // Threading model: addresses are polled concurrently. Each address gets
+        // its own task on the runtime, holding a clone of the pooled
+        // `reqwest::Client` (cheap: it shares the connection pool) plus the
+        // Horizon URL, so the futures are `'static` and never borrow `self`.
+        //
+        // `unfunded_backoff` is therefore only touched by this task, after all
+        // tasks have joined, never while an address is in flight. The mutex is
+        // per-address bookkeeping now rather than a serialisation point across
+        // polls; if this loop is ever moved off the owner task, replace it with
+        // a `DashMap`/`RwLock` sharded map.
+        let mut in_flight = JoinSet::new();
         for address in addresses {
-            // Skip wallets that are in their unfunded backoff window.
+            // Skip wallets that are in their unfunded backoff window, decided
+            // before spawning so no lock is held across an await point.
             if self.should_skip(address) {
                 continue;
             }
-            match fetch_for_address(&self.http, &self.horizon_url, address).await {
+            let http = self.http.clone();
+            let horizon_url = self.horizon_url.clone();
+            let address = address.clone();
+            in_flight.spawn(async move {
+                let result = fetch_for_address(&http, &horizon_url, &address).await;
+                (address, result)
+            });
+        }
+
+        let mut deposits = Vec::new();
+        while let Some(joined) = in_flight.join_next().await {
+            // A panicked task only loses its own address; the rest of the poll
+            // cycle continues.
+            let Ok((address, result)) = joined else {
+                continue;
+            };
+            match result {
                 Ok(FetchResult::Funded(found)) => {
-                    self.clear_backoff(address);
+                    self.clear_backoff(&address);
                     deposits.extend(found);
                 }
                 Ok(FetchResult::Unfunded) => {
-                    self.record_unfunded(address);
+                    self.record_unfunded(&address);
                 }
                 Err(err) => {
                     // One bad/unreachable address must not block deposit detection
@@ -960,5 +988,34 @@ mod tests {
                 "backoff after {n} consecutive 404s should be {expected:?}"
             );
         }
+    }
+
+    /// 100 addresses, each answered after 50ms. Sequentially that is >= 5s;
+    /// concurrently it completes in well under that. Guards the JoinSet-based
+    /// polling model documented on `fetch_deposits`.
+    #[tokio::test]
+    async fn polls_100_addresses_concurrently() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404).set_delay(Duration::from_millis(50)))
+            .mount(&server)
+            .await;
+
+        let listener =
+            StellarListener::with_timeout(server.uri(), Duration::from_secs(10));
+        let addresses: Vec<String> = (0..100).map(|i| format!("GTEST{i:04}")).collect();
+
+        let start = Instant::now();
+        let deposits = listener.fetch_deposits(&addresses).await.expect("poll");
+        let elapsed = start.elapsed();
+
+        assert!(deposits.is_empty(), "404-only mock yields no deposits");
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "100 addresses at 50ms each polled serially would take >= 5s, took {elapsed:?}"
+        );
     }
 }

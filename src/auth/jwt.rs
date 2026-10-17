@@ -17,6 +17,12 @@ pub struct Claims {
     /// which then fall back to `iat`.
     #[serde(default)]
     pub orig_iat: usize,
+    /// Unique token id. `POST /logout` puts it on the revocation list so a
+    /// copied token dies with the session instead of staying valid for the
+    /// full [`TOKEN_TTL_HOURS`]. `nil` on tokens issued before this claim
+    /// existed; those are simply not revocable.
+    #[serde(default)]
+    pub jti: Uuid,
 }
 
 pub const TOKEN_TTL_HOURS: i64 = 24;
@@ -49,6 +55,7 @@ pub fn sign(
         iat,
         exp: (now + Duration::hours(TOKEN_TTL_HOURS)).timestamp() as usize,
         orig_iat: iat,
+        jti: Uuid::new_v4(),
     };
     encode(
         &Header::default(),
@@ -94,6 +101,9 @@ fn refresh_at(secret: &str, claims: &Claims, now: i64) -> Result<String, Refresh
         iat: now as usize,
         exp: (now + Duration::hours(TOKEN_TTL_HOURS).num_seconds()).min(window_end) as usize,
         orig_iat: orig_iat as usize,
+        // Refresh keeps the session's `jti`, so revoking the presented token
+        // also kills any token refreshed from it.
+        jti: claims.jti,
     };
     encode(&Header::default(), &refreshed, &EncodingKey::from_secret(secret.as_bytes()))
         .map_err(|_| RefreshError::Signing)
@@ -114,6 +124,7 @@ mod tests {
             iat: iat as usize,
             exp: (iat + DAY) as usize,
             orig_iat: orig_iat as usize,
+            jti: Uuid::nil(),
         }
     }
 

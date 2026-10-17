@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use tokio::sync::Mutex;
@@ -187,9 +187,22 @@ pub async fn verify_otp(
     )
 }
 
-/// Drops the session cookie. Deliberately unauthenticated: a browser holding an
-/// expired or malformed session still needs a way to clear it.
-pub async fn logout(State(state): State<AppState>) -> ApiResult<impl IntoResponse> {
+/// Drops the session cookie and puts the presented token on the revocation
+/// list, so a JWT copied elsewhere dies here instead of staying valid for its
+/// full lifetime. Deliberately unauthenticated and tolerant: a browser holding
+/// an expired or malformed session still needs a way to clear it, so a token
+/// that no longer verifies is simply not revoked.
+pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    if let Some(token) = bearer.or_else(|| crate::auth::cookie::from_headers(&headers)) {
+        if let Ok(claims) = jwt::verify(&state.jwt_secret, token) {
+            crate::auth::revocation::revoke(claims.jti, claims.exp);
+            tracing::info!(jti = %claims.jti, user_id = %claims.sub, "token revoked on logout");
+        }
+    }
     let cookie = state.cookie.clear().map_err(internal)?;
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
 }
