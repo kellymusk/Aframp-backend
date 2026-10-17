@@ -349,6 +349,28 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /merchants/me:
+    get:
+      tags: [Merchant]
+      summary: Current user's merchant profile
+      description: >
+        Returns the full Merchant model for the signed-in user, separate from
+        GET /me which carries only the auth-identity fields. Use this to render
+        richer merchant/business profile data without bloating /me.
+      responses:
+        '200':
+          description: Merchant profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Merchant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: MERCHANT_NOT_FOUND — the signed-in user has no merchant profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /wallet:
     get:
       tags: [Wallet]
@@ -1156,6 +1178,20 @@ components:
         phone_verified: { type: boolean, description: True after the phone number has been verified by OTP }
         merchant_id: { type: string, format: uuid, nullable: true }
         merchant_name: { type: string, nullable: true }
+
+    Merchant:
+      type: object
+      required: [id, user_id, name, email_notifications_enabled, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email, nullable: true }
+        email_notifications_enabled: { type: boolean }
+        unsubscribe_token: { type: string, nullable: true }
+        suspended_at: { type: string, format: date-time, nullable: true, description: Set when the merchant account is suspended. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     CreateWalletRequest:
       type: object

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod balances;
 pub mod health;
 pub mod me;
+pub mod merchants;
 pub mod payment_requests;
 pub mod transactions;
 pub mod wallets;

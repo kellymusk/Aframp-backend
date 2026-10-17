@@ -238,6 +238,7 @@ pub fn router(state: AppState) -> axum::Router {
                 .patch(api::me::update)
                 .delete(api::me::delete),
         )
+        .route("/merchants/me", axum::routing::get(api::merchants::get))
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))
         .route("/balance", axum::routing::get(api::balances::get))

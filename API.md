@@ -336,6 +336,27 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
 
 ---
 
+### `GET /merchants/me`
+Auth required. The signed-in user's merchant profile on its own, separate from `GET /me`. Returns the full `Merchant` model so richer business data (address, logo, bank account, verification status) can grow here without bloating the auth-identity endpoint.
+
+`200` →
+```json
+{
+  "id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
+  "user_id": "2c5e0ee2-7f87-4efb-b1c9-d7e1b3ee0eeb",
+  "name": "Shop Name",
+  "email": "merchant@example.com",
+  "email_notifications_enabled": true,
+  "unsubscribe_token": null,
+  "suspended_at": null,
+  "created_at": "2026-08-13T14:15:34.232320Z",
+  "updated_at": "2026-08-13T14:15:34.232320Z"
+}
+```
+`404` with `MERCHANT_NOT_FOUND` when the account has no merchant profile. `email`, `unsubscribe_token` and `suspended_at` are `null` when unset.
+
+---
+
 ### `PATCH /me`
 Auth required. Body: `{ "name"?: string, "phone_number"?: string }` (at least one). A new `name` (trimmed, 1–100 characters) applies immediately. A new `phone_number` (any common Nigerian format, normalized to `+234…`) is **not** switched yet: an OTP is sent to it and the response includes `phone_verification: { challenge_id, expires_in_secs }`. Complete it with `POST /verify-otp` (as at signup) to move the account to the new number.
 

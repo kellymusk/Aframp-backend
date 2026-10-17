@@ -176,6 +176,62 @@ mod tests {
         assert!(normalize_ng_phone_number("").is_err());
     }
 
+    #[test]
+    fn rejects_double_country_code_after_normalization() {
+        // `+234` followed by a local `0...` leaves an 11-digit subscriber
+        // number once the country code is stripped, so it must not pass.
+        assert!(normalize_ng_phone_number("+23408011122233").is_err());
+        assert!(normalize_ng_phone_number("23408011122233").is_err());
+    }
+
+    #[test]
+    fn normalizes_234_without_leading_plus() {
+        assert_eq!(
+            normalize_ng_phone_number("2348011122233").unwrap(),
+            "+2348011122233"
+        );
+    }
+
+    #[test]
+    fn normalizes_numbers_with_mid_digit_spaces() {
+        for input in [
+            "080 1112 2233",
+            "080 111 22 233",
+            "0801 112 2233",
+            "080 1112-2233",
+        ] {
+            assert_eq!(
+                normalize_ng_phone_number(input).unwrap(),
+                "+2348011122233",
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn documents_lenient_acceptance_of_unprefixed_ten_digit_numbers() {
+        // The normalizer is length-only: any 10-digit subscriber number is
+        // accepted regardless of network prefix. Nigerian prefixes (07x/08x/
+        // 09x) are intentionally *not* enforced here yet, so a foreign 10-digit
+        // number is currently normalized as if it were Nigerian. This test
+        // pins the current behaviour; tightening it is a separate change.
+        assert_eq!(
+            normalize_ng_phone_number("1234567890").unwrap(),
+            "+2341234567890"
+        );
+        assert_eq!(
+            normalize_ng_phone_number("+1234567890").unwrap(),
+            "+2341234567890"
+        );
+    }
+
+    #[test]
+    fn rejects_international_numbers_with_non_nigerian_lengths() {
+        assert!(normalize_ng_phone_number("+447911123456").is_err()); // UK, 12 digits
+        assert!(normalize_ng_phone_number("+15551234567").is_err()); // US, 11 digits
+        assert!(normalize_ng_phone_number("+8613800138000").is_err()); // CN, 13 digits
+    }
+
     /// A 10-digit Nigerian subscriber number (the part after the country code).
     fn subscriber_number() -> impl Strategy<Value = String> {
         proptest::collection::vec(0u8..10, 10)
