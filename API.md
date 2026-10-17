@@ -232,6 +232,44 @@ Never use floating-point arithmetic to accumulate balances — convert for displ
 
 ---
 
+## Amounts and Denominations
+
+All monetary values in this API are integers denominated in **stroops** — the
+smallest unit of Stellar assets. Never send whole units.
+
+- `1 XLM = 10,000,000 stroops`
+- `1 cNGN = 10,000,000 stroops`
+- `1 cNGN stroop = 100,000 kobo` (i.e. `1 cNGN` = `100 kobo`)
+
+Conversion formula:
+
+```
+amount_stroops = whole_units × 10,000,000
+```
+
+| Whole units | `amount_stroops` |
+|---|---|
+| 0.0000001 XLM | 1 (minimum) |
+| 1 XLM / 1 cNGN | 10,000,000 |
+| 2.5 XLM | 25,000,000 |
+| 50 cNGN | 500,000,000 |
+| 2,500 cNGN (₦2,500) | 25,000,000,000 |
+
+Example: `₦2,500 = 25,000,000,000 cNGN stroops`.
+
+> **Warning:** the most common integration mistake is sending amounts in whole
+> units (e.g. `25`) instead of stroops (`250,000,000`). That creates a payment
+> for `0.0000025` units. Always multiply by `10,000,000` before sending, and
+> never use floating-point arithmetic to accumulate balances — convert for
+> display only.
+
+```js
+const toDisplay = (stroops) => (stroops / 10_000_000).toFixed(7);
+const toStroops = (amount) => Math.round(amount * 10_000_000);
+```
+
+---
+
 ## Pagination
 
 `GET /transactions`, `GET /payment-requests` and `GET /withdrawals` return
@@ -308,6 +346,24 @@ Errors: `400` `OTP_INVALID` (wrong code — 5 wrong guesses and the challenge is
 
 ### `POST /auth/refresh`
 Auth required (bearer or session cookie; the token must not have expired). Returns a new token with the same body shape as `/verify-otp` and resets the session cookie. The new token expires 24h from now, but never more than 7 days after the original login; past that point this returns `401` ("session can no longer be refreshed; log in again"). Refresh doesn't revoke the old token — it stays valid until its own `exp`.
+
+### `GET /verify-email`
+No auth. Consumes the single-use, 24-hour token from the verification email
+sent when a signup completes or a resend is requested.
+
+```
+GET /verify-email?token=<hex-token>
+```
+
+`200` → `{ "email_verified": true }`. Unknown, already-used, or expired tokens
+return `400` `INVALID_PARAMETERS` ("invalid or expired email verification
+token"), and an empty `token` returns `400` with `field: "token"`.
+
+### `POST /verify-email/resend`
+Auth required. Issues a fresh verification link for the signed-in account,
+invalidating any previous token. Returns `200` `{ "sent": true }`. Because no
+transactional email provider is wired into the backend yet, the link is emitted
+through structured logs (`verification_link`).
 
 ### `POST /logout`
 No auth — a browser holding an expired or malformed session still needs to clear it. Returns `204` and a `Set-Cookie` that expires `aframp_session` immediately.

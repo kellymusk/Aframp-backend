@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod balances;
+pub mod email_verification;
 pub mod otp;
 pub mod payment_requests;
 pub mod payments;

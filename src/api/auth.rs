@@ -12,7 +12,7 @@ use crate::auth::extractor::Session;
 use crate::auth::jwt;
 use crate::auth::password;
 use crate::error::{
-    bad_request, bad_request_field, internal,
+    bad_request, bad_request_field, internal, not_found,
     ApiResult,
 };
 use crate::models::{AuthResponse, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
@@ -261,4 +261,55 @@ fn map_otp_error(err: OtpError) -> (axum::http::StatusCode, Json<crate::error::A
         OtpError::PhoneTaken => conflict(ErrorCode::PhoneTaken, "phone number already registered"),
         OtpError::SendFailed(_) | OtpError::Database(_) => internal(err),
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct VerifyEmailQuery {
+    pub token: String,
+}
+
+/// `GET /verify-email?token=...` — consumes a signup verification token and
+/// marks the account's email as verified. No auth: the token itself is the
+/// proof and is single-use / time-limited.
+pub async fn verify_email(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<VerifyEmailQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if query.token.trim().is_empty() {
+        return Err(bad_request_field("token", "must not be empty"));
+    }
+    match crate::services::email_verification::verify_token(&state.db, &query.token).await {
+        Ok(true) => Ok(Json(serde_json::json!({ "email_verified": true }))),
+        Ok(false) => Err(bad_request(
+            crate::error::ErrorCode::InvalidParameters,
+            "invalid or expired email verification token",
+        )),
+        Err(err) => Err(internal(err)),
+    }
+}
+
+/// `POST /verify-email/resend` — issues a fresh verification link for the
+/// authenticated account, replacing any outstanding token.
+pub async fn resend_email_verification(
+    State(state): State<AppState>,
+    Session(claims): Session,
+) -> ApiResult<Json<serde_json::Value>> {
+    let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(claims.sub)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?;
+    let email = email.ok_or_else(|| {
+        not_found(
+            crate::error::ErrorCode::InvalidParameters,
+            "account not found",
+        )
+    })?;
+
+    let token = crate::services::email_verification::issue_token(&state.db, claims.sub)
+        .await
+        .map_err(internal)?;
+    crate::services::email_verification::send_verification_email(&email, &token);
+
+    Ok(Json(serde_json::json!({ "sent": true })))
 }

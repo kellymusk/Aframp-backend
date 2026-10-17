@@ -100,6 +100,22 @@ mod tests {
     }
 
     #[test]
+    fn cursor_round_trips_edge_case_timestamps() {
+        for ts in [
+            "2024-01-15T10:30:00+00:00",
+            "2024-01-15T10:30:00.123456789-05:30",
+            "2024-06-30T23:59:59.000000001+14:00",
+            "2024-12-31T23:59:59Z",
+        ] {
+            let created_at = DateTime::parse_from_rfc3339(ts).unwrap().with_timezone(&Utc);
+            let cursor = Cursor { created_at, id: Uuid::new_v4() };
+            let decoded = Cursor::decode(&cursor.encode()).expect("round trip");
+            assert_eq!(decoded.created_at, cursor.created_at);
+            assert_eq!(decoded.id, cursor.id);
+        }
+    }
+
+    #[test]
     fn base64url_matches_rfc4648_vectors() {
         for (plain, encoded) in [("", ""), ("f", "Zg"), ("fo", "Zm8"), ("foo", "Zm9v"), ("foob", "Zm9vYg"), ("fooba", "Zm9vYmE"), ("foobar", "Zm9vYmFy")] {
             assert_eq!(base64url_encode(plain.as_bytes()), encoded);

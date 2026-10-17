@@ -1347,10 +1347,12 @@ components:
           type: integer
           format: int64
           description: >
-            Must be a whole multiple of 100000 (1 kobo). Paystack's minimum
-            transfer is NGN 50 = 500000000 stroops. Must be a JSON integer —
-            floats and strings are rejected with INVALID_PARAMETERS on field
-            amount_stroops.
+            Amount in cNGN stroops (1 cNGN = 10,000,000 stroops; 1 cNGN stroop
+            = 100,000 kobo). Must be a whole multiple of 100000 (1 kobo).
+            Paystack's minimum transfer is NGN 50 = 500000000 stroops. Must be
+            a JSON integer — floats and strings are rejected with
+            INVALID_PARAMETERS on field amount_stroops. Never send whole units:
+            NGN 2,500 is 25,000,000,000 stroops, not 2500.
           example: 500000000
         asset:
           type: string
@@ -1484,7 +1486,11 @@ components:
         merchant_name: { type: string }
         wallet_address: { type: string }
         tx_hash: { type: string }
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          description: "Amount in stroops (1 unit = 10,000,000 stroops). 1 cNGN stroop = 100,000 kobo."
+          example: 25000000
         asset: { type: string }
         network: { type: string, example: stellar }
         status: { type: string, enum: [detected, verified, confirmed, failed] }
@@ -1499,7 +1505,11 @@ components:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
         merchant_name: { type: string }
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          description: "Amount in stroops (1 unit = 10,000,000 stroops). 1 cNGN stroop = 100,000 kobo."
+          example: 25000000
         asset: { type: string }
         status: { type: string, enum: [pending, processing, completed, failed] }
         provider: { type: string, nullable: true }
@@ -1517,7 +1527,11 @@ components:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
         merchant_name: { type: string }
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          description: "Amount in stroops (1 unit = 10,000,000 stroops). 1 cNGN stroop = 100,000 kobo."
+          example: 25000000
         asset: { type: string }
         memo: { type: string }
         status: { type: string, enum: [pending, paid, expired] }

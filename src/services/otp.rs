@@ -322,6 +322,14 @@ impl OtpProvider for MockOtpProvider {
             _ => OtpError::Database(err),
         })?;
 
+    // Account is materialized; now kick off email verification. A delivery
+    // failure must not fail signup (the merchant can resend), so errors are
+    // logged but swallowed.
+    match crate::services::email_verification::issue_token(db, user.id).await {
+        Ok(token) => crate::services::email_verification::send_verification_email(email, &token),
+        Err(err) => tracing::warn!(error = %err, "failed to issue email verification token"),
+    }
+
     Ok(VerifiedOutcome::Signup(user, merchant))
 }
 

@@ -6,19 +6,28 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use super::{PaymentProvider, PayoutRequest, PayoutResult};
+use crate::config::SecretString;
 
 const BASE_URL: &str = "https://api.paystack.co";
 
 pub struct PaystackProvider {
-    secret_key: String,
+    secret_key: SecretString,
     http: reqwest::Client,
     // Cache of resolved account names keyed by (account_number, bank_code) so that
     // repeated withdrawals to the same account don't re-hit the resolution API.
     resolved_cache: Mutex<HashMap<(String, String), String>>,
 }
 
+impl std::fmt::Debug for PaystackProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaystackProvider")
+            .field("secret_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl PaystackProvider {
-    pub fn new(secret_key: String) -> Self {
+    pub fn new(secret_key: SecretString) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -33,7 +42,7 @@ impl PaystackProvider {
     /// Build a provider pointed at an arbitrary base URL. Used by contract tests
     /// to target a local mock server instead of the live Paystack API.
     #[cfg(test)]
-    pub(crate) fn with_base_url(secret_key: String, base_url: String) -> Self {
+    pub(crate) fn with_base_url(secret_key: SecretString, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -49,7 +58,7 @@ impl PaystackProvider {
         let response = self
             .http
             .get(format!("{}{path}", self.base_url))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .query(query)
             .send()
             .await
@@ -61,7 +70,7 @@ impl PaystackProvider {
         let response = self
             .http
             .post(format!("{}{path}", self.base_url))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.as_str())
             .json(body)
             .send()
             .await
@@ -314,7 +323,15 @@ mod contract_tests {
     }"#;
 
     fn provider(server: &MockServer) -> PaystackProvider {
-        PaystackProvider::with_base_url("sk_test_secret".to_string(), server.uri())
+        PaystackProvider::with_base_url(SecretString::new("sk_test_secret".to_string()), server.uri())
+    }
+
+    #[test]
+    fn debug_output_redacts_secret_key() {
+        let provider = PaystackProvider::new(SecretString::new("sk_live_super_secret".to_string()));
+        let rendered = format!("{provider:?}");
+        assert!(!rendered.contains("sk_live_super_secret"));
+        assert!(rendered.contains("REDACTED"));
     }
 
     fn payout_request() -> PayoutRequest {
