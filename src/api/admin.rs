@@ -1,9 +1,8 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::extract::{Path, Query, State};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Html;
 use axum::Json;
 use futures::stream::{self, Stream};
@@ -150,6 +149,15 @@ pub async fn unlock_user(
 /// the same HttpOnly session cookie a browser client would get) and every data
 /// fetch after that rides the cookie same-origin; nothing here bypasses the
 /// `AdminUser` check on the JSON routes below.
-pub async fn dashboard() -> Html<&'static str> {
-    Html(include_str!("admin_dashboard.html"))
+pub async fn dashboard() -> impl axum::response::IntoResponse {
+    use axum::http::header;
+    (
+        [
+            (header::CONTENT_SECURITY_POLICY, "default-src 'self'"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "strict-origin-when-cross-origin"),
+        ],
+        Html(include_str!("admin_dashboard.html")),
+    )
 }

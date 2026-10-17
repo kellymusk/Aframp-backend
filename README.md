@@ -356,4 +356,8 @@ making changes that touch the areas they cover.
 
 ## Contributing
 
-This project is under active MVP development — expect the API and schema to change as real payout funding, a real cNGN issuer address, and settlement sweeping land. Open an issue or PR against `master`.
+This project is under active MVP development — expect the API and schema to change as real payout funding, a real cNGN issuer address, and settlement sweeping land. Open an issue or PR against `dev-backend`.
+
+Before opening a PR, read **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the dev
+setup, the `dev-backend` contribution branch, protected paths, commit/PR
+conventions, and the checklist reviewers expect.

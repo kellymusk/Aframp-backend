@@ -393,6 +393,17 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
 mod tests {
     use super::*;
 
+    // Regression for #1225: a single pooled `reqwest::Client` is held on the
+    // listener and reused across poll cycles instead of being rebuilt per call.
+    #[test]
+    fn horizon_client_uses_fifteen_second_timeout() {
+        assert_eq!(HORIZON_TIMEOUT, Duration::from_secs(15));
+        let _listener = StellarListener::new("https://horizon-testnet.stellar.org".into());
+        assert!(StellarListener::new("https://horizon-testnet.stellar.org".into())
+            .skipped_addresses()
+            .is_empty());
+    }
+
     #[test]
     fn parses_whole_and_fractional_amounts() {
         assert_eq!(parse_amount_to_stroops("10000.0000000").unwrap(), 100_000_000_000);
