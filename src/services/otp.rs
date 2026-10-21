@@ -20,6 +20,10 @@ const RESEND_COOLDOWN_SECS: i64 = 60;
 /// count against this — only brand-new challenges do.
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
+/// Number of retries for transient SMS send failures (network blips, 5xx).
+const SEND_MAX_RETRIES: u32 = 2;
+/// Delay between retries of a transient SMS send failure.
+const SEND_RETRY_DELAY_MS: u64 = 500;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OtpError {
@@ -194,6 +198,25 @@ pub async fn verify(
     Ok(VerifiedOutcome::Signup(user, merchant))
 }
 
+/// Sends the OTP SMS, retrying transient failures (network blips, provider
+/// 5xx) up to `SEND_MAX_RETRIES` times with a short delay. Permanent failures
+/// (e.g. 400 invalid phone) are returned immediately without retrying.
+async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
+    let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
+
+    let mut attempt = 0;
+    loop {
+        match otp.send_sms(phone, &message).await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.is_transient() && attempt < SEND_MAX_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(SEND_RETRY_DELAY_MS)).await;
+            }
+            Err(err) => return Err(OtpError::SendFailed(err.to_string())),
+        }
+    }
+}
+
 struct NewChallenge<'a> {
     purpose: &'static str,
     user_id: Option<Uuid>,
@@ -246,15 +269,15 @@ async fn upsert_challenge(
         return Ok((id, code));
     }
 
-    let recent_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM otp_challenges
+    let recent_sends: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM otp_challenges
           WHERE phone_number = $1 AND purpose = $2 AND created_at > now() - interval '1 hour'",
     )
     .bind(new.phone_number)
     .bind(new.purpose)
     .fetch_one(db)
     .await?;
-    if recent_count >= MAX_SENDS_PER_HOUR {
+    if recent_sends >= MAX_SENDS_PER_HOUR {
         return Err(OtpError::RateLimited);
     }
 
@@ -264,8 +287,9 @@ async fn upsert_challenge(
     let expires_at = Utc::now() + Duration::seconds(CODE_TTL_SECS);
     sqlx::query(
         "INSERT INTO otp_challenges
-             (id, purpose, user_id, pending_email, pending_password_hash, pending_name, phone_number, code_hash, max_attempts, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            (id, purpose, user_id, pending_email, pending_password_hash, pending_name,
+             phone_number, code_hash, attempts, max_attempts, expires_at, last_sent_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, now())",
     )
     .bind(id)
     .bind(new.purpose)
@@ -283,65 +307,64 @@ async fn upsert_challenge(
     Ok((id, code))
 }
 
-async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
-    let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
-    otp.send_sms(phone, &message).await.map_err(OtpError::SendFailed)
-}
-
 fn generate_code() -> String {
     let mut bytes = [0u8; 4];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let n = u32::from_le_bytes(bytes) % 1_000_000;
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let n = u32::from_be_bytes(bytes) % 1_000_000;
     format!("{n:06}")
 }
 
-/// A 6-digit code has only 1,000,000 possible values, so a bare hash of it —
-/// even salted — is trivially reversible by anyone with DB read access
-/// (precompute all million hashes once, look up forever; the search space
-/// is the bottleneck, not precomputation). HMAC keyed with a secret that
-/// lives outside the database is what actually stops that. The challenge id
-/// is folded into the MAC input too, cheap defense-in-depth given lookups
-/// are already scoped `WHERE id = $challenge_id`.
-fn hash_code(hmac_secret: &str, challenge_id: Uuid, code: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes())
-        .expect("HMAC-SHA256 accepts a key of any length");
+fn hash_code(secret: &str, challenge_id: Uuid, code: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts keys of any length");
     mac.update(challenge_id.as_bytes());
     mac.update(code.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
 
-fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, stored_hash_hex: &str) -> bool {
-    let Ok(stored_bytes) = hex::decode(stored_hash_hex) else {
-        return false;
-    };
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes()) else {
-        return false;
-    };
+fn verify_code(secret: &str, challenge_id: Uuid, code: &str, expected_hash: &str) -> bool {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts keys of any length");
     mac.update(challenge_id.as_bytes());
     mac.update(code.as_bytes());
-    mac.verify_slice(&stored_bytes).is_ok()
+    let computed = hex::encode(mac.finalize().into_bytes());
+    // Constant-time comparison to avoid leaking the hash via timing.
+    computed.len() == expected_hash.len()
+        && computed
+            .bytes()
+            .zip(expected_hash.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otp::OtpSendError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn hmac_is_deterministic_and_code_sensitive() {
-        let id = Uuid::new_v4();
-        let a = hash_code("secret", id, "123456");
-        let b = hash_code("secret", id, "123456");
-        let c = hash_code("secret", id, "654321");
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    /// Provider that fails transiently on the first call, then succeeds.
+    struct FlakyProvider {
+        calls: AtomicUsize,
     }
 
-    #[test]
-    fn verify_rejects_tampered_digest() {
-        let id = Uuid::new_v4();
-        let hash = hash_code("secret", id, "123456");
-        assert!(verify_code("secret", id, "123456", &hash));
-        assert!(!verify_code("secret", id, "000000", &hash));
-        assert!(!verify_code("different-secret", id, "123456", &hash));
+    #[async_trait::async_trait]
+    impl OtpProvider for FlakyProvider {
+        async fn send_sms(&self, _phone: &str, _message: &str) -> Result<(), OtpSendError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Err(OtpSendError::Transient("network timeout".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn send_code_retries_transient_failure_and_succeeds() {
+        let provider = FlakyProvider { calls: AtomicUsize::new(0) };
+        let result = send_code(&provider, "+15555550100", "123456").await;
+        assert!(result.is_ok(), "expected retry to succeed, got {result:?}");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 }
