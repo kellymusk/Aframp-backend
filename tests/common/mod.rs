@@ -129,6 +129,7 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
         admin_events: tokio::sync::broadcast::channel(16).0,
         daily_withdrawal_limit_stroops: None,
         cngn_issuer: None,
+        trust_proxy_headers: false,
     })
 }
 

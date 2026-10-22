@@ -133,6 +133,9 @@ pub struct AppConfig {
     /// payment requests only get a SEP-0007 URI when this is set — a guessed
     /// issuer would silently misdirect a customer's payment.
     pub cngn_issuer_address: Option<String>,
+    /// `TRUST_PROXY_HEADERS`: set when a reverse proxy you control sits in
+    /// front of the app and appends `X-Forwarded-For`. Off by default.
+    pub trust_proxy_headers: bool,
     /// Browser origins allowed to call this API. The merchant frontend is a
     /// separate origin, so without this every request fails CORS preflight.
     pub cors_allowed_origins: Vec<String>,
@@ -292,6 +295,7 @@ impl AppConfig {
                 .filter(|v| !v.trim().is_empty())
                 .map(SecretString::new),
             cngn_issuer_address,
+            trust_proxy_headers: flag("TRUST_PROXY_HEADERS", false)?,
             cookie: CookieConfig {
                 secure: cookie_secure,
                 same_site: cookie_same_site,
@@ -632,6 +636,7 @@ mod tests {
                 termii_sender_id: Some("Aframp".to_string()),
                 termii_webhook_secret: Some(SecretString::new("termii-webhook-secret".to_string())),
                 cngn_issuer_address: None,
+                trust_proxy_headers: false,
                 cors_allowed_origins: vec!["http://localhost:3001".to_string()],
                 cookie: CookieConfig {
                     secure: true,

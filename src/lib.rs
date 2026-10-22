@@ -6,6 +6,7 @@ mod error;
 mod etag;
 pub mod middleware;
 pub mod models;
+pub mod client_ip;
 pub mod pagination;
 pub mod otp;
 pub mod payments;
@@ -66,6 +67,8 @@ pub struct AppState {
     /// cNGN issuer account (`CNGNX_ISSUER_ADDRESS`); cNGN payment requests
     /// only get a SEP-0007 URI when it is configured.
     pub cngn_issuer: Option<std::sync::Arc<String>>,
+    /// Take the client IP from `X-Forwarded-For` (see [`client_ip::client_ip`]).
+    pub trust_proxy_headers: bool,
 }
 
 impl AppState {
@@ -122,6 +125,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         admin_events,
         daily_withdrawal_limit_stroops: config.daily_withdrawal_limit_stroops,
         cngn_issuer: config.cngn_issuer_address.clone().map(std::sync::Arc::new),
+        trust_proxy_headers: config.trust_proxy_headers,
     })
 }
 
@@ -280,6 +284,7 @@ mod cors_tests {
             admin_events: broadcast::channel(16).0,
             daily_withdrawal_limit_stroops: None,
             cngn_issuer: None,
+            trust_proxy_headers: false,
         }
     }
 

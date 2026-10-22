@@ -159,6 +159,14 @@ from `Dockerfile`) with the environment from the checklist below, and run
 `sqlx migrate run` before each release that adds a migration. Keep it to
 **one** process — see [the single-instance constraint](#the-single-instance-constraint).
 
+Behind a reverse proxy the backend's socket peer is the proxy, so per-IP
+login limits and the IPs in the auth audit logs would all be the proxy's. Set
+`TRUST_PROXY_HEADERS=true` to take the client address from `X-Forwarded-For`
+instead. The backend uses only the header's rightmost entry, the one the proxy
+appended; earlier entries are whatever the client sent. Enable it only when the
+backend is reachable solely through that proxy: otherwise a client can set the
+header directly and choose its own address.
+
 On a VM there's no Worker cron; the process stays up on its own, so no
 keepalive is needed. Point an uptime monitor at `https://<host>/api/health`.
 

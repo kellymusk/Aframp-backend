@@ -264,3 +264,32 @@ async fn hourly_cap_429_reports_retry_after() {
     let secs = json["retry_after_secs"].as_u64().expect("retry_after_secs");
     assert!((3000..=3600).contains(&secs), "slot frees about an hour after the first send: {secs}");
 }
+
+/// With TRUST_PROXY_HEADERS on, the challenge records the address our proxy
+/// appended (rightmost X-Forwarded-For entry), not one the client injected.
+#[tokio::test]
+async fn otp_challenge_records_proxy_reported_client_ip() {
+    let mut state = common::state().await;
+    state.trust_proxy_headers = true;
+    let db = state.db.clone();
+    let app = aframp::router(state);
+    let (body, _) = fresh_signup("otp_client_ip");
+
+    let (status, json) = common::send_with_headers(
+        app,
+        "POST",
+        "/signup",
+        None,
+        Some(body),
+        &[("x-forwarded-for", "6.6.6.6, 198.51.100.7")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+
+    let ip: Option<String> = sqlx::query_scalar("SELECT host(client_ip) FROM otp_challenges WHERE id = $1::uuid")
+        .bind(json["challenge_id"].as_str().unwrap())
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(ip.as_deref(), Some("198.51.100.7"));
+}
