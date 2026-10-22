@@ -126,3 +126,30 @@ async fn poll_once_is_idempotent_for_a_repeated_deposit() {
         "re-polling the same deposit must not double-credit the balance"
     );
 }
+
+/// A deposit to an address that isn't one of our wallets is skipped: no
+/// payment row, no balance credited anywhere.
+#[tokio::test]
+async fn poll_once_skips_deposit_to_unknown_address() {
+    let app_state = state().await;
+    let tx_hash = format!("fake-tx-unknown-{}", Uuid::new_v4());
+    let listener = FakeListener {
+        deposits: vec![DetectedDeposit {
+            tx_hash: tx_hash.clone(),
+            destination: format!("GUNKNOWN{}", Uuid::new_v4().simple().to_string().to_uppercase()),
+            amount_stroops: 10_000_000,
+            asset: "XLM".to_string(),
+            confirmations: 1,
+            memo: None,
+        }],
+    };
+
+    poll_once(&app_state.db, &listener).await.expect("poll_once failed");
+
+    let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM payments WHERE tx_hash = $1")
+        .bind(&tx_hash)
+        .fetch_one(&app_state.db)
+        .await
+        .unwrap();
+    assert_eq!(recorded, 0, "a deposit to an unknown address must not be recorded");
+}
