@@ -35,6 +35,8 @@ const PR_WALLET_COLS: &str = "pr.id, pr.merchant_id, pr.wallet_id, pr.amount_str
 pub enum PaymentRequestError {
     #[error("amount_stroops must be positive")]
     InvalidAmount,
+    #[error("expires_in_secs must be between 60 and 86400")]
+    InvalidExpiry,
     #[error("no wallet found for merchant on network {0}")]
     WalletNotFound(String),
     #[error(transparent)]
@@ -106,9 +108,12 @@ pub async fn create_payment_request(
     if amount_stroops <= 0 {
         return Err(PaymentRequestError::InvalidAmount);
     }
-    let ttl = expires_in_secs
-        .unwrap_or(DEFAULT_EXPIRY_SECS)
-        .clamp(MIN_EXPIRY_SECS, MAX_EXPIRY_SECS);
+    // Rejected rather than clamped, so a caller never believes a request
+    // lives longer (or shorter) than it really does.
+    let ttl = expires_in_secs.unwrap_or(DEFAULT_EXPIRY_SECS);
+    if !(MIN_EXPIRY_SECS..=MAX_EXPIRY_SECS).contains(&ttl) {
+        return Err(PaymentRequestError::InvalidExpiry);
+    }
     let expires_at = Utc::now() + Duration::seconds(ttl);
 
     let mut attempt = 1;

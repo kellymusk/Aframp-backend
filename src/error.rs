@@ -258,6 +258,9 @@ impl From<crate::services::payment_requests::PaymentRequestError> for (StatusCod
             PaymentRequestError::InvalidAmount => {
                 bad_request(ErrorCode::InvalidAmount, "amount_stroops must be positive")
             }
+            PaymentRequestError::InvalidExpiry => {
+                bad_request_field("expires_in_secs", "must be between 60 and 86400")
+            }
             PaymentRequestError::WalletNotFound(network) => bad_request(
                 ErrorCode::WalletNotFound,
                 &format!("create a {network} wallet before generating payment requests"),

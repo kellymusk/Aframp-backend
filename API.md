@@ -526,7 +526,7 @@ Auth required. **The core POS action.** Creates a request for a specific amount 
 |---|---|---|---|
 | `amount_stroops` | yes | — | Must be a positive **integer** (`int64`). Floats (`2.5`) and strings (`"100"`) are rejected with `400` `{ code: "INVALID_PARAMETERS", field: "amount_stroops" }` — not a bare 422. |
 | `asset` | no | `"XLM"` | See the cNGN caveat below |
-| `expires_in_secs` | no | `900` (15 min) | Integer `int64`, clamped to 60–86400 |
+| `expires_in_secs` | no | `900` (15 min) | Integer `int64`, must be between **60 and 86400** (inclusive). Values outside this range are rejected with `400 INVALID_PARAMETERS` — they are **not** silently clamped. A value of `59` or `86401` will fail rather than produce a surprising expiry. |
 
 `200` →
 ```json

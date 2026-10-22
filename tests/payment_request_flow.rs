@@ -721,3 +721,141 @@ async fn underpaid_deposit_marks_request_partial() {
     assert_eq!(fetched["status"], "partial", "underpaid deposit should mark the request partial, not paid");
 }
 
+
+#[tokio::test]
+async fn payment_request_zero_amount_is_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_neg_zero_amount").await;
+    create_wallet(&app, &token).await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(serde_json::json!({ "amount_stroops": 0 })),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "zero amount should be rejected: {json}");
+    assert_eq!(json["code"], "INVALID_AMOUNT", "expected INVALID_AMOUNT code: {json}");
+}
+
+#[tokio::test]
+async fn payment_request_negative_amount_is_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_neg_neg_amount").await;
+    create_wallet(&app, &token).await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(serde_json::json!({ "amount_stroops": -1 })),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "negative amount should be rejected: {json}");
+    assert_eq!(json["code"], "INVALID_AMOUNT", "expected INVALID_AMOUNT code: {json}");
+}
+
+#[tokio::test]
+async fn payment_request_missing_amount_stroops_is_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_neg_missing_amount").await;
+    create_wallet(&app, &token).await;
+
+    // Body with no amount_stroops field at all.
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert!(
+        status == axum::http::StatusCode::BAD_REQUEST
+            || status == axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "missing amount_stroops should be 400 or 422, got {status}: {json}"
+    );
+}
+
+#[tokio::test]
+async fn payment_request_expires_in_secs_too_small_is_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_neg_expiry_low").await;
+    create_wallet(&app, &token).await;
+
+    // 59 is below the 60-second minimum documented in API.md.
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(serde_json::json!({ "amount_stroops": 10_000_000, "expires_in_secs": 59 })),
+    )
+    .await;
+    // The API documents expires_in_secs as 60–86400. An out-of-range value
+    // should be rejected (400) rather than silently clamped, so callers
+    // are not misled about the actual expiry they set.
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "expires_in_secs=59 should be rejected (below 60-second minimum): {json}"
+    );
+}
+
+#[tokio::test]
+async fn payment_request_expires_in_secs_too_large_is_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_neg_expiry_high").await;
+    create_wallet(&app, &token).await;
+
+    // 86401 exceeds the 86400-second maximum documented in API.md.
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(serde_json::json!({ "amount_stroops": 10_000_000, "expires_in_secs": 86401 })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "expires_in_secs=86401 should be rejected (above 86400-second maximum): {json}"
+    );
+}
+
+#[tokio::test]
+async fn payment_request_without_wallet_returns_wallet_not_found_error() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    // Merchant with no wallet created.
+    let (token, _) = ensure_merchant(&app, "pr_neg_no_wallet2").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(serde_json::json!({ "amount_stroops": 10_000_000 })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "no-wallet request should be 400: {json}"
+    );
+    // The error message must guide the caller toward creating a wallet first.
+    let error_msg = json["error"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("wallet"),
+        "error should mention wallet: {json}"
+    );
+}
