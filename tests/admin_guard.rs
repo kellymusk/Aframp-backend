@@ -147,3 +147,15 @@ async fn admin_routes_matrix_covers_every_list_route() {
         );
     }
 }
+
+#[tokio::test]
+async fn admin_dashboard_sends_security_headers() {
+    let app = aframp::router(common::state().await);
+    let (status, _, headers) = common::send_with_response_headers(app, "GET", "/admin", None, None).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    assert!(csp.starts_with("default-src 'self'"), "{csp}");
+    assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert_eq!(headers["x-frame-options"], "DENY");
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+}
