@@ -145,3 +145,80 @@ No target numbers exist yet from the business side; these are proposed instrumen
 ---
 
 *This document should be updated alongside the codebase as decisions in §9 get made and roadmap items in §12 land — treat status claims here the way `README.md`'s status section is treated: nothing marked done that hasn't actually been verified.*
+
+## 13. cNGN onramp architecture
+
+cNGN is a naira-backed stablecoin issued on Stellar. It is listed as a supported asset, but the README and this PRD both acknowledge that *"cNGN needs a real issuer address sourced first."* This section documents the intended production architecture for cNGN — how a merchant ends up holding it, and how it becomes naira in their bank account — plus the questions that must be answered before any of it can be built. **None of this is implemented yet**; it is a design and sourcing plan.
+
+### 13.1 Intended flow
+
+```
+Customer pays in cNGN
+        │
+        ▼
+Merchant's Aframp wallet receives cNGN
+        │
+        ▼
+Platform detects the incoming cNGN payment (Horizon worker)
+        │
+        ▼
+Merchant requests a withdrawal
+        │
+        ▼
+Platform redeems cNGN with the issuer (burns cNGN, credits NGN)
+        │
+        ▼
+Platform receives NGN in its settlement/bank account
+        │
+        ▼
+Paystack transfer to the merchant's bank account
+```
+
+Step by step:
+
+1. **Merchant receives cNGN.** The customer's wallet sends cNGN to the merchant's Aframp-custodied Stellar address, with the payment-request memo attached. This requires the merchant wallet to hold a cNGN trustline to the issuer's asset — the platform must establish that trustline when the wallet is created (or on first cNGN receipt).
+2. **Platform detects it.** The existing Horizon polling worker already handles `payment`/`path_payment` ops for credit assets; it needs the real cNGN issuer address configured so it can recognise the asset and record it against the merchant's cNGN balance (separate from XLM).
+3. **Merchant requests withdrawal.** `POST /withdraw` debits the merchant's cNGN balance and creates a withdrawal record, as it does today for the ledger — but now the record is queued for real redemption rather than sitting unpaid.
+4. **Platform redeems cNGN with the issuer.** The platform sends the cNGN back to the issuer (or calls the issuer's redemption API) and receives the equivalent NGN, minus the issuer's redemption fee, into the platform's settlement account. This is the step that turns an on-chain asset into fiat.
+5. **Platform receives NGN.** Settlement timing depends on the issuer — some redeem same-day, some T+1. The withdrawal record moves to a `redeeming`/`settled` state as this progresses.
+6. **Paystack transfer to merchant bank.** Once NGN is in the platform account, a Paystack transfer is initiated to the merchant's verified bank account. The withdrawal record moves to `paid` on Paystack's transfer-success webhook.
+
+### 13.2 Open questions
+
+These must be resolved before the flow above can be built. Each is tracked in the decision log in [§13.3](#133-decision-log).
+
+| # | Question | Why it matters |
+|---|---|---|
+| Q1 | **Which cNGN issuer?** Candidates include Wrapped Finance and Blaqpay (and potentially others). | The issuer determines the asset code/issuer address, the redemption API, fees, and settlement timing. Nothing downstream can be built until this is fixed. |
+| Q2 | **What KYC is required?** At the platform level (to hold a redemption account with the issuer) and at the merchant level (to receive payouts). | Determines onboarding friction and whether merchant signup must gate on KYC before cNGN withdrawals are enabled. |
+| Q3 | **What is the redemption minimum?** The smallest cNGN amount the issuer will redeem. | Determines whether small merchant withdrawals must be batched, and what the minimum withdrawal amount in `POST /withdraw` should be. |
+| Q4 | **What are the redemption fees and settlement timing?** | Affects the fee model shown to merchants and the expected payout latency. |
+| Q5 | **How is the cNGN trustline established?** Platform-managed on wallet creation, or lazily on first cNGN receipt? | Affects wallet-creation flow and whether existing wallets need a migration. |
+
+### 13.3 Decision log
+
+When an open question above is resolved, record it here using this format. Append new entries at the top; do not edit past entries (supersede them instead).
+
+```
+### D-<n>: <short title>
+- **Date:** YYYY-MM-DD
+- **Resolves:** Q<n> (link to the open question above)
+- **Decision:** <what was decided, in one or two sentences>
+- **Rationale:** <why this option over the alternatives>
+- **Alternatives considered:** <other options and why they were rejected>
+- **Owner:** <who made the call>
+- **Follow-up:** <issues/PRs that implement this, or "none">
+```
+
+**Example entry (illustrative — not a real decision):**
+
+```
+### D-1: cNGN issuer selected
+- **Date:** 2026-08-10
+- **Resolves:** Q1
+- **Decision:** Integrate with <issuer> as the cNGN issuer.
+- **Rationale:** <e.g. documented redemption API, same-day NGN settlement, competitive fee>.
+- **Alternatives considered:** <other issuer(s)> — rejected because <reason>.
+- **Owner:** <name>
+- **Follow-up:** #<issue> (configure issuer address + trustline)
+```
