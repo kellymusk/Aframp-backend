@@ -131,7 +131,13 @@ async fn authenticate_active(
     state: &AppState,
 ) -> Result<Claims, (StatusCode, Json<ApiError>)> {
     let claims = authenticate(parts, state).await?;
-    if !users::is_active(&state.db, claims.sub).await.map_err(internal)? {
+    // Refreshed tokens keep their original `orig_iat`, so a refresh can't
+    // carry a session past a password change.
+    let session_start = if claims.orig_iat == 0 { claims.iat } else { claims.orig_iat } as i64;
+    if !users::session_is_valid(&state.db, claims.sub, session_start)
+        .await
+        .map_err(internal)?
+    {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None, retry_after_secs: None }),

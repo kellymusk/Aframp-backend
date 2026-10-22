@@ -200,6 +200,41 @@ paths:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change the signed-in user's password
+      description: >
+        Requires the current password even with a valid session. On success
+        the password is replaced and every session issued before the change
+        (including refreshed ones) is revoked; the caller receives a fresh
+        token, also set as the session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Password changed; new session token
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with the new token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':
+          description: >
+            `new_password` shorter than 8 characters, or `current_password`
+            incorrect (see the `field` property).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /me:
     get:
       tags: [Auth]

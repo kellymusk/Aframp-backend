@@ -259,6 +259,69 @@ pub async fn is_active(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::E
         .unwrap_or(false))
 }
 
+/// Whether a session that began at `session_start` (unix seconds — the
+/// token's `orig_iat`) is still valid: the account must be active and the
+/// session must not predate the last password change.
+pub async fn session_is_valid(db: &PgPool, user_id: Uuid, session_start: i64) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT deleted_at IS NULL
+                AND (password_changed_at IS NULL
+                     OR $2 >= floor(extract(epoch FROM password_changed_at))::bigint)
+           FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(session_start)
+    .fetch_optional(db)
+    .await?
+    .unwrap_or(false))
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChangePasswordError {
+    #[error("current password is incorrect")]
+    WrongCurrentPassword,
+    #[error("failed to hash password")]
+    Hash,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Verifies `current_password` against the stored hash, then stores the hash
+/// of `new_password` and stamps `password_changed_at`, which invalidates every
+/// session issued before now (see [`session_is_valid`]).
+pub async fn change_password(
+    db: &PgPool,
+    user_id: Uuid,
+    current_password: &str,
+    new_password: &str,
+) -> Result<(), ChangePasswordError> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+    let Some(stored) = stored else {
+        return Err(ChangePasswordError::WrongCurrentPassword);
+    };
+    if !password::verify(current_password, &stored) {
+        return Err(ChangePasswordError::WrongCurrentPassword);
+    }
+    let new_hash = password::hash(new_password).map_err(|_| ChangePasswordError::Hash)?;
+    // Stamped from the app clock, not Postgres `now()`: it's compared against
+    // JWT `iat`s minted by this process, so both sides must share a clock.
+    sqlx::query(
+        "UPDATE users
+            SET password_hash = $2, password_changed_at = $3, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(&new_hash)
+    .bind(Utc::now())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Admin operation: clear a user's account lockout immediately.
 /// Also resets `failed_login_count` so the next bad attempt starts fresh.
 pub async fn admin_unlock(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {

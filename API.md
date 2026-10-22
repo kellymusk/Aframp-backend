@@ -355,6 +355,16 @@ Errors: `400` `OTP_INVALID` (wrong code — 5 wrong guesses and the challenge is
 ### `POST /auth/refresh`
 Auth required (bearer or session cookie; the token must not have expired). Returns a new token with the same body shape as `/verify-otp` and resets the session cookie. The new token expires 24h from now, but never more than 7 days after the original login; past that point this returns `401` ("session can no longer be refreshed; log in again"). Refresh doesn't revoke the old token — it stays valid until its own `exp`.
 
+### `POST /auth/change-password`
+Auth required (bearer or session cookie).
+
+```json
+{ "current_password": "old-password", "new_password": "new-password-123" }
+```
+
+Re-proves the current password, then replaces it. `200` → a fresh session with the same body shape as `/verify-otp`, also set as the session cookie, so the device that made the change stays signed in. **Every other session for the account stops working immediately** — including ones that were refreshed via `/auth/refresh`, since refreshes keep the original login time.
+
+Errors: `400` with `field: "new_password"` if it's shorter than 8 characters; `400` with `field: "current_password"` if the current password is wrong (deliberately not `401`, which clients treat as "session expired"); `401` for a missing, expired or already-revoked session.
 ### `GET /verify-email`
 No auth. Consumes the single-use, 24-hour token from the verification email
 sent when a signup completes or a resend is requested.
