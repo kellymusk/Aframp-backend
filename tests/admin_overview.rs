@@ -47,3 +47,37 @@ async fn admin_overview_ignores_uncommitted_writes() {
         .expect("overview after rollback");
     assert_eq!(after.total_users, before.total_users);
 }
+
+/// #1209: a merchant with wallets on more than one network must still be
+/// listed once by the admin merchants query.
+#[tokio::test]
+async fn admin_merchants_lists_multi_wallet_merchant_once() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = common::ensure_merchant(&app, "admin_multi_wallet").await;
+    let (status, json) = common::send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "wallet create failed: {json}");
+
+    let merchant_id: uuid::Uuid = merchant_id.parse().unwrap();
+    sqlx::query(
+        "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
+         VALUES ($1, $2, 'bitcoin', 'unused')",
+    )
+        .bind(merchant_id)
+        .bind(format!("bc1q{}", uuid::Uuid::new_v4().simple()))
+        .execute(&state.db)
+        .await
+        .expect("insert second wallet");
+
+    let rows = aframp::services::admin::merchants(&state.db, 1000)
+        .await
+        .expect("admin merchants");
+    assert_eq!(rows.iter().filter(|r| r.id == merchant_id).count(), 1);
+}

@@ -157,9 +157,36 @@ pub async fn send_with_response_headers(
     token: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value, axum::http::HeaderMap) {
+    send_request(app, method, uri, token, body, &[]).await
+}
+
+/// Like [`send`], but adds extra request headers (e.g. `Idempotency-Key`).
+pub async fn send_with_headers(
+    app: Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let (status, json, _) = send_request(app, method, uri, token, body, headers).await;
+    (status, json)
+}
+
+async fn send_request(
+    app: Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value, axum::http::HeaderMap) {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
     }
     let request = builder
         .header("content-type", "application/json")

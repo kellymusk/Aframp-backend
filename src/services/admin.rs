@@ -140,10 +140,12 @@ pub async fn users(db: &PgPool, limit: i64) -> Result<Vec<AdminUserRow>, sqlx::E
 pub async fn merchants(db: &PgPool, limit: i64) -> Result<Vec<AdminMerchantRow>, sqlx::Error> {
     sqlx::query_as::<_, AdminMerchantRow>(
         "SELECT m.id, m.name, m.user_id AS owner_user_id, u.email AS owner_email, m.created_at,
-                w.address AS wallet_address
+                (SELECT w.address FROM wallets w
+                 WHERE w.merchant_id = m.id
+                 ORDER BY w.created_at DESC
+                 LIMIT 1) AS wallet_address
          FROM merchants m
          JOIN users u ON u.id = m.user_id
-         LEFT JOIN wallets w ON w.merchant_id = m.id
          ORDER BY m.created_at DESC
          LIMIT $1",
     )

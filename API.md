@@ -569,6 +569,18 @@ Auth required. Debits the merchant's balance and initiates a Nigerian bank payou
 | `bank_code` | yes | Paystack bank code, e.g. `058` GTBank, `999992` OPay |
 | `account_number` | yes | Exactly 10 digits (NUBAN) |
 
+**Optional `Idempotency-Key` header.** Send a unique string (a UUID is fine) with the request and a retry carrying the same key returns the **original withdrawal unchanged** — same `id`, no second balance debit, no second Paystack transfer. Keys are scoped per merchant, so two merchants can use the same key without colliding. Omit the header and the call behaves exactly as before (every request creates a new withdrawal).
+
+```bash
+curl -X POST http://127.0.0.1:3000/withdraw \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 8f14e45f-ceea-467a-9c1c-1b2f0a4d6e77" \
+  -d '{"amount_stroops":500000000,"asset":"cNGN","bank_code":"058","account_number":"0123456789"}'
+```
+
+Generate a fresh key per logical withdrawal (not per HTTP attempt) and reuse it on retries — that's what makes a network retry safe.
+
 `200` → a withdrawal object with `status`, `provider`, `provider_reference`.
 
 **Optional `Idempotency-Key` header.** Send a client-generated key (a UUID is fine) to make a retried request safe: resubmitting the same key returns the original withdrawal instead of creating a second one and debiting the balance twice. Without it, pressing "Withdraw" twice due to a slow network response can create two separate withdrawals. Max 255 characters; a header present but blank is treated the same as omitting it.
