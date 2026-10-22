@@ -69,6 +69,8 @@ pub struct AppState {
     pub cngn_issuer: Option<std::sync::Arc<String>>,
     /// Take the client IP from `X-Forwarded-For` (see [`client_ip::client_ip`]).
     pub trust_proxy_headers: bool,
+    /// Horizon base URL, probed by `GET /health/detailed`.
+    pub stellar_horizon_url: std::sync::Arc<String>,
 }
 
 impl AppState {
@@ -126,6 +128,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         daily_withdrawal_limit_stroops: config.daily_withdrawal_limit_stroops,
         cngn_issuer: config.cngn_issuer_address.clone().map(std::sync::Arc::new),
         trust_proxy_headers: config.trust_proxy_headers,
+        stellar_horizon_url: std::sync::Arc::new(config.stellar_horizon_url.clone()),
     })
 }
 
@@ -150,6 +153,7 @@ pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/", axum::routing::get(|| async { "aframp" }))
         .route("/health", axum::routing::get(api::health::health))
+        .route("/health/detailed", axum::routing::get(api::health::detailed))
         .route("/signup", axum::routing::post(api::auth::signup))
         .route("/login", axum::routing::post(api::auth::login))
         .route("/verify-otp", axum::routing::post(api::auth::verify_otp))
@@ -285,6 +289,7 @@ mod cors_tests {
             daily_withdrawal_limit_stroops: None,
             cngn_issuer: None,
             trust_proxy_headers: false,
+            stellar_horizon_url: std::sync::Arc::new("http://127.0.0.1:9".to_string()),
         }
     }
 

@@ -188,3 +188,31 @@ fn middleware_scope_design_note() {
     // See docs/middleware-scope-refactor.md for the full design note.
     assert!(true, "design note always passes");
 }
+
+/// `/health/detailed` reports each dependency; the test Horizon is
+/// unreachable, so it answers 503 with the database still `ok`.
+#[tokio::test]
+async fn detailed_health_reports_each_dependency() {
+    let app = router(common::state().await);
+    let (status, body) = common::send(app, "GET", "/health/detailed", None, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["checks"]["database"], "ok");
+    assert_eq!(body["checks"]["horizon"], "fail");
+}
+
+#[tokio::test]
+async fn detailed_health_is_ok_when_dependencies_answer() {
+    let horizon = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .mount(&horizon)
+        .await;
+    let mut state = common::state().await;
+    state.stellar_horizon_url = std::sync::Arc::new(horizon.uri());
+
+    let (status, body) = common::send(router(state), "GET", "/health/detailed", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["checks"]["horizon"], "ok");
+}

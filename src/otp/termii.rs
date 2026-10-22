@@ -46,7 +46,20 @@ pub struct TermiiProvider {
 
 impl TermiiProvider {
     pub fn new(api_key: String, sender_id: String) -> Self {
+        // Explicit connection-pool tuning for production use:
+        // - pool_max_idle_per_host(5): cap idle keep-alive connections per
+        //   host so a burst of traffic doesn't leave a large idle pool.
+        // - connection_verbose(false): keep reqwest's per-connection debug
+        //   logging off in production.
+        // - tcp_keepalive(30s): keep long-lived connections alive through
+        //   NAT/load balancers that drop idle sockets.
+        // - connect_timeout(5s): bound only the TCP/TLS handshake, separate
+        //   from the overall request timeout below.
         let http = reqwest::Client::builder()
+            .pool_max_idle_per_host(5)
+            .connection_verbose(false)
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("failed to build Termii HTTP client");

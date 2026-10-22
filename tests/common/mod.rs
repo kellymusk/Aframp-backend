@@ -130,6 +130,8 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
         daily_withdrawal_limit_stroops: None,
         cngn_issuer: None,
         trust_proxy_headers: false,
+        // Unreachable on purpose: tests never talk to a real Horizon.
+        stellar_horizon_url: Arc::new("http://127.0.0.1:9".to_string()),
     })
 }
 

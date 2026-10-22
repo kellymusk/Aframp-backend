@@ -51,6 +51,9 @@ impl PaystackProvider {
 
     fn build(secret_key: SecretString, base_url: String) -> Self {
         let http = reqwest::Client::builder()
+            .pool_max_idle_per_host(5)
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(20))
             // The default, stated: with it on, reqwest's trace-level wire
             // logging prints request headers verbatim, including
