@@ -219,51 +219,39 @@ pub async fn payment_requests_by_merchant(
 
 /// Keyset-paginated variant of [`payment_requests_by_merchant`]. Orders by
 /// `(created_at, id)` DESC so concurrent inserts can't shift rows across
-/// pages the way an OFFSET-based scan can.
+/// pages the way an OFFSET-based scan can. `status` filters on the status the
+/// API reports (see [`effective_status`]), so `expired` and `cancelled` match
+/// requests whose stored row still says `pending`.
 pub async fn payment_requests_by_merchant_cursor(
     db: &PgPool,
     merchant_id: Uuid,
     limit: i64,
     cursor: Option<crate::pagination::Cursor>,
     include_cancelled: bool,
+    status: Option<&str>,
 ) -> Result<Vec<PaymentRequestWithWallet>, sqlx::Error> {
-    match cursor {
-        Some(c) => {
-            sqlx::query_as::<_, PaymentRequestWithWallet>(&format!(
-                "SELECT {PR_WALLET_COLS}
-                   FROM payment_requests pr
-                   JOIN wallets w ON w.id = pr.wallet_id
-                  WHERE pr.merchant_id = $1
-                    AND ($5 OR pr.cancelled_at IS NULL)
-                    AND (pr.created_at, pr.id) < ($2, $3)
-                  ORDER BY pr.created_at DESC, pr.id DESC
-                  LIMIT $4"
-            ))
-            .bind(merchant_id)
-            .bind(c.created_at)
-            .bind(c.id)
-            .bind(limit + 1)
-            .bind(include_cancelled)
-            .fetch_all(db)
-            .await
-        }
-        None => {
-            sqlx::query_as::<_, PaymentRequestWithWallet>(&format!(
-                "SELECT {PR_WALLET_COLS}
-                   FROM payment_requests pr
-                   JOIN wallets w ON w.id = pr.wallet_id
-                  WHERE pr.merchant_id = $1
-                    AND ($3 OR pr.cancelled_at IS NULL)
-                  ORDER BY pr.created_at DESC, pr.id DESC
-                  LIMIT $2"
-            ))
-            .bind(merchant_id)
-            .bind(limit + 1)
-            .bind(include_cancelled)
-            .fetch_all(db)
-            .await
-        }
-    }
+    sqlx::query_as::<_, PaymentRequestWithWallet>(&format!(
+        "SELECT {PR_WALLET_COLS}
+           FROM payment_requests pr
+           JOIN wallets w ON w.id = pr.wallet_id
+          WHERE pr.merchant_id = $1
+            AND ($2 OR pr.cancelled_at IS NULL)
+            AND ($3::timestamptz IS NULL OR (pr.created_at, pr.id) < ($3, $4::uuid))
+            AND ($5::text IS NULL OR
+                 CASE WHEN pr.cancelled_at IS NOT NULL THEN 'cancelled'
+                      WHEN pr.status = 'pending' AND pr.expires_at < now() THEN 'expired'
+                      ELSE pr.status END = $5)
+          ORDER BY pr.created_at DESC, pr.id DESC
+          LIMIT $6"
+    ))
+    .bind(merchant_id)
+    .bind(include_cancelled)
+    .bind(cursor.as_ref().map(|c| c.created_at))
+    .bind(cursor.as_ref().map(|c| c.id))
+    .bind(status)
+    .bind(limit + 1)
+    .fetch_all(db)
+    .await
 }
 
 #[tracing::instrument(skip_all, err, fields(payment_request_id = %id))]

@@ -304,3 +304,36 @@ async fn payment_request_cancel_paid_returns_409() {
     assert_eq!(status, StatusCode::CONFLICT, "a paid request cannot be cancelled: {body}");
     assert_eq!(body["code"], "PAYMENT_REQUEST_NOT_CANCELLABLE");
 }
+
+/// `?status=` filters on the status the API reports, so expired and cancelled
+/// rows match even though their stored status is still `pending`.
+#[tokio::test]
+async fn payment_request_list_filters_by_reported_status() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_status_filter").await;
+    create_wallet(&app, &token).await;
+
+    let pending = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+    let expired = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+    let cancelled = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid")
+        .bind(&expired)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let (status, _) = send(app.clone(), "DELETE", &format!("/payment-requests/{cancelled}"), Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    for (filter, expected) in [("pending", &pending), ("expired", &expired), ("cancelled", &cancelled)] {
+        let (status, list) =
+            send(app.clone(), "GET", &format!("/payment-requests?status={filter}"), Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        let ids: Vec<&str> = list_rows(&list).iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec![expected.as_str()], "status={filter}");
+    }
+
+    let (status, body) = send(app.clone(), "GET", "/payment-requests?status=bogus", Some(&token), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["field"], "status");
+}

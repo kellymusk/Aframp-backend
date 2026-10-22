@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha512;
 
-use super::OtpProvider;
+use super::{OtpProvider, OtpSendError};
 
 const BASE_URL: &str = "https://api.ng.termii.com/api";
 
@@ -81,7 +81,7 @@ struct SendResponse {
 
 #[async_trait]
 impl OtpProvider for TermiiProvider {
-    async fn send_sms(&self, phone: &str, message: &str) -> Result<(), String> {
+    async fn send_sms(&self, phone: &str, message: &str) -> Result<(), OtpSendError> {
         // SECURITY (#1120 / #1122):
         // Termii's Messaging API requires `api_key` in the JSON body — their
         // docs do not support Bearer / Authorization-header auth for this
@@ -120,17 +120,27 @@ impl OtpProvider for TermiiProvider {
             }))
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            // Connection failures and timeouts may succeed on a retry.
+            .map_err(|e| OtpSendError::Transient(e.to_string()))?;
 
         let status = response.status();
-        let raw = response.text().await.map_err(|e| e.to_string())?;
+        // A 5xx is Termii's side and worth one retry; a 4xx (bad number,
+        // bad key) will fail the same way every time.
+        let failure = |msg: String| {
+            if status.is_server_error() {
+                OtpSendError::Transient(msg)
+            } else {
+                OtpSendError::Permanent(msg)
+            }
+        };
+        let raw = response.text().await.map_err(|e| OtpSendError::Transient(e.to_string()))?;
         let body: SendResponse = serde_json::from_str(&raw).map_err(|e| {
-            format!("Termii returned an unexpected response (HTTP {status}): {e} — body: {raw}")
+            failure(format!("Termii returned an unexpected response (HTTP {status}): {e} — body: {raw}"))
         })?;
 
         if !status.is_success() || body.code.as_deref() != Some("ok") {
             let message = body.message.unwrap_or_else(|| raw.clone());
-            return Err(format!("Termii error (HTTP {status}): {message}"));
+            return Err(failure(format!("Termii error (HTTP {status}): {message}")));
         }
         Ok(())
     }

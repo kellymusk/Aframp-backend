@@ -83,6 +83,32 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // #1305: decoding attacker-controlled cursors must never panic.
+        #[test]
+        fn decode_never_panics_on_arbitrary_input(raw in ".{0,200}") {
+            let _ = Cursor::decode(&raw);
+        }
+
+        #[test]
+        fn decode_never_panics_on_base64url_shaped_input(raw in "[A-Za-z0-9_-]{0,120}") {
+            let _ = Cursor::decode(&raw);
+        }
+
+        #[test]
+        fn encode_then_decode_round_trips(secs in 0i64..4_102_444_800, nanos in 0u32..1_000_000_000, id in any::<u128>()) {
+            let cursor = Cursor {
+                created_at: chrono::DateTime::from_timestamp(secs, nanos).unwrap(),
+                id: uuid::Uuid::from_u128(id),
+            };
+            let decoded = Cursor::decode(&cursor.encode()).expect("own cursors decode");
+            prop_assert_eq!(decoded.created_at, cursor.created_at);
+            prop_assert_eq!(decoded.id, cursor.id);
+        }
+    }
+
 
     #[test]
     fn cursor_round_trips_and_is_opaque() {

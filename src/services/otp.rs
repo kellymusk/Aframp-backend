@@ -408,8 +408,9 @@ async fn upsert_challenge(
 }
 
 async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
-    let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
-    otp.send_sms(phone, &message).await.map_err(OtpError::SendFailed)
+    crate::otp::send_code(otp, phone, code)
+        .await
+        .map_err(|err| OtpError::SendFailed(err.to_string()))
 }
 
 fn generate_code() -> String {

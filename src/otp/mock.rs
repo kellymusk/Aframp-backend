@@ -11,7 +11,7 @@ pub struct MockOtpProvider;
 
 #[async_trait]
 impl OtpProvider for MockOtpProvider {
-    async fn send_sms(&self, phone: &str, message: &str) -> Result<(), String> {
+    async fn send_sms(&self, phone: &str, message: &str) -> Result<(), super::OtpSendError> {
         tracing::info!(phone, message, "mock OTP send (no real SMS delivered)");
         SENT.lock()
             .unwrap()

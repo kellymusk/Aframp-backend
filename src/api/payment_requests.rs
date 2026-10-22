@@ -254,7 +254,17 @@ pub async fn list(
         )
     })?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
-    let include_cancelled = params.include_cancelled.unwrap_or(false);
+    let status = match params.status.as_deref().map(str::trim) {
+        Some(s) if !LIST_STATUSES.contains(&s) => {
+            return Err(bad_request_field(
+                "status",
+                "must be one of pending, paid, partial, expired, cancelled",
+            ))
+        }
+        other => other,
+    };
+    // Asking for cancelled requests implies including them.
+    let include_cancelled = params.include_cancelled.unwrap_or(false) || status == Some("cancelled");
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)
@@ -269,6 +279,7 @@ pub async fn list(
         limit,
         cursor,
         include_cancelled,
+        status,
     )
     .await
     .map_err(internal)?;
@@ -375,7 +386,12 @@ pub struct ListParams {
     /// When true, include soft-deleted (cancelled) requests in the list.
     /// Default: false.
     pub include_cancelled: Option<bool>,
+    /// Only requests whose reported status is this one.
+    pub status: Option<String>,
 }
+
+/// Values accepted by `GET /payment-requests?status=`.
+const LIST_STATUSES: [&str; 5] = ["pending", "paid", "partial", "expired", "cancelled"];
 
 fn to_view(
     pr: &PaymentRequest,
