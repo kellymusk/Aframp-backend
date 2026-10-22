@@ -477,6 +477,20 @@ paths:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /payment-requests/{id}/cancel:
+    post:
+      tags: [Payment requests]
+      summary: Cancel a pending payment request
+      description: >
+        Lets a merchant void a request they created by mistake (wrong amount or
+        asset) instead of waiting up to 24 hours for it to expire. Scoped to the
+        authenticated merchant — a request belonging to someone else is reported
+        as 404, not 403, so the endpoint cannot be used to probe for other
+        merchants' request ids. Only a request that is still pending can be
+        cancelled; once it has been paid, partially paid, or has expired, the
+        cancel is rejected with 409. Cancelling is idempotent in effect: a
+        request already in the cancelled state returns 409 like any other
+        non-pending status.
   /payment-requests/{id}/status:
     get:
       tags: [Payment requests]
@@ -502,6 +516,23 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
+          description: Payment request cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: PAYMENT_REQUEST_NOT_FOUND — unknown id, or one owned by another merchant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '409':
+          description: >
+            The request is no longer pending — already paid, partially paid,
+            expired, or already cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
           description: Status payload
           headers:
             Cache-Control:
@@ -1221,10 +1252,11 @@ components:
             but leaves the request pending forever. Included in sep7_uri automatically.
         status:
           type: string
-          enum: [pending, paid, expired]
+          enum: [pending, paid, expired, cancelled]
           description: >
             'expired' is computed at read time from expires_at. A request that
-            expires and is then paid still flips to 'paid'.
+            expires and is then paid still flips to 'paid'. 'cancelled' is set
+            only by POST /payment-requests/{id}/cancel and is terminal.
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         sep7_uri:

@@ -198,3 +198,109 @@ async fn payment_request_hard_delete_job_removes_old_expired_cancelled() {
             .unwrap();
     assert!(remaining.is_none(), "row should be hard-deleted");
 }
+
+async fn create_request(app: &axum::Router, token: &str) -> serde_json::Value {
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(token),
+        Some(json!({ "amount_stroops": 25_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    created
+}
+
+#[tokio::test]
+async fn payment_request_post_cancel_route_cancels() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_post_cancel").await;
+    create_wallet(&app, &token).await;
+    let id = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+
+    let (status, cancelled) = send(
+        app.clone(),
+        "POST",
+        &format!("/payment-requests/{id}/cancel"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "cancel failed: {cancelled}");
+    assert_eq!(cancelled["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn payment_request_cancel_unknown_id_returns_404() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_cancel_404").await;
+    let unknown = uuid::Uuid::new_v4();
+
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        &format!("/payment-requests/{unknown}/cancel"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn payment_request_cancel_requires_auth() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_cancel_auth").await;
+    create_wallet(&app, &token).await;
+    let id = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+
+    let (status, _) = send(app.clone(), "POST", &format!("/payment-requests/{id}/cancel"), None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn payment_request_cancel_paid_returns_409() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_cancel_paid").await;
+    create_wallet(&app, &token).await;
+    let created = create_request(&app, &token).await;
+    let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let memo = created["memo"].as_str().unwrap();
+    let wallet_id: uuid::Uuid = sqlx::query_scalar("SELECT wallet_id FROM payment_requests WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+    let payment_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO payments (id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status)
+         VALUES ($1, $2, $3, 'PLACEHOLDER', $4, 25000000, 'XLM', 'stellar', 'confirmed')",
+    )
+    .bind(payment_id)
+    .bind(created["merchant_id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap())
+    .bind(wallet_id)
+    .bind(format!("test_tx_cancel_{memo}"))
+    .execute(&state.db)
+    .await
+    .unwrap();
+    aframp::services::payment_requests::mark_paid(&state.db, id, payment_id)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        &format!("/payment-requests/{id}/cancel"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "a paid request cannot be cancelled: {body}");
+    assert_eq!(body["code"], "PAYMENT_REQUEST_NOT_CANCELLABLE");
+}

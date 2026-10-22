@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::auth::extractor::AuthUser;
 use crate::etag;
 use crate::error::{
-    bad_request, bad_request_field, forbidden, internal, not_found, ApiResult, ErrorCode,
+    bad_request, bad_request_field, conflict, forbidden, internal, not_found, ApiResult, ErrorCode,
 };
 use crate::models::status::PaymentRequestStatus;
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
@@ -334,6 +334,15 @@ pub async fn cancel(
         return Err(bad_request(
             ErrorCode::InvalidParameters,
             "payment request is already cancelled",
+        ));
+    }
+    // Expired requests can still be archived, but once money has arrived the
+    // request is a record of that payment and must stay visible.
+    let status = payment_requests::effective_status(existing.status, existing.expires_at, None);
+    if status == "paid" || status == "partial" {
+        return Err(conflict(
+            ErrorCode::PaymentRequestNotCancellable,
+            "a paid payment request cannot be cancelled",
         ));
     }
 
