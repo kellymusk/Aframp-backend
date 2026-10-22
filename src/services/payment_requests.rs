@@ -15,6 +15,13 @@ pub const HARD_DELETE_AFTER_DAYS: i64 = 30;
 
 /// Random bytes per memo. 14 bytes hex-encode to 28 characters — the most a
 /// Stellar `MEMO_TEXT` can carry — giving 112 bits of entropy.
+///
+/// Entropy analysis: by the birthday bound a collision becomes likely (~50%)
+/// after roughly 2^(112/2) = 2^56 ≈ 7.2e16 memos. Even at one million payment
+/// requests per day that is ~200 million years. The previous 8-byte memo
+/// (64 bits) hit the same bound after only 2^32 ≈ 4.3e9 requests. 16 bytes
+/// (32 hex chars) would overflow `MEMO_TEXT`, so 14 bytes is the ceiling; the
+/// `memo` column is unbounded `TEXT`, so no migration is required.
 const MEMO_BYTES: usize = 14;
 
 /// Memo collisions are astronomically unlikely at 112 bits, but `memo` is

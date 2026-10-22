@@ -445,6 +445,17 @@ Auth required. Body: `{ "name"?: string, "phone_number"?: string }` (at least on
 
 `200` → `{ "name": "...", "phone_number": "<number on file>", "phone_verification": null | {...} }`. `400` with `field` for invalid input, `409` if the number belongs to another account, `429` if OTP sends to that number are rate limited.
 
+### `PATCH /users/me`
+Alias of `PATCH /me` for user name (and phone) changes; same body, rules and response.
+
+### `PATCH /merchants/me`
+Auth required (merchant account). Body: `{ "name"?: string, "email"?: string }` (at least one). A new `name` (trimmed, 1–100 characters, same rules as `validate_name`) applies immediately. A new `email` is **not** switched yet: it is stored as `pending_email` and a confirmation token is sent to the new address (valid for 30 minutes).
+
+`200` → `{ "merchant_id": "...", "name": "...", "email": "<address on file>" | null, "pending_email": null | "..." }`. `400` with `field` for invalid input.
+
+### `POST /merchants/me/email/confirm`
+Auth required. Body: `{ "token": string }`. Moves `pending_email` into `email`. `200` → same shape as `PATCH /merchants/me`; `400 OTP_INVALID` if the token is wrong or expired, or no change is pending.
+
 ### `DELETE /me`
 Auth required. Deletes the signed-in account (right to erasure under GDPR / NDPA). Returns `204` and clears the session cookie. Every token issued for the account stops working immediately (including for `/auth/refresh`), and the email can't log in again.
 

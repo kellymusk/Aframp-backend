@@ -14,7 +14,7 @@ pub mod services;
 pub mod validation;
 
 pub use auth::cookie::{CookieConfig, SameSite};
-pub use config::{AppConfig, OtpProviderKind, SecretString, DEFAULT_MAX_REQUEST_BODY_BYTES};
+pub use config::{AppConfig, OtpProviderKind, SecretBytes, SecretString, DEFAULT_MAX_REQUEST_BODY_BYTES};
 
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::sync::broadcast;
@@ -55,7 +55,7 @@ pub struct AppState {
     /// TODO: wire `services::wallets::decrypt_secret` (audit-logged) into the settlement/sweep feature
     /// so the platform wallet can sign outbound transactions on behalf of a
     /// merchant.  See PRD §settlement-sweep.
-    pub wallet_encryption_key: std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>,
+    pub wallet_encryption_key: std::sync::Arc<SecretBytes<32>>,
     pub payment_provider: std::sync::Arc<dyn payments::PaymentProvider>,
     pub otp_provider: std::sync::Arc<dyn otp::OtpProvider>,
     pub otp_hmac_secret: SecretString,
@@ -109,7 +109,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         db,
         jwt_secret: config.jwt_secret.clone(),
         webhook_secret: config.webhook_secret.clone(),
-        wallet_encryption_key: std::sync::Arc::new(zeroize::Zeroizing::new(wallet_encryption_key)),
+        wallet_encryption_key: std::sync::Arc::new(SecretBytes::new(wallet_encryption_key)),
         // Hand the secret over as a `SecretString` rather than unwrapping it to
         // a bare `String`: the plaintext never exists as a loggable value
         // between the environment and `bearer_auth`.
@@ -169,7 +169,15 @@ pub fn router(state: AppState) -> axum::Router {
                 .patch(api::me::update)
                 .delete(api::me::delete),
         )
-        .route("/merchants/me", axum::routing::get(api::merchants::get))
+        .route(
+            "/merchants/me",
+            axum::routing::get(api::merchants::get).patch(api::merchants::update),
+        )
+        .route(
+            "/merchants/me/email/confirm",
+            axum::routing::post(api::merchants::confirm_email),
+        )
+        .route("/users/me", axum::routing::patch(api::me::update))
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))
         .route("/balance", axum::routing::get(api::balances::get))
@@ -262,7 +270,7 @@ mod cors_tests {
             db,
             jwt_secret: SecretString::new("test-jwt-secret".to_string()),
             webhook_secret: SecretString::new("test-webhook-secret".to_string()),
-            wallet_encryption_key: std::sync::Arc::new(zeroize::Zeroizing::new([0u8; 32])),
+            wallet_encryption_key: std::sync::Arc::new(SecretBytes::new([0u8; 32])),
             payment_provider: std::sync::Arc::new(payments::paystack::PaystackProvider::new(
                 "test-paystack-key".to_string(),
             )),

@@ -382,6 +382,76 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /users/me:
+    patch:
+      tags: [Auth]
+      summary: Update the signed-in user's name (alias of PATCH /me)
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                phone_number: { type: string }
+      responses:
+        '200': { description: Updated profile }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /merchants/me:
+    patch:
+      tags: [Merchants]
+      summary: Update the merchant's business name and/or email
+      description: >
+        A new `name` (trimmed, 1–100 characters) applies immediately. A new
+        `email` is held as `pending_email` until confirmed with the token sent
+        to that address via `POST /merchants/me/email/confirm` (valid 30 minutes).
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Updated merchant profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MerchantProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /merchants/me/email/confirm:
+    post:
+      tags: [Merchants]
+      summary: Confirm a pending merchant email change
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Email changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MerchantProfile' }
+        '400':
+          description: OTP_INVALID — token is wrong, expired, or no change is pending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /wallet/create:
     post:
       tags: [Wallet]
@@ -1242,6 +1312,13 @@ components:
           schema: { $ref: '#/components/schemas/ApiError' }
 
   schemas:
+    MerchantProfile:
+      type: object
+      properties:
+        merchant_id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, nullable: true }
+        pending_email: { type: string, nullable: true }
     ApiError:
       type: object
       required: [error, code]

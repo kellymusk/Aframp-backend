@@ -46,6 +46,36 @@ impl AsRef<str> for SecretString {
     }
 }
 
+/// Fixed-size secret key material (e.g. the wallet AES-256 key). Zeroed on
+/// drop, and like [`SecretString`] its `Debug` output is `[REDACTED]`, so the
+/// raw bytes can't reach a log line or panic message via `{:?}`.
+#[derive(Clone)]
+pub struct SecretBytes<const N: usize>(zeroize::Zeroizing<[u8; N]>);
+
+impl<const N: usize> SecretBytes<N> {
+    pub fn new(bytes: [u8; N]) -> Self {
+        SecretBytes(zeroize::Zeroizing::new(bytes))
+    }
+
+    pub fn expose(&self) -> &[u8; N] {
+        &self.0
+    }
+}
+
+impl<const N: usize> fmt::Debug for SecretBytes<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl<const N: usize> std::ops::Deref for SecretBytes<N> {
+    type Target = [u8; N];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Which SMS backend delivers OTP codes. `Mock` logs the code instead of
 /// sending it (see `otp::mock`), so local dev never needs live Termii
 /// credentials — the walkthrough in the OTP plan runs entirely on `Mock`.
@@ -367,6 +397,14 @@ fn flag(name: &str, default: bool) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_bytes_debug_redacts_key_material() {
+        let key = SecretBytes::new([0xABu8; 32]);
+        let debug_str = format!("{key:?}");
+        assert_eq!(debug_str, "[REDACTED]");
+        assert_eq!(key.expose(), &[0xABu8; 32]);
+    }
 
     #[test]
     fn number_parses_with_default() {
