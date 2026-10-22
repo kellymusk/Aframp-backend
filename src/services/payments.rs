@@ -188,46 +188,36 @@ pub async fn payments_by_merchant_range(
 
 /// Keyset-paginated variant of [`payments_by_merchant`]. Orders by
 /// `(created_at, id)` DESC so concurrent inserts can't shift rows across
-/// pages the way an OFFSET-based scan can.
+/// pages the way an OFFSET-based scan can. `asset` and `status` are optional
+/// filters; they are applied in the same WHERE clause as the keyset predicate
+/// so pagination stays correct when filtering.
 pub async fn payments_by_merchant_cursor(
     db: &PgPool,
     merchant_id: Uuid,
     limit: i64,
     cursor: Option<crate::pagination::Cursor>,
+    asset: Option<&str>,
+    status: Option<&str>,
 ) -> Result<Vec<Payment>, sqlx::Error> {
-    match cursor {
-        Some(c) => {
-            sqlx::query_as::<_, Payment>(
-                "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
-                        network, status, confirmations, created_at, updated_at
-                   FROM payments
-                  WHERE merchant_id = $1
-                    AND (created_at, id) < ($2, $3)
-                  ORDER BY created_at DESC, id DESC
-                  LIMIT $4",
-            )
-            .bind(merchant_id)
-            .bind(c.created_at)
-            .bind(c.id)
-            .bind(limit + 1)
-            .fetch_all(db)
-            .await
-        }
-        None => {
-            sqlx::query_as::<_, Payment>(
-                "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
-                        network, status, confirmations, created_at, updated_at
-                   FROM payments
-                  WHERE merchant_id = $1
-                  ORDER BY created_at DESC, id DESC
-                  LIMIT $2",
-            )
-            .bind(merchant_id)
-            .bind(limit + 1)
-            .fetch_all(db)
-            .await
-        }
-    }
+    sqlx::query_as::<_, Payment>(
+        "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                network, status, confirmations, created_at, updated_at
+           FROM payments
+          WHERE merchant_id = $1
+            AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3::uuid))
+            AND ($4::text IS NULL OR asset = $4)
+            AND ($5::text IS NULL OR status = $5)
+          ORDER BY created_at DESC, id DESC
+          LIMIT $6",
+    )
+    .bind(merchant_id)
+    .bind(cursor.as_ref().map(|c| c.created_at))
+    .bind(cursor.as_ref().map(|c| c.id))
+    .bind(asset)
+    .bind(status)
+    .bind(limit + 1)
+    .fetch_all(db)
+    .await
 }
 
 #[tracing::instrument(skip_all, err, fields(payment_id = %id))]

@@ -616,6 +616,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
+        - name: asset
+          in: query
+          required: false
+          description: Only return payments in this asset (exact match, e.g. XLM, cNGN).
+          schema: { type: string }
+        - name: status
+          in: query
+          required: false
+          description: Only return payments with this status. Unknown values return 400 INVALID_PARAMETERS.
+          schema:
+            type: string
+            enum: [detected, verified, confirmed, failed]
       responses:
         '200':
           description: Payments, newest first

@@ -4,6 +4,7 @@ Everything documented here is implemented and covered by integration tests again
 
 - **Base URL (dev):** `http://127.0.0.1:3000`
 - **Content type:** `application/json` on every request with a body
+- **Request body limit:** 64KB (65,536 bytes) by default, configurable server-side via `MAX_REQUEST_BODY_BYTES`. Larger bodies are rejected with `413 Payload Too Large` before reaching any handler. Every current endpoint needs well under 1KB.
 - **Machine-readable spec:** [`openapi.yaml`](openapi.yaml) — generate a typed client from it rather than hand-writing calls
 
 ---
@@ -627,7 +628,7 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 `available` is withdrawable; `pending` is detected but not yet confirmed. In practice `pending` is almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet).
 
 ### `GET /transactions`
-Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200) and `?cursor=` (see [Pagination](#pagination)). The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:
+Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200), `?cursor=` (see [Pagination](#pagination)), and the optional filters `?asset=` (exact match, e.g. `XLM` or `cNGN`) and `?status=` (`detected`, `verified`, `confirmed` or `failed`; anything else is `400 INVALID_PARAMETERS`). Filters combine with pagination: keep sending the same `asset`/`status` alongside each `cursor`. The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:
 
 **Supports `ETag`/`If-None-Match`.** Same as `GET /payment-requests` above — send the last `ETag` back as `If-None-Match` to get `304 Not Modified` when nothing changed.
 

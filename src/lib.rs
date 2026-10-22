@@ -14,7 +14,7 @@ pub mod services;
 pub mod validation;
 
 pub use auth::cookie::{CookieConfig, SameSite};
-pub use config::{AppConfig, OtpProviderKind, SecretString};
+pub use config::{AppConfig, OtpProviderKind, SecretString, DEFAULT_MAX_REQUEST_BODY_BYTES};
 
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::sync::broadcast;

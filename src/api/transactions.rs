@@ -14,12 +14,40 @@ use crate::pagination::{Cursor, Page};
 use crate::services::payments;
 use crate::AppState;
 
+/// Payment statuses accepted by the `status` filter on `GET /transactions`.
+pub const TRANSACTION_STATUSES: [&str; 4] = ["detected", "verified", "confirmed", "failed"];
+
+#[derive(Deserialize)]
+pub struct TransactionListParams {
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+    pub asset: Option<String>,
+    pub status: Option<String>,
+}
+
 pub async fn list(
     State(state): State<AppState>,
     auth: AuthUser,
-    Query(params): Query<ListParams>,
+    Query(query): Query<TransactionListParams>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    let asset = match query.asset.as_deref().map(str::trim) {
+        Some("") => return Err(bad_request(ErrorCode::InvalidParameters, "asset must not be empty")),
+        other => other,
+    };
+    let status = match query.status.as_deref().map(str::trim) {
+        Some(s) if !TRANSACTION_STATUSES.contains(&s) => {
+            return Err(bad_request(
+                ErrorCode::InvalidParameters,
+                "status must be one of detected, verified, confirmed, failed",
+            ))
+        }
+        other => other,
+    };
+    let params = ListParams {
+        limit: query.limit,
+        cursor: query.cursor.clone(),
+    };
     let merchant_id = auth
         .merchant_id
         .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
@@ -28,7 +56,7 @@ pub async fn list(
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,
     };
-    let payments = payments::payments_by_merchant_cursor(&state.db, merchant_id, limit, cursor)
+    let payments = payments::payments_by_merchant_cursor(&state.db, merchant_id, limit, cursor, asset, status)
         .await
         .map_err(internal)?;
     let page = Page::new(payments, limit, |p| Cursor {
