@@ -96,8 +96,20 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     )
     .bind(email)
     .fetch_optional(db)
-    .await?
-    .ok_or(UserError::InvalidCredentials)?;
+    .await?;
+
+    // Equalize response time between the "unknown email" and "wrong password"
+    // paths: when no user is found we still run a full Argon2 verification
+    // against a dummy hash (same parameters as real hashes) so the timing of
+    // the two failure modes is indistinguishable. This closes the username
+    // enumeration timing side-channel.
+    let user = match user {
+        Some(user) => user,
+        None => {
+            password::verify(password_raw, password::dummy_hash());
+            return Err(UserError::InvalidCredentials);
+        }
+    };
 
     // Check lockout before verifying the password — avoids leaking timing info
     // about whether a locked account's password is correct or not.

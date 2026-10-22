@@ -696,9 +696,9 @@ async fn admin_users_list_never_includes_password_hash() {
 
     let (status, users) = send(app.clone(), "GET", "/admin/users", Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "admin users failed: {users}");
-    let rows = users
+    let rows = users["data"]
         .as_array()
-        .expect("/admin/users should return an array");
+        .expect("/admin/users should return a page of rows");
     let current_admin = rows
         .iter()
         .find(|row| row["email"].as_str() == Some(email.as_str()))

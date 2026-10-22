@@ -6,7 +6,7 @@ mod error;
 mod etag;
 pub mod middleware;
 pub mod models;
-mod pagination;
+pub mod pagination;
 pub mod otp;
 pub mod payments;
 pub mod rotate_key;

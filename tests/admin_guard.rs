@@ -132,7 +132,8 @@ async fn admin_token_can_read_every_admin_list_route() {
     for path in ADMIN_LIST_ROUTES {
         let (status, json) = send(app.clone(), "GET", path, Some(&token), None).await;
         assert_eq!(status, StatusCode::OK, "admin should read GET {path}: {json}");
-        assert!(json.is_array(), "GET {path} should return a list: {json}");
+        assert!(json["data"].is_array(), "GET {path} should return a page: {json}");
+        assert!(json.get("next_cursor").is_some(), "GET {path} should carry next_cursor: {json}");
     }
 }
 

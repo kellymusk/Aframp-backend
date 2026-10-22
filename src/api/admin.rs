@@ -12,7 +12,8 @@ use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::auth::extractor::AdminUser;
-use crate::error::{internal, not_found, ApiResult, ErrorCode};
+use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
+use crate::pagination::{Cursor, Page};
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
     AdminWalletRow, AdminWithdrawalRow, ListParams, Merchant,
@@ -32,56 +33,90 @@ pub async fn users(
     State(state): State<AppState>,
     _admin: AdminUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AdminUserRow>>> {
-    let rows = admin::users(&state.db, params.admin_limit()).await.map_err(internal)?;
-    Ok(Json(rows))
+) -> ApiResult<Json<Page<AdminUserRow>>> {
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let page = admin::users(&state.db, params.admin_limit(), cursor)
+        .await
+        .map_err(internal)?;
+    Ok(Json(page))
 }
 
 pub async fn merchants(
     State(state): State<AppState>,
     _admin: AdminUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AdminMerchantRow>>> {
-    let rows = admin::merchants(&state.db, params.admin_limit()).await.map_err(internal)?;
-    Ok(Json(rows))
+) -> ApiResult<Json<Page<AdminMerchantRow>>> {
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let page = admin::merchants(&state.db, params.admin_limit(), cursor)
+        .await
+        .map_err(internal)?;
+    Ok(Json(page))
 }
 
 pub async fn wallets(
     State(state): State<AppState>,
     _admin: AdminUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AdminWalletRow>>> {
-    let rows = admin::wallets(&state.db, params.admin_limit()).await.map_err(internal)?;
-    Ok(Json(rows))
+) -> ApiResult<Json<Page<AdminWalletRow>>> {
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let page = admin::wallets(&state.db, params.admin_limit(), cursor)
+        .await
+        .map_err(internal)?;
+    Ok(Json(page))
 }
 
 pub async fn transactions(
     State(state): State<AppState>,
     _admin: AdminUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AdminTransactionRow>>> {
-    let rows = admin::transactions(&state.db, params.admin_limit()).await.map_err(internal)?;
-    Ok(Json(rows))
+) -> ApiResult<Json<Page<AdminTransactionRow>>> {
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let page = admin::transactions(&state.db, params.admin_limit(), cursor)
+        .await
+        .map_err(internal)?;
+    Ok(Json(page))
 }
 
 pub async fn withdrawals(
     State(state): State<AppState>,
     _admin: AdminUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AdminWithdrawalRow>>> {
-    let rows = admin::withdrawals(&state.db, params.admin_limit()).await.map_err(internal)?;
-    Ok(Json(rows))
+) -> ApiResult<Json<Page<AdminWithdrawalRow>>> {
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let page = admin::withdrawals(&state.db, params.admin_limit(), cursor)
+        .await
+        .map_err(internal)?;
+    Ok(Json(page))
 }
 
 pub async fn payment_requests(
     State(state): State<AppState>,
     _admin: AdminUser,
     Query(params): Query<ListParams>,
-) -> ApiResult<Json<Vec<AdminPaymentRequestRow>>> {
-    let rows = admin::payment_requests(&state.db, params.admin_limit())
+) -> ApiResult<Json<Page<AdminPaymentRequestRow>>> {
+    let cursor = match params.cursor.as_deref() {
+        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        None => None,
+    };
+    let page = admin::payment_requests(&state.db, params.admin_limit(), cursor)
         .await
         .map_err(internal)?;
-    Ok(Json(rows))
+    Ok(Json(page))
 }
 
 /// Server-Sent Events stream of live admin activity. Protected by `AdminUser`,

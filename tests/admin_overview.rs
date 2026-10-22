@@ -76,8 +76,40 @@ async fn admin_merchants_lists_multi_wallet_merchant_once() {
         .await
         .expect("insert second wallet");
 
-    let rows = aframp::services::admin::merchants(&state.db, 1000)
+    let rows = aframp::services::admin::merchants(&state.db, 200, None)
         .await
         .expect("admin merchants");
-    assert_eq!(rows.iter().filter(|r| r.id == merchant_id).count(), 1);
+    assert_eq!(rows.data.iter().filter(|r| r.id == merchant_id).count(), 1);
+}
+
+/// Admin lists are keyset-paginated: following `next_cursor` walks every row
+/// exactly once, newest first.
+#[tokio::test]
+async fn admin_merchants_pages_without_overlap() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    for i in 0..3 {
+        common::ensure_merchant(&app, &format!("admin_paging_{i}")).await;
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let page = aframp::services::admin::merchants(&state.db, 2, cursor)
+            .await
+            .expect("admin merchants page");
+        assert!(page.data.len() <= 2);
+        for row in &page.data {
+            assert!(seen.insert(row.id), "merchant {} appeared on two pages", row.id);
+        }
+        pages += 1;
+        match page.next_cursor {
+            Some(raw) => cursor = Some(aframp::pagination::Cursor::decode(&raw).expect("valid cursor")),
+            None => break,
+        }
+    }
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM merchants").fetch_one(&state.db).await.unwrap();
+    assert_eq!(seen.len() as i64, total, "paging must visit every merchant");
+    assert!(pages >= 2);
 }

@@ -466,7 +466,7 @@
     merchants: {
       label: "Merchants",
       async load() {
-        const rows = await api("/admin/merchants");
+        const rows = (await api("/admin/merchants")).data;
         return panel("Merchants", table(rows, [
           { label: "Name", key: "name" },
           { label: "Owner email", key: "owner_email" },
@@ -479,7 +479,7 @@
     users: {
       label: "Users",
       async load() {
-        const rows = await api("/admin/users");
+        const rows = (await api("/admin/users")).data;
         return panel("Users", table(rows, [
           { label: "Email", key: "email" },
           { label: "Name", key: "name" },
@@ -492,7 +492,7 @@
     wallets: {
       label: "Wallets",
       async load() {
-        const rows = await api("/admin/wallets");
+        const rows = (await api("/admin/wallets")).data;
         return panel("Wallets", table(rows, [
           { label: "Merchant", key: "merchant_name" },
           { label: "Address", render: (r) => `<span class="mono">${short(r.address, 20)}</span>` },
@@ -504,7 +504,7 @@
     transactions: {
       label: "Transactions",
       async load() {
-        const rows = await api("/admin/transactions");
+        const rows = (await api("/admin/transactions")).data;
         return panel("Deposits / transactions", table(rows, [
           { label: "Merchant", key: "merchant_name" },
           { label: "Amount", render: (r) => fmtAmount(r.amount_stroops, r.asset) },
@@ -518,7 +518,7 @@
     withdrawals: {
       label: "Withdrawals",
       async load() {
-        const rows = await api("/admin/withdrawals");
+        const rows = (await api("/admin/withdrawals")).data;
         return panel("Withdrawals", table(rows, [
           { label: "Merchant", key: "merchant_name" },
           { label: "Amount", render: (r) => fmtAmount(r.amount_stroops, r.asset) },
@@ -533,7 +533,7 @@
     "payment-requests": {
       label: "Payment Requests",
       async load() {
-        const rows = await api("/admin/payment-requests");
+        const rows = (await api("/admin/payment-requests")).data;
         return panel("Payment requests", table(rows, [
           { label: "Merchant", key: "merchant_name" },
           { label: "Amount", render: (r) => fmtAmount(r.amount_stroops, r.asset) },
