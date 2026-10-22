@@ -63,6 +63,37 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 
 See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider choice, cNGN issuer sourcing, confirmation policy) and roadmap.
 
+## Settlement/sweep wallet architecture
+
+`STELLAR_SYSTEM_WALLET_ADDRESS` is a required environment variable that is validated at startup, but **no code path uses it yet**. This section explains what it is for so contributors do not remove it thinking it is dead code.
+
+### What the sweep wallet is for
+
+Today every merchant has their own Stellar wallet. Deposits land directly into that wallet and are reflected in the merchant's balance. Withdrawals are sent from the platform's Paystack account. There is currently no automated bridge between the two rails — the crypto side and the fiat side are separate.
+
+The `STELLAR_SYSTEM_WALLET_ADDRESS` is the address of a **platform-owned Stellar wallet** that will act as the settlement/sweep point. When the sweep feature is built, funds will move:
+
+```
+merchant Stellar wallet → platform sweep wallet → Paystack → merchant bank account
+```
+
+### Planned sweep flow
+
+1. The deposit-detection worker detects a confirmed deposit into a merchant wallet.
+2. A sweep transaction moves the funds (XLM or cNGN) from the merchant wallet to the platform sweep wallet, signed with the merchant wallet's encrypted secret key.
+3. The platform now holds the funds on its own Stellar address.
+4. The fiat conversion pipeline (cNGN issuer redemption or XLM → NGN via an exchange) converts the Stellar balance to NGN.
+5. Paystack's balance is topped up with the NGN equivalent.
+6. Merchant withdrawal requests draw from Paystack's funded balance.
+
+### Current state
+
+Step 2 onwards is not implemented. `STELLAR_SYSTEM_WALLET_ADDRESS` is parsed and validated at startup (a startup-time check that the configured value is a valid Stellar `G...` address) so a misconfigured key is caught early rather than silently ignored. It is stored in `AppState` via `config.stellar_system_wallet` but no service reads it.
+
+**Do not remove this variable or the startup validation.** It is an intentional placeholder for a known upcoming feature, not dead code.
+
+<!-- TODO(#1272): wire STELLAR_SYSTEM_WALLET_ADDRESS into the sweep service once the fiat pipeline is ready. See docs/proposals/ for the sweep architecture. -->
+
 ## How it actually works today
 
 - A merchant signs up (`/signup`) and creates a wallet (`/wallet/create`), which generates a real Stellar keypair. The public address is returned; the private key is encrypted and stored server-side — this is a **custodial** design, not "bring your own wallet."
