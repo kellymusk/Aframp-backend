@@ -459,6 +459,11 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
     if frac.len() > 7 {
         return Err(format!("unexpected precision in amount: {amount}"));
     }
+    // Both parts must be plain digits: `str::parse` would otherwise accept a
+    // sign, so "1.-5" would parse as 0.95 and "+5" as 5.
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("invalid amount: {amount}"));
+    }
     let frac_padded = format!("{frac:0<7}");
 
     // Parse the whole part as an unsigned 64-bit integer first so that a
@@ -483,6 +488,44 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_amount_never_panics(s in "[ -~]{0,30}") {
+            let _ = parse_amount_to_stroops(&s);
+        }
+
+        #[test]
+        fn parse_amount_accepts_only_unsigned_decimals(s in "[ -~]{0,30}") {
+            if parse_amount_to_stroops(&s).is_ok() {
+                let t = s.trim();
+                let (whole, frac) = t.split_once('.').unwrap_or((t, ""));
+                prop_assert!(!whole.is_empty() && whole.bytes().all(|b| b.is_ascii_digit()), "accepted {s:?}");
+                prop_assert!(frac.len() <= 7 && frac.bytes().all(|b| b.is_ascii_digit()), "accepted {s:?}");
+            }
+        }
+
+        #[test]
+        fn parse_amount_is_exact_for_seven_decimal_places(whole in 0_i64..=922_337_203_i64, frac in 0_u32..=9_999_999_u32) {
+            let input = format!("{whole}.{frac:07}");
+            prop_assert_eq!(parse_amount_to_stroops(&input), Ok(whole * 10_000_000 + i64::from(frac)));
+        }
+
+        #[test]
+        fn parse_amount_rejects_more_than_seven_decimal_places(whole in 0_i64..=999_i64, frac in 10_000_000_u64..=99_999_999_u64) {
+            let input = format!("{whole}.{frac}");
+            prop_assert!(parse_amount_to_stroops(&input).is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[test]
+    fn parse_amount_rejects_signs() {
+        for bad in ["1.-5", "-1", "+5", "1.+5", ".5", "-0.0000001"] {
+            assert!(parse_amount_to_stroops(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
+
     use super::*;
 
     #[test]
