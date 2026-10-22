@@ -103,6 +103,63 @@ Step 2 onwards is not implemented. `STELLAR_SYSTEM_WALLET_ADDRESS` is parsed and
 
 The originally-planned memo-based correlation model (one shared system wallet, deposits routed by transaction memo) was replaced with real per-merchant wallets during development — simpler to reason about and matches how a QR-code-per-merchant product actually needs to work.
 
+## Architecture
+
+How data flows from merchant signup to payment detection and payout (#1240).
+
+### Signup and OTP verification
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor M as Merchant
+    participant API as Aframp API (Axum)
+    participant DB as Postgres
+    participant SMS as OTP provider (Termii / mock)
+
+    M->>API: POST /signup (email, password, phone)
+    API->>DB: INSERT user + merchant, store HMAC(OTP)
+    API->>SMS: send_sms(phone, code)
+    SMS-->>M: SMS with 6-digit code
+    M->>API: POST /verify-otp (phone, code)
+    API->>DB: compare HMAC, mark phone verified
+    API-->>M: JWT (cookie / bearer)
+    M->>API: POST /wallet/create
+    API->>API: generate Stellar keypair
+    API->>DB: INSERT wallet (public address, AES-256-GCM encrypted seed)
+    API-->>M: wallet address
+```
+
+### Payment detection and withdrawal
+
+```mermaid
+flowchart LR
+    subgraph Merchant side
+        M[Merchant] -->|POST /payment-requests| API
+        API -->|destination + memo + QR| M
+    end
+
+    C[Customer] -->|scans QR, sends XLM| ST[(Stellar network)]
+
+    subgraph Background worker
+        W[Deposit worker<br/>every STELLAR_POLL_INTERVAL_SECS]
+    end
+
+    W -->|poll payments per wallet| HZ[Horizon API]
+    HZ --> ST
+    W -->|INSERT payment, credit pending| DB[(Postgres<br/>payments / balances)]
+    W -->|after STELLAR_MIN_CONFIRMATIONS:<br/>pending → available,<br/>mark request paid| DB
+
+    M -->|GET /balance| API[Aframp API]
+    API --> DB
+    M -->|POST /withdraw| API
+    API -->|debit available WHERE available >= amount| DB
+    API -->|create transfer| PS[Paystack]
+    PS -->|NGN payout| BANK[Merchant bank account]
+    PS -->|webhook: success / failed| API
+    API -->|on failure: refund via apply_delta| DB
+```
+
 ## Tech stack
 
 - **Rust** + [Axum](https://github.com/tokio-rs/axum) — HTTP API
