@@ -150,6 +150,11 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/login", axum::routing::post(api::auth::login))
         .route("/verify-otp", axum::routing::post(api::auth::verify_otp))
         .route("/logout", axum::routing::post(api::auth::logout))
+        .route("/verify-email", axum::routing::get(api::auth::verify_email))
+        .route(
+            "/verify-email/resend",
+            axum::routing::post(api::auth::resend_email_verification),
+        )
         .route("/auth/refresh", axum::routing::post(api::auth::refresh))
         .route(
             "/webhooks",

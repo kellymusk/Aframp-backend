@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod api_keys;
 pub mod balances;
+pub mod email_verification;
 pub mod bitcoin_rpc;
 pub mod login_rate_limit;
 pub mod merchant_webhooks;

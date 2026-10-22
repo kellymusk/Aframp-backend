@@ -199,3 +199,49 @@ fn login_rate_limited(retry_after_secs: i64) -> Response {
     )
         .into_response()
 }
+
+#[derive(serde::Deserialize)]
+pub struct VerifyEmailQuery {
+    pub token: String,
+}
+
+/// `GET /verify-email?token=...` — consumes a signup verification token and
+/// marks the account's email as verified. No auth: the token itself is the
+/// proof and is single-use / time-limited.
+pub async fn verify_email(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<VerifyEmailQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if query.token.trim().is_empty() {
+        return Err(bad_request_field("token", "must not be empty"));
+    }
+    match crate::services::email_verification::verify_token(&state.db, &query.token).await {
+        Ok(true) => Ok(Json(serde_json::json!({ "email_verified": true }))),
+        Ok(false) => Err(crate::error::bad_request(
+            ErrorCode::InvalidParameters,
+            "invalid or expired email verification token",
+        )),
+        Err(err) => Err(internal(err)),
+    }
+}
+
+/// `POST /verify-email/resend` — issues a fresh verification link for the
+/// authenticated account, replacing any outstanding token.
+pub async fn resend_email_verification(
+    State(state): State<AppState>,
+    Session(claims): Session,
+) -> ApiResult<Json<serde_json::Value>> {
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(claims.sub)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| crate::error::not_found(ErrorCode::UserNotFound, "account not found"))?;
+
+    let token = crate::services::email_verification::issue_token(&state.db, claims.sub)
+        .await
+        .map_err(internal)?;
+    crate::services::email_verification::send_verification_email(&email, &token);
+
+    Ok(Json(serde_json::json!({ "sent": true })))
+}
