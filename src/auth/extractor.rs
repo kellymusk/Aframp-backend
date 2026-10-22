@@ -48,7 +48,49 @@ impl FromRequestParts<AppState> for Session {
 /// also re-reads `users.is_admin`, so revoking admin access in the database
 /// takes effect on the very next request rather than when the token expires.
 #[derive(Debug, Clone)]
-pub struct AdminUser;
+pub struct AdminUser {
+    pub user_id: uuid::Uuid,
+    pub role: AdminRole,
+}
+
+/// Which slice of admin data an admin may see (`users.admin_role`). Read from
+/// the database on every request alongside `is_admin`, so a role change takes
+/// effect immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminRole {
+    SuperAdmin,
+    /// Money: overview totals, withdrawals.
+    Finance,
+    /// People: users, merchants and their contact details.
+    Support,
+}
+
+impl AdminRole {
+    /// An admin with no role recorded predates roles and keeps full access.
+    fn from_column(value: Option<&str>) -> Self {
+        match value {
+            Some("finance") => AdminRole::Finance,
+            Some("support") => AdminRole::Support,
+            _ => AdminRole::SuperAdmin,
+        }
+    }
+}
+
+impl AdminUser {
+    pub fn require_financials(&self) -> Result<(), (StatusCode, Json<ApiError>)> {
+        match self.role {
+            AdminRole::SuperAdmin | AdminRole::Finance => Ok(()),
+            AdminRole::Support => Err(forbidden(ErrorCode::Forbidden, "this admin role cannot view financial data")),
+        }
+    }
+
+    pub fn require_pii(&self) -> Result<(), (StatusCode, Json<ApiError>)> {
+        match self.role {
+            AdminRole::SuperAdmin | AdminRole::Support => Ok(()),
+            AdminRole::Finance => Err(forbidden(ErrorCode::Forbidden, "this admin role cannot view personal data")),
+        }
+    }
+}
 
 /// Extract the raw bearer token from the `Authorization` header, if present.
 fn bearer_token(parts: &Parts) -> Option<&str> {
@@ -183,15 +225,16 @@ impl FromRequestParts<AppState> for AdminUser {
         if !claims.is_admin {
             return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
         }
-        let still_admin: Option<bool> = sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
-            .bind(claims.sub)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(internal)?;
-        if still_admin != Some(true) {
+        let current: Option<(bool, Option<String>)> =
+            sqlx::query_as("SELECT is_admin, admin_role FROM users WHERE id = $1")
+                .bind(claims.sub)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(internal)?;
+        let Some((true, admin_role)) = current else {
             tracing::warn!(user_id = %claims.sub, "admin token presented after admin access was revoked");
             return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
-        }
+        };
         tracing::info!(admin_user_id = %claims.sub, path = %parts.uri.path(), "admin access");
         let ip = parts
             .extensions
@@ -210,6 +253,9 @@ impl FromRequestParts<AppState> for AdminUser {
         {
             tracing::warn!(error = %err, admin_user_id = %claims.sub, "failed to write admin audit row");
         }
-        Ok(AdminUser)
+        Ok(AdminUser {
+            user_id: claims.sub,
+            role: AdminRole::from_column(admin_role.as_deref()),
+        })
     }
 }

@@ -23,17 +23,19 @@ use crate::AppState;
 
 pub async fn overview(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
 ) -> ApiResult<Json<AdminOverview>> {
+    admin.require_financials()?;
     let overview = admin::overview(&state.db).await.map_err(internal)?;
     Ok(Json(overview))
 }
 
 pub async fn users(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminUserRow>>> {
+    admin.require_pii()?;
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,
@@ -46,9 +48,10 @@ pub async fn users(
 
 pub async fn merchants(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminMerchantRow>>> {
+    admin.require_pii()?;
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,
@@ -91,9 +94,10 @@ pub async fn transactions(
 
 pub async fn withdrawals(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminWithdrawalRow>>> {
+    admin.require_financials()?;
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
         None => None,

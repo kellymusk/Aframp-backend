@@ -160,3 +160,44 @@ async fn admin_dashboard_sends_security_headers() {
     assert_eq!(headers["x-frame-options"], "DENY");
     assert_eq!(headers["x-content-type-options"], "nosniff");
 }
+
+/// Gives the admin behind `token` the given `admin_role` (read per request).
+async fn set_admin_role(app: &axum::Router, db: &PgPool, token: &str, role: Option<&str>) {
+    let (_, me) = send(app.clone(), "GET", "/me", Some(token), None).await;
+    sqlx::query("UPDATE users SET admin_role = $2 WHERE id = $1::uuid")
+        .bind(me["user_id"].as_str().unwrap())
+        .bind(role)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+async fn status_of(app: &axum::Router, token: &str, path: &str) -> StatusCode {
+    send(app.clone(), "GET", path, Some(token), None).await.0
+}
+
+#[tokio::test]
+async fn admin_roles_gate_financial_and_personal_data() {
+    let (app, db) = app_and_db().await;
+
+    let support = admin_token(&app, &db).await;
+    set_admin_role(&app, &db, &support, Some("support")).await;
+    assert_eq!(status_of(&app, &support, "/admin/users").await, StatusCode::OK);
+    assert_eq!(status_of(&app, &support, "/admin/merchants").await, StatusCode::OK);
+    assert_eq!(status_of(&app, &support, "/admin/withdrawals").await, StatusCode::FORBIDDEN);
+    assert_eq!(status_of(&app, &support, "/admin/overview").await, StatusCode::FORBIDDEN);
+
+    let finance = admin_token(&app, &db).await;
+    set_admin_role(&app, &db, &finance, Some("finance")).await;
+    assert_eq!(status_of(&app, &finance, "/admin/withdrawals").await, StatusCode::OK);
+    assert_eq!(status_of(&app, &finance, "/admin/overview").await, StatusCode::OK);
+    assert_eq!(status_of(&app, &finance, "/admin/users").await, StatusCode::FORBIDDEN);
+    assert_eq!(status_of(&app, &finance, "/admin/merchants").await, StatusCode::FORBIDDEN);
+
+    // No role recorded (an admin from before roles) keeps full access.
+    let legacy = admin_token(&app, &db).await;
+    set_admin_role(&app, &db, &legacy, None).await;
+    for path in ["/admin/users", "/admin/withdrawals", "/admin/overview"] {
+        assert_eq!(status_of(&app, &legacy, path).await, StatusCode::OK, "{path}");
+    }
+}
