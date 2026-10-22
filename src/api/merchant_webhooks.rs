@@ -26,15 +26,22 @@ pub async fn create(
         )
     })?;
 
-    let webhook = merchant_webhooks::register(&state.db, merchant_id, &req.url)
-        .await
-        .map_err(|e| match e {
-            RegisterWebhookError::InvalidUrl => bad_request_field("url", &e.to_string()),
-            RegisterWebhookError::AlreadyRegistered => {
-                conflict(ErrorCode::InvalidParameters, &e.to_string())
-            }
-            RegisterWebhookError::Database(e) => internal(e),
-        })?;
+    let webhook = merchant_webhooks::register(
+        &state.db,
+        merchant_id,
+        &req.url,
+        state.webhook_allow_private_targets,
+    )
+    .await
+    .map_err(|e| match e {
+        RegisterWebhookError::InvalidUrl | RegisterWebhookError::PrivateTarget => {
+            bad_request_field("url", &e.to_string())
+        }
+        RegisterWebhookError::AlreadyRegistered => {
+            conflict(ErrorCode::InvalidParameters, &e.to_string())
+        }
+        RegisterWebhookError::Database(e) => internal(e),
+    })?;
     Ok(Json(webhook))
 }
 

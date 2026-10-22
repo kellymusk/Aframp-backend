@@ -136,6 +136,10 @@ pub struct AppConfig {
     /// `TRUST_PROXY_HEADERS`: set when a reverse proxy you control sits in
     /// front of the app and appends `X-Forwarded-For`. Off by default.
     pub trust_proxy_headers: bool,
+    /// `WEBHOOK_ALLOW_PRIVATE_TARGETS`: accept localhost/private webhook URLs.
+    /// Never enable in production: it lets merchants aim the backend at
+    /// internal services.
+    pub webhook_allow_private_targets: bool,
     /// Browser origins allowed to call this API. The merchant frontend is a
     /// separate origin, so without this every request fails CORS preflight.
     pub cors_allowed_origins: Vec<String>,
@@ -313,6 +317,7 @@ impl AppConfig {
                 .map(SecretString::new),
             cngn_issuer_address,
             trust_proxy_headers: flag("TRUST_PROXY_HEADERS", false)?,
+            webhook_allow_private_targets: flag("WEBHOOK_ALLOW_PRIVATE_TARGETS", false)?,
             cookie: CookieConfig {
                 secure: cookie_secure,
                 same_site: cookie_same_site,
@@ -672,6 +677,7 @@ mod tests {
                 termii_webhook_secret: Some(SecretString::new("termii-webhook-secret".to_string())),
                 cngn_issuer_address: None,
                 trust_proxy_headers: false,
+                webhook_allow_private_targets: false,
                 cors_allowed_origins: vec!["http://localhost:3001".to_string()],
                 cookie: CookieConfig {
                     secure: true,

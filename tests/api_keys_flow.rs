@@ -68,3 +68,30 @@ async fn malformed_or_unknown_api_key_is_rejected() {
     let (status, _) = send(app.clone(), "GET", "/me", Some(&unknown), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// Deleting the account revokes its API keys, as it does its sessions.
+#[tokio::test]
+async fn api_key_stops_working_after_account_deletion() {
+    let app = aframp::router(state().await);
+    let (token, _) = ensure_merchant(&app, "api_keys_deleted").await;
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/api-keys",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let key = created["secret"].as_str().unwrap().to_string();
+
+    let (status, _) = send(app.clone(), "DELETE", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _) = send(app.clone(), "GET", "/balance", Some(&key), None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a deleted account's key must not authenticate"
+    );
+}

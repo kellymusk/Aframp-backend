@@ -13,7 +13,6 @@ use axum::body::Body;
 use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt;
-use tower_http::cors::CorsLayer;
 
 use common::{ensure_merchant, state};
 
@@ -22,29 +21,14 @@ const ALLOWED_ORIGIN: &str = "http://localhost:3001";
 // An origin that is NOT in the allowlist.
 const BLOCKED_ORIGIN: &str = "http://evil.example.com";
 
-/// Builds an app with the same CorsLayer configuration as main.rs, wrapping
-/// the standard `aframp::router`.
+/// Builds an app with the production CORS layer (`aframp::cors_layer`, the
+/// one main.rs installs) around the standard `aframp::router`.
 fn cors_app(state: aframp::AppState, allowed_origins: &[&str]) -> Router {
     let origins: Vec<HeaderValue> = allowed_origins
         .iter()
         .map(|o| o.parse().expect("valid origin"))
         .collect();
-
-    let cors = CorsLayer::new()
-        .allow_origin(origins)
-        .allow_credentials(true)
-        // Mirrors main.rs: PATCH/DELETE are allowed proactively (#1249) so new
-        // endpoints using them don't silently fail preflight.
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::PATCH,
-            Method::DELETE,
-        ])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
-
-    aframp::router(state).layer(cors)
+    aframp::router(state).layer(aframp::cors_layer(origins))
 }
 
 /// Send an OPTIONS preflight request with the given `Origin` and
@@ -228,4 +212,39 @@ async fn preflight_allows_patch_and_delete_from_listed_origin() {
             "{method} missing from Access-Control-Allow-Methods: {allowed}"
         );
     }
+}
+
+/// Browsers on an allowed origin can send the withdrawal Idempotency-Key and
+/// If-None-Match, and read ETag/Retry-After from responses.
+#[tokio::test]
+async fn preflight_allows_idempotency_key_and_conditional_headers() {
+    let app = cors_app(state().await, &[ALLOWED_ORIGIN]);
+    let req = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/withdraw")
+        .header(header::ORIGIN, ALLOWED_ORIGIN)
+        .header("access-control-request-method", "POST")
+        .header(
+            "access-control-request-headers",
+            "content-type, idempotency-key, if-none-match",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let allowed = resp.headers()["access-control-allow-headers"]
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(allowed.contains("idempotency-key"), "{allowed}");
+    assert!(allowed.contains("if-none-match"), "{allowed}");
+
+    let (_, headers) = cross_origin_get(app, "/health", ALLOWED_ORIGIN, None).await;
+    let exposed = headers["access-control-expose-headers"]
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(
+        exposed.contains("etag") && exposed.contains("retry-after"),
+        "{exposed}"
+    );
 }

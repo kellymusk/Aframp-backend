@@ -128,6 +128,36 @@ async fn register_and_list_webhooks() {
 }
 
 #[tokio::test]
+async fn register_rejects_private_targets_by_default() {
+    let mut state = state().await;
+    state.webhook_allow_private_targets = false;
+    let app = aframp::router(state);
+    let (token, _) = ensure_merchant(&app, "webhook_private_target").await;
+
+    for url in [
+        "http://127.0.0.1:8080/hook",
+        "http://localhost/hook",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.5/hook",
+        "http://[::1]/hook",
+    ] {
+        let (status, json) = send(
+            app.clone(),
+            "POST",
+            "/webhooks",
+            Some(&token),
+            Some(json!({ "url": url })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{url} must be rejected: {json}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn dispatch_delivers_signed_payment_confirmed_event() {
     let state = state().await;
     let app = aframp::router(state.clone());

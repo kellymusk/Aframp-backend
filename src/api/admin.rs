@@ -87,9 +87,10 @@ pub async fn wallets(
 
 pub async fn transactions(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminTransactionRow>>> {
+    admin.require_financials()?;
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)
@@ -124,9 +125,10 @@ pub async fn withdrawals(
 
 pub async fn payment_requests(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminPaymentRequestRow>>> {
+    admin.require_financials()?;
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)

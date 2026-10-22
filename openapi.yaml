@@ -1180,6 +1180,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/AdminLimit'
         - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, finance]
       responses:
         '200':
           description: Transactions
@@ -1239,6 +1240,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/AdminLimit'
         - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, finance]
       responses:
         '200':
           description: Payment requests

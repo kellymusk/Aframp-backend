@@ -71,6 +71,9 @@ pub struct AppState {
     pub cngn_issuer: Option<std::sync::Arc<String>>,
     /// Take the client IP from `X-Forwarded-For` (see [`client_ip::client_ip`]).
     pub trust_proxy_headers: bool,
+    /// Let merchants register webhook URLs on localhost/private networks
+    /// (`WEBHOOK_ALLOW_PRIVATE_TARGETS`; for tests and local development only).
+    pub webhook_allow_private_targets: bool,
     /// Horizon base URL, probed by `GET /health/detailed`.
     pub stellar_horizon_url: std::sync::Arc<String>,
 }
@@ -138,6 +141,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         daily_withdrawal_limit_stroops: config.daily_withdrawal_limit_stroops,
         cngn_issuer: config.cngn_issuer_address.clone().map(std::sync::Arc::new),
         trust_proxy_headers: config.trust_proxy_headers,
+        webhook_allow_private_targets: config.webhook_allow_private_targets,
         stellar_horizon_url: std::sync::Arc::new(config.stellar_horizon_url.clone()),
     })
 }
@@ -156,7 +160,20 @@ pub fn cors_layer(origins: Vec<axum::http::HeaderValue>) -> tower_http::cors::Co
             Method::PATCH,
             Method::DELETE,
         ])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            // POST /withdraw retry safety.
+            header::HeaderName::from_static("idempotency-key"),
+            // ETag revalidation on the list endpoints.
+            header::IF_NONE_MATCH,
+        ])
+        // Browser JS can only read these response headers if exposed.
+        .expose_headers([
+            header::ETAG,
+            header::RETRY_AFTER,
+            header::HeaderName::from_static("x-request-id"),
+        ])
 }
 
 pub fn router(state: AppState) -> axum::Router {
@@ -335,6 +352,7 @@ mod cors_tests {
             daily_withdrawal_limit_stroops: None,
             cngn_issuer: None,
             trust_proxy_headers: false,
+            webhook_allow_private_targets: false,
             stellar_horizon_url: std::sync::Arc::new("http://127.0.0.1:9".to_string()),
         }
     }

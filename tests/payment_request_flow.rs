@@ -1096,3 +1096,53 @@ async fn payment_request_description_over_140_chars_is_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["field"], "description");
 }
+
+/// A deposit whose memo matches a request but in a different asset (XLM
+/// sent against a cNGN request) must not mark the request paid.
+#[tokio::test]
+async fn deposit_in_the_wrong_asset_does_not_pay_the_request() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "flow_wrong_asset").await;
+    let address = create_wallet_with_address(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 25_000_000, "asset": "cNGN" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let memo = created["memo"].as_str().unwrap().to_string();
+
+    let listener = MockBlockchainListener {
+        deposits: vec![DetectedDeposit {
+            tx_hash: format!("mock_tx_wrong_asset_{memo}"),
+            destination: address,
+            amount_stroops: 25_000_000,
+            asset: "XLM".into(),
+            confirmations: 1,
+            memo: Some(memo),
+        }],
+    };
+    poll_once(&state.db, &listener)
+        .await
+        .expect("poll_once failed");
+
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        fetched["status"], "pending",
+        "an XLM deposit must not settle a cNGN request"
+    );
+}

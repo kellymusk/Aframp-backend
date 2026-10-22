@@ -180,3 +180,46 @@ async fn invalid_paystack_signature_is_rejected_without_reconciliation() {
         .unwrap();
     assert_eq!(status, "pending");
 }
+
+/// A live transfer parked as `processing` (e.g. awaiting OTP) is still in
+/// flight: its later transfer.failed webhook must fail and refund it.
+#[tokio::test]
+async fn failure_webhook_refunds_a_processing_withdrawal() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (withdrawal_id, merchant_id) = pending_withdrawal(&state, &app, "webhook_processing").await;
+    sqlx::query("UPDATE withdrawals SET status = 'processing' WHERE id = $1")
+        .bind(withdrawal_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let payload = json!({
+        "event": "transfer.failed",
+        "data": {
+            "id": format!("evt_{}", uuid::Uuid::new_v4().simple()),
+            "reference": withdrawal_id,
+            "reason": "otp never completed"
+        }
+    });
+    let response = app.oneshot(signed_request(&payload, true)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM withdrawals WHERE id = $1")
+        .bind(withdrawal_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(status, "failed");
+    let balance: i64 = sqlx::query_scalar(
+        "SELECT available FROM balances WHERE merchant_id = $1 AND asset = 'cNGN'",
+    )
+    .bind(merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        balance, 5_000_000,
+        "a failed processing transfer must be refunded"
+    );
+}

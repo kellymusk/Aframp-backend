@@ -284,6 +284,17 @@ pub async fn create_withdrawal_idempotent(
             reference: w.id.to_string(),
         })
         .await;
+    // Paystack can accept the call yet report the transfer itself as failed
+    // or reversed. Nothing was paid out, so it takes the same refund path as
+    // a rejected call; recording it as a plain status would strand the debit
+    // (the refund only runs when it is the one marking the row failed).
+    let payout = match payout {
+        Ok(result) if result.status == "failed" => Err(format!(
+            "{} rejected the transfer (reference {})",
+            result.provider, result.provider_reference
+        )),
+        other => other,
+    };
 
     match payout {
         Ok(result) => {
@@ -526,7 +537,12 @@ pub async fn reconcile_withdrawal_status(
     }
 
     // Already terminal: nothing to do. Keeps duplicate deliveries idempotent.
-    if current.status != WithdrawalStatus::Pending {
+    // `processing` is still in flight (e.g. a live transfer awaiting OTP), so
+    // its terminal webhook must still settle or refund it.
+    if !matches!(
+        current.status,
+        WithdrawalStatus::Pending | WithdrawalStatus::Processing
+    ) {
         tx.rollback().await?;
         return Ok(Some(current));
     }
@@ -607,6 +623,8 @@ pub async fn withdrawals_by_merchant(
     .await
 }
 
+/// In-flight withdrawals (`pending`, or `processing` at the provider) created
+/// before `now - older_than`, oldest first, for reconciliation.
 pub async fn find_pending_withdrawals_older_than(
     db: &PgPool,
     older_than: chrono::Duration,
@@ -615,7 +633,7 @@ pub async fn find_pending_withdrawals_older_than(
     sqlx::query_as::<_, Withdrawal>(&format!(
         "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
-          WHERE status = 'pending'
+          WHERE status IN ('pending', 'processing')
             AND created_at <= $1
           ORDER BY created_at ASC",
     ))
@@ -642,7 +660,7 @@ pub async fn reconcile_single_withdrawal(
             sqlx::query(
                 "UPDATE withdrawals
                     SET provider = $2, provider_reference = $3, status = 'completed', updated_at = now()
-                  WHERE id = $1 AND status = 'pending'",
+                  WHERE id = $1 AND status IN ('pending', 'processing')",
             )
             .bind(w.id)
             .bind(&provider)
@@ -666,7 +684,7 @@ pub async fn reconcile_single_withdrawal(
             sqlx::query(
                 "UPDATE withdrawals
                     SET provider = $2, provider_reference = $3, status = 'processing', updated_at = now()
-                  WHERE id = $1 AND status = 'pending'",
+                  WHERE id = $1 AND status IN ('pending', 'processing')",
             )
             .bind(w.id)
             .bind(&provider)
@@ -688,7 +706,7 @@ pub async fn reconcile_single_withdrawal(
             sqlx::query(
                 "UPDATE withdrawals
                     SET provider = $2, provider_reference = $3, updated_at = now()
-                  WHERE id = $1 AND status = 'pending'",
+                  WHERE id = $1 AND status IN ('pending', 'processing')",
             )
             .bind(w.id)
             .bind(&provider)
@@ -713,7 +731,7 @@ pub async fn reconcile_single_withdrawal(
             let updated = sqlx::query(
                 "UPDATE withdrawals
                     SET provider = $2, provider_reference = $3, status = 'failed', failure_reason = $4, updated_at = now()
-                  WHERE id = $1 AND status = 'pending'",
+                  WHERE id = $1 AND status IN ('pending', 'processing')",
             )
             .bind(w.id)
             .bind(&provider)
@@ -756,7 +774,7 @@ pub async fn reconcile_single_withdrawal(
             let updated = sqlx::query(
                 "UPDATE withdrawals
                     SET status = 'failed', failure_reason = $2, updated_at = now()
-                  WHERE id = $1 AND status = 'pending'",
+                  WHERE id = $1 AND status IN ('pending', 'processing')",
             )
             .bind(w.id)
             .bind(&reason)

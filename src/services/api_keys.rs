@@ -158,7 +158,10 @@ pub async fn authenticate(
         "SELECT k.id AS api_key_id, k.merchant_id, m.user_id, k.secret_hash, k.environment
            FROM api_keys k
            JOIN merchants m ON m.id = k.merchant_id
-          WHERE k.key_prefix = $1 AND k.revoked_at IS NULL",
+           JOIN users u ON u.id = m.user_id
+          WHERE k.key_prefix = $1 AND k.revoked_at IS NULL
+            -- A deleted account's keys die with it, as its sessions do.
+            AND u.deleted_at IS NULL",
     )
     .bind(&key_prefix)
     .fetch_optional(db)

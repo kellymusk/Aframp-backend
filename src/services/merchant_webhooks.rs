@@ -32,6 +32,8 @@ pub struct MerchantWebhook {
 pub enum RegisterWebhookError {
     #[error("url must be an absolute http or https URL")]
     InvalidUrl,
+    #[error("url must point at a public address, not localhost or a private network")]
+    PrivateTarget,
     #[error("this webhook URL is already registered")]
     AlreadyRegistered,
     #[error(transparent)]
@@ -55,14 +57,105 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Whether `ip` is reachable on the public internet. Webhook URLs are
+/// merchant-supplied and the backend POSTs to them, so loopback, private,
+/// link-local (cloud metadata), CGNAT and similar ranges are refused.
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b)) // 100.64.0.0/10 CGNAT
+                || (a == 198 && (18..20).contains(&b))) // 198.18.0.0/15 benchmarking
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00 // fc00::/7 unique local
+                || (first & 0xffc0) == 0xfe80) // fe80::/10 link-local
+        }
+    }
+}
+
+/// DNS resolver for webhook delivery that only ever returns public addresses,
+/// so a hostname can't be pointed (or re-pointed) at an internal service
+/// after registration.
+pub struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|addr| is_public_ip(addr.ip()))
+                .collect();
+            if addrs.is_empty() {
+                return Err(
+                    format!("{} does not resolve to a public address", name.as_str()).into(),
+                );
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// HTTP client for delivering merchant webhooks: public addresses only, and
+/// redirects are not followed (a redirect could point anywhere).
+pub fn delivery_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
+        .build()
+        .expect("failed to build webhook HTTP client")
+}
+
+/// Registers `url` for the merchant. Unless `allow_private_targets` (tests,
+/// local development), the URL must not name localhost or a non-public IP.
+/// Hostnames are checked again at delivery by [`PublicOnlyResolver`].
 pub async fn register(
     db: &PgPool,
     merchant_id: Uuid,
     url: &str,
+    allow_private_targets: bool,
 ) -> Result<MerchantWebhook, RegisterWebhookError> {
     let parsed = reqwest::Url::parse(url.trim()).map_err(|_| RegisterWebhookError::InvalidUrl)?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
         return Err(RegisterWebhookError::InvalidUrl);
+    }
+    if !allow_private_targets {
+        // `host_str` keeps IPv6 brackets; strip them before parsing.
+        let host = parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let private = match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => !is_public_ip(ip),
+            Err(_) => {
+                let d = host.trim_end_matches('.').to_ascii_lowercase();
+                d == "localhost"
+                    || d.ends_with(".localhost")
+                    || d.ends_with(".internal")
+                    || d.ends_with(".local")
+            }
+        };
+        if private {
+            return Err(RegisterWebhookError::PrivateTarget);
+        }
     }
 
     sqlx::query_as::<_, MerchantWebhook>(
@@ -229,6 +322,33 @@ pub async fn deliver(
                     delay *= 2;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_public_ip;
+
+    #[test]
+    fn private_and_internal_addresses_are_not_public() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!is_public_ip(ip.parse().unwrap()), "{ip} must be refused");
+        }
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(is_public_ip(ip.parse().unwrap()), "{ip} is public");
         }
     }
 }

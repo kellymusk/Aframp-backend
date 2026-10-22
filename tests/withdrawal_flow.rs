@@ -1539,3 +1539,145 @@ async fn balance_cannot_be_written_negative() {
         "a negative available balance must be rejected"
     );
 }
+
+/// The provider accepts the call but reports the transfer itself as failed
+/// (Paystack's `failed`/`reversed`, mapped to `failed`).
+struct RejectedTransferProvider;
+
+#[async_trait]
+impl PaymentProvider for RejectedTransferProvider {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
+        Ok("Test Account Holder".into())
+    }
+
+    async fn create_payout(&self, req: &PayoutRequest) -> Result<PayoutResult, String> {
+        Ok(PayoutResult {
+            provider: "mock".into(),
+            provider_reference: format!("TRF_rejected_{}", req.reference),
+            status: "failed".into(),
+        })
+    }
+
+    async fn verify_payout(&self, _reference: &str) -> Result<PayoutVerification, String> {
+        Err("not used".into())
+    }
+}
+
+#[tokio::test]
+async fn withdrawal_rejected_by_provider_is_refunded() {
+    let mut state = state().await;
+    state.payment_provider = Arc::new(RejectedTransferProvider);
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "payout_rejected").await;
+    common::seed_balance(&state.db, &merchant_id, "cNGN", 5_000_000).await;
+
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
+    assert_eq!(json["code"], "PAYOUT_FAILED");
+    assert_eq!(
+        common::available_balance(&state.db, &merchant_id, "cNGN").await,
+        5_000_000,
+        "a transfer the provider rejected must be refunded"
+    );
+
+    let (_, list) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
+    let row = &list["data"][0];
+    assert_eq!(row["status"], "failed");
+    assert!(
+        row["failure_reason"]
+            .as_str()
+            .unwrap()
+            .contains("TRF_rejected_"),
+        "{row}"
+    );
+}
+
+/// `processing` withdrawals are in flight too, so the reconciler must pick
+/// them up and refund one the provider reports as failed.
+#[tokio::test]
+async fn reconciliation_refunds_a_failed_processing_withdrawal() {
+    let _reconcile = RECONCILE_LOCK.lock().await;
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (_, merchant_id) = ensure_merchant(&app, "reconcile_fail_processing").await;
+
+    // Seed balance after debit: 3,000,000 (was 5,000,000 before a 2,000,000 withdrawal)
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 3_000_000, 0)
+         ON CONFLICT (merchant_id, asset) DO UPDATE SET available = 3_000_000, pending = 0",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let withdrawal_id = uuid::Uuid::new_v4();
+    let past = chrono::Utc::now() - chrono::Duration::minutes(15);
+
+    sqlx::query(
+        "INSERT INTO withdrawals (id, merchant_id, amount_stroops, asset, status, bank_code, account_number, created_at, updated_at)
+         VALUES ($1, $2::uuid, 2_000_000, 'cNGN', 'processing', '058', '0123456789', $3, $3)",
+    )
+    .bind(withdrawal_id)
+    .bind(&merchant_id)
+    .bind(past)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let provider = MockVerificationProvider {
+        verification: PayoutVerification::Failed {
+            provider: "paystack".into(),
+            provider_reference: Some("TRF_test_failed_processing".into()),
+            reason: "Paystack transfer status: failed".into(),
+        },
+    };
+
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(&state.db, &provider)
+        .await
+        .unwrap();
+
+    assert!(report.failed_and_refunded >= 1, "{report:?}");
+
+    let row =
+        sqlx::query_as::<_, aframp::models::Withdrawal>("SELECT * FROM withdrawals WHERE id = $1")
+            .bind(withdrawal_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+
+    assert_eq!(row.status.as_str(), "failed");
+    assert_eq!(
+        row.failure_reason.as_deref(),
+        Some("Paystack transfer status: failed")
+    );
+
+    let balance = sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        balance, 5_000_000,
+        "balance must be refunded back to 5_000_000"
+    );
+}

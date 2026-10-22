@@ -178,12 +178,7 @@ async fn promote_and_notify(
 
 fn webhook_http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("failed to build webhook HTTP client")
-    })
+    CLIENT.get_or_init(merchant_webhooks::delivery_client)
 }
 
 /// Sizes above which a deposit is flagged for review (it is still credited).
@@ -300,7 +295,17 @@ pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), Stri
             .await
             .map_err(|e| e.to_string())?
         {
-            if payment.amount_stroops >= pr.amount_stroops {
+            if !same_asset(&payment.asset, &pr.asset) {
+                // The memo matches but the money doesn't: e.g. XLM sent against
+                // a cNGN request. The deposit is still credited to the merchant
+                // in the asset that arrived, but the request stays unpaid.
+                tracing::warn!(
+                    request_id = %pr.id,
+                    expected_asset = %pr.asset,
+                    actual_asset = %payment.asset,
+                    "deposit memo matches a payment request in a different asset; not correlating"
+                );
+            } else if payment.amount_stroops >= pr.amount_stroops {
                 payment_requests::mark_paid(db, pr.id, payment.id)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -319,6 +324,18 @@ pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), Stri
     }
 
     Ok(())
+}
+
+/// Requests may name native lumens as `XLM` or `native`; deposits use `XLM`.
+fn same_asset(deposit: &str, requested: &str) -> bool {
+    let normalize = |a: &str| {
+        if a.eq_ignore_ascii_case("native") {
+            "XLM".to_string()
+        } else {
+            a.to_string()
+        }
+    };
+    normalize(deposit) == normalize(requested)
 }
 
 #[cfg(test)]

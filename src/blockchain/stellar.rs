@@ -312,10 +312,15 @@ enum FetchResult {
 /// the former delivers funds via claimable balances (not payment ops), and the
 /// latter uses a `destination` field instead of `to`.
 ///
-/// When `cursor` is `None` (a wallet's first poll) the most recent 20
-/// operations are fetched. Once a cursor is known, only operations after it
-/// are fetched (ascending order), so already-processed payments are never
-/// re-fetched.
+/// Operations are always read oldest-first. On a wallet's first poll
+/// (`cursor` is `None`) that starts at the account's very first operation, so
+/// a wallet with a backlog of more than one page is caught up page by page on
+/// the following polls instead of having its older deposits skipped. Once a
+/// cursor is known only operations after it are fetched, so already-processed
+/// payments are never re-fetched.
+/// Horizon's maximum page size; a larger page catches up a backlog faster.
+const PAGE_LIMIT: u32 = 200;
+
 async fn fetch_for_address(
     http: &reqwest::Client,
     horizon_url: &str,
@@ -325,10 +330,10 @@ async fn fetch_for_address(
     let base = horizon_url.trim_end_matches('/');
     let url = match cursor {
         Some(cursor) => format!(
-            "{base}/accounts/{address}/payments?order=asc&cursor={cursor}&limit=20&include_failed=false&join=transactions"
+            "{base}/accounts/{address}/payments?order=asc&cursor={cursor}&limit={PAGE_LIMIT}&include_failed=false&join=transactions"
         ),
         None => format!(
-            "{base}/accounts/{address}/payments?order=desc&limit=20&include_failed=false&join=transactions"
+            "{base}/accounts/{address}/payments?order=asc&limit={PAGE_LIMIT}&include_failed=false&join=transactions"
         ),
     };
 
@@ -345,14 +350,13 @@ async fn fetch_for_address(
         .await
         .map_err(|e| e.to_string())?;
 
-    // The newest record's paging token becomes the next cursor: on the first
-    // poll (order=desc) that's the first record; once polling ascending from
-    // a cursor, it's the last one.
-    let next_cursor = match cursor {
-        Some(_) => page.embedded.records.last(),
-        None => page.embedded.records.first(),
-    }
-    .and_then(|r| r.paging_token.clone());
+    // Records are ascending, so the last one is the newest seen and becomes
+    // the next cursor. An empty page keeps the cursor where it was.
+    let next_cursor = page
+        .embedded
+        .records
+        .last()
+        .and_then(|r| r.paging_token.clone());
 
     let deposits = page
         .embedded
@@ -619,8 +623,9 @@ mod tests {
         assert!(peak <= 4, "concurrency limit exceeded: {peak}");
     }
 
-    /// #937 — the first poll records the newest paging token; later polls ask
-    /// Horizon only for operations after it (ascending).
+    /// #937 — the first poll reads from the account's oldest operation and
+    /// records the newest paging token; later polls ask Horizon only for
+    /// operations after it.
     #[tokio::test]
     async fn cursor_is_reported_and_used_on_the_next_poll() {
         use std::sync::{Arc, Mutex as StdMutex};
@@ -671,7 +676,7 @@ mod tests {
             .await
             .unwrap();
         let queries = seen.lock().unwrap().clone();
-        assert!(queries[0].contains("order=desc") && !queries[0].contains("cursor="));
+        assert!(queries[0].contains("order=asc") && !queries[0].contains("cursor="));
         assert!(queries[1].contains("order=asc") && queries[1].contains("cursor=200"));
     }
 

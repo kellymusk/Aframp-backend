@@ -59,7 +59,7 @@ pub struct AdminUser {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminRole {
     SuperAdmin,
-    /// Money: overview totals, withdrawals.
+    /// Money: overview totals, transactions, payment requests, withdrawals.
     Finance,
     /// People: users, merchants and their contact details.
     Support,
