@@ -31,12 +31,12 @@ const MEMO_ATTEMPTS: usize = 3;
 
 /// Columns selected for a [`PaymentRequest`] row.
 const PR_COLS: &str = "id, merchant_id, wallet_id, amount_stroops, asset, memo, status, payment_id,
-                       expires_at, cancelled_at, created_at, updated_at";
+                       expires_at, cancelled_at, created_at, updated_at, description";
 
 /// Columns selected for a [`PaymentRequestWithWallet`] row (`pr` joined to `w`).
 const PR_WALLET_COLS: &str = "pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
                               pr.status, pr.payment_id, pr.expires_at, pr.cancelled_at, pr.created_at,
-                              pr.updated_at, w.address, w.network";
+                              pr.updated_at, pr.description, w.address, w.network";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PaymentRequestError {
@@ -111,6 +111,7 @@ pub async fn create_payment_request(
     amount_stroops: i64,
     asset: String,
     expires_in_secs: Option<i64>,
+    description: Option<String>,
 ) -> Result<PaymentRequest, PaymentRequestError> {
     if amount_stroops <= 0 {
         return Err(PaymentRequestError::InvalidAmount);
@@ -127,8 +128,8 @@ pub async fn create_payment_request(
     loop {
         let memo = generate_memo();
         let result = sqlx::query_as::<_, PaymentRequest>(&format!(
-            "INSERT INTO payment_requests (merchant_id, wallet_id, amount_stroops, asset, memo, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO payment_requests (merchant_id, wallet_id, amount_stroops, asset, memo, expires_at, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING {PR_COLS}"
         ))
         .bind(merchant_id)
@@ -137,6 +138,7 @@ pub async fn create_payment_request(
         .bind(&asset)
         .bind(&memo)
         .bind(expires_at)
+        .bind(&description)
         .fetch_one(db)
         .await;
 
@@ -160,12 +162,13 @@ pub async fn create_payment_request_for_network(
     asset: String,
     network: String,
     expires_in_secs: Option<i64>,
+    description: Option<String>,
 ) -> Result<PaymentRequest, PaymentRequestError> {
     let wallet_id = wallet_by_merchant_and_network(db, merchant_id, &network)
         .await?
         .ok_or_else(|| PaymentRequestError::WalletNotFound(network.clone()))?;
 
-    create_payment_request(db, merchant_id, wallet_id, amount_stroops, asset, expires_in_secs).await
+    create_payment_request(db, merchant_id, wallet_id, amount_stroops, asset, expires_in_secs, description).await
 }
 
 /// A payment request joined with its wallet's address, so listing many doesn't
@@ -184,6 +187,7 @@ pub struct PaymentRequestWithWallet {
     pub cancelled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub description: Option<String>,
     pub address: String,
     pub network: String,
 }

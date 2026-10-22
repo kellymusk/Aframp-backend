@@ -4,6 +4,11 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+/// These bodies are per-merchant and carry state computed at read time (a
+/// request can expire between two reads), so no shared cache may store them
+/// and clients must revalidate with the ETag on every use.
+const REVALIDATE: &str = "private, no-cache";
+
 /// Serializes `body` to JSON, tags it with an ETag derived from a hash of the
 /// payload, and returns `304 Not Modified` (no body) when the request's
 /// `If-None-Match` already matches — sparing polling frontends the bandwidth
@@ -27,6 +32,7 @@ pub fn conditional_json<T: Serialize>(headers: &HeaderMap, body: &T) -> Response
         return HttpResponse::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(header::ETAG, etag)
+            .header(header::CACHE_CONTROL, REVALIDATE)
             .body(Body::empty())
             .expect("valid 304 response")
             .into_response();
@@ -35,6 +41,7 @@ pub fn conditional_json<T: Serialize>(headers: &HeaderMap, body: &T) -> Response
     HttpResponse::builder()
         .status(StatusCode::OK)
         .header(header::ETAG, etag)
+        .header(header::CACHE_CONTROL, REVALIDATE)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(payload))
         .expect("valid 200 response")

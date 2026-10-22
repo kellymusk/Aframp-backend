@@ -21,6 +21,7 @@ pub struct PaymentRequest {
     pub cancelled_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub description: Option<String>,
 }
 
 /// Parsed create-payment-request body. Built via [`Self::from_json`] so
@@ -31,7 +32,12 @@ pub struct CreatePaymentRequestRequest {
     pub amount_stroops: i64,
     pub asset: Option<String>,
     pub expires_in_secs: Option<i64>,
+    pub description: Option<String>,
 }
+
+/// Longest accepted payment request description, in characters. SEP-7 caps
+/// `msg` at 300; this leaves room for percent-encoding.
+pub const MAX_DESCRIPTION_CHARS: usize = 140;
 
 impl CreatePaymentRequestRequest {
     pub fn from_json(body: &Value) -> Result<Self, (&'static str, &'static str)> {
@@ -44,10 +50,21 @@ impl CreatePaymentRequestRequest {
             Some(Value::String(s)) => Some(s.clone()),
             Some(_) => return Err(("asset", "must be a string")),
         };
+        // Blank descriptions are treated as absent.
+        let description = match body.get("description") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.trim().is_empty() => None,
+            Some(Value::String(s)) if s.trim().chars().count() > MAX_DESCRIPTION_CHARS => {
+                return Err(("description", "must be at most 140 characters"))
+            }
+            Some(Value::String(s)) => Some(s.trim().to_string()),
+            Some(_) => return Err(("description", "must be a string")),
+        };
         Ok(Self {
             amount_stroops,
             asset,
             expires_in_secs,
+            description,
         })
     }
 }

@@ -859,3 +859,54 @@ async fn payment_request_without_wallet_returns_wallet_not_found_error() {
         "error should mention wallet: {json}"
     );
 }
+
+#[tokio::test]
+async fn payment_request_description_round_trips_into_sep7_msg() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_description").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000, "description": "  Table 5 & co  " })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    assert_eq!(created["description"], "Table 5 & co", "description is trimmed");
+    let uri = created["sep7_uri"].as_str().unwrap();
+    assert!(uri.ends_with("&msg=Table%205%20%26%20co"), "{uri}");
+
+    let id = created["id"].as_str().unwrap();
+    let (status, fetched, headers) =
+        common::send_with_response_headers(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched["description"], "Table 5 & co");
+    assert_eq!(headers["cache-control"], "no-cache");
+
+    let (_, _, headers) =
+        common::send_with_response_headers(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
+    assert_eq!(headers["cache-control"], "private, no-cache");
+}
+
+#[tokio::test]
+async fn payment_request_description_over_140_chars_is_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_description_long").await;
+    create_wallet(&app, &token).await;
+
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000, "description": "x".repeat(141) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["field"], "description");
+}

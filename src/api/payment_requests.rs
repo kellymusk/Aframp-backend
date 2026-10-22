@@ -33,6 +33,8 @@ pub struct PaymentRequestView {
     pub expires_at: DateTime<Utc>,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Optional merchant-defined description (e.g. "Table 5 order").
+    pub description: Option<String>,
     /// SEP-0007 payment URI a Stellar wallet can open directly to pay this
     /// request. `None` for credit assets we don't have a real issuer address
     /// configured for yet (see PRD §9.4) — we don't guess one.
@@ -95,6 +97,7 @@ pub async fn create(
         req.amount_stroops,
         asset,
         req.expires_in_secs,
+        req.description,
     )
     .await?;
 
@@ -104,7 +107,7 @@ pub async fn create(
 pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> ApiResult<Json<PaymentRequestView>> {
+) -> ApiResult<impl IntoResponse> {
     let pr = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
@@ -120,7 +123,12 @@ pub async fn get(
         .map_err(internal)?
         .ok_or_else(|| internal("payment request references a missing wallet"))?;
 
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
+    // Status is computed at read time, so a cached copy could show "pending"
+    // after the request expired: always revalidate.
+    Ok((
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))],
+        Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))),
+    ))
 }
 
 /// Renders the payment request's SEP-0007 URI as a PNG QR code so merchants
@@ -151,6 +159,7 @@ pub async fn qr(
         &pr.asset,
         &pr.memo,
         state.cngn_issuer.as_deref().map(String::as_str),
+        pr.description.as_deref(),
     )
         .ok_or_else(|| {
             bad_request(
@@ -386,7 +395,8 @@ fn to_view(
         expires_at: pr.expires_at,
         cancelled_at: pr.cancelled_at,
         created_at: pr.created_at,
-        sep7_uri: build_sep7_uri(address, pr.amount_stroops, &pr.asset, &pr.memo, cngn_issuer),
+        description: pr.description.clone(),
+        sep7_uri: build_sep7_uri(address, pr.amount_stroops, &pr.asset, &pr.memo, cngn_issuer, pr.description.as_deref()),
     }
 }
 
@@ -406,7 +416,8 @@ fn row_to_view(
         expires_at: row.expires_at,
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,
-        sep7_uri: build_sep7_uri(&row.address, row.amount_stroops, &row.asset, &row.memo, cngn_issuer),
+        description: row.description.clone(),
+        sep7_uri: build_sep7_uri(&row.address, row.amount_stroops, &row.asset, &row.memo, cngn_issuer, row.description.as_deref()),
     }
 }
 
@@ -420,6 +431,7 @@ fn build_sep7_uri(
     asset: &str,
     memo: &str,
     cngn_issuer: Option<&str>,
+    description: Option<&str>,
 ) -> Option<String> {
     let asset_params = match asset {
         "XLM" | "native" => String::new(),
@@ -434,12 +446,18 @@ fn build_sep7_uri(
         amount_stroops / 10_000_000,
         amount_stroops % 10_000_000
     );
+    // SEP-7 `msg` is shown to the payer by the wallet.
+    let msg = description
+        .filter(|d| !d.is_empty())
+        .map(|d| format!("&msg={}", percent_encode(d)))
+        .unwrap_or_default();
     Some(format!(
-        "web+stellar:pay?destination={}&amount={}{}&memo={}&memo_type=MEMO_TEXT",
+        "web+stellar:pay?destination={}&amount={}{}&memo={}&memo_type=MEMO_TEXT{}",
         percent_encode(address),
         percent_encode(&amount),
         asset_params,
         percent_encode(memo),
+        msg,
     ))
 }
 
@@ -491,7 +509,7 @@ mod tests {
 
     #[test]
     fn sep7_uri_encodes_special_characters_in_memo() {
-        let uri = build_sep7_uri("GABC", 10_000_000, "XLM", "a&b=c#d e", None).unwrap();
+        let uri = build_sep7_uri("GABC", 10_000_000, "XLM", "a&b=c#d e", None, None).unwrap();
         assert_eq!(
             uri,
             "web+stellar:pay?destination=GABC&amount=1.0000000&memo=a%26b%3Dc%23d%20e&memo_type=MEMO_TEXT"
@@ -501,7 +519,7 @@ mod tests {
 
     #[test]
     fn sep7_uri_cannot_gain_injected_params() {
-        let uri = build_sep7_uri("GABC", 1, "native", "x&destination=GEVIL", None).unwrap();
+        let uri = build_sep7_uri("GABC", 1, "native", "x&destination=GEVIL", None, None).unwrap();
         let params = query_params(&uri);
         let keys: Vec<&str> = params.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["destination", "amount", "memo", "memo_type"]);
@@ -511,7 +529,7 @@ mod tests {
     #[test]
     fn sep7_uri_round_trips_through_a_parser() {
         let memo = "pay #42 & tip = 5%";
-        let uri = build_sep7_uri("GDEST", 25_000_000, "XLM", memo, None).unwrap();
+        let uri = build_sep7_uri("GDEST", 25_000_000, "XLM", memo, None, None).unwrap();
         let params = query_params(&uri);
         assert_eq!(
             params,
@@ -526,13 +544,13 @@ mod tests {
 
     #[test]
     fn sep7_uri_is_none_for_non_native_assets() {
-        assert!(build_sep7_uri("GABC", 1, "cNGN", "m", None).is_none());
-        assert!(build_sep7_uri("GABC", 1, "USDC", "m", Some("GISSUER")).is_none());
+        assert!(build_sep7_uri("GABC", 1, "cNGN", "m", None, None).is_none());
+        assert!(build_sep7_uri("GABC", 1, "USDC", "m", Some("GISSUER"), None).is_none());
     }
 
     #[test]
     fn sep7_uri_for_cngn_names_the_configured_issuer() {
-        let uri = build_sep7_uri("GABC", 10_000_000, "cNGN", "m", Some("GISSUER")).unwrap();
+        let uri = build_sep7_uri("GABC", 10_000_000, "cNGN", "m", Some("GISSUER"), None).unwrap();
         let params = query_params(&uri);
         assert!(params.contains(&("asset_code".to_string(), "cNGN".to_string())));
         assert!(params.contains(&("asset_issuer".to_string(), "GISSUER".to_string())));
