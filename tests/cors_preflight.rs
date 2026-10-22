@@ -33,7 +33,15 @@ fn cors_app(state: aframp::AppState, allowed_origins: &[&str]) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(origins)
         .allow_credentials(true)
-        .allow_methods([Method::GET, Method::POST])
+        // Mirrors main.rs: PATCH/DELETE are allowed proactively (#1249) so new
+        // endpoints using them don't silently fail preflight.
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     aframp::router(state).layer(cors)
@@ -205,4 +213,23 @@ async fn get_me_from_unlisted_origin_has_no_acao_header() {
         "unlisted origin must not receive Access-Control-Allow-Origin; got: {:?}",
         headers.get("access-control-allow-origin")
     );
+}
+
+/// #1249 — PATCH and DELETE must pass preflight from a listed origin.
+#[tokio::test]
+async fn preflight_allows_patch_and_delete_from_listed_origin() {
+    let state = state().await;
+    for method in ["PATCH", "DELETE"] {
+        let app = cors_app(state.clone(), &[ALLOWED_ORIGIN]);
+        let (status, headers) = preflight(app, "/me", ALLOWED_ORIGIN, method).await;
+        assert!(status.is_success(), "{method} preflight failed: {status}");
+        let allowed = headers
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            allowed.contains(method),
+            "{method} missing from Access-Control-Allow-Methods: {allowed}"
+        );
+    }
 }

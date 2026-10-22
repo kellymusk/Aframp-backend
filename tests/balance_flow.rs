@@ -87,3 +87,25 @@ async fn pending_deposit_shows_pending_gt_zero_and_available_zero() {
     );
     assert_eq!(rows[0]["pending"], amount);
 }
+
+/// #1247 — target behaviour once the balance envelope lands in `src/`: a new
+/// merchant gets a zero entry for every supported asset plus the list itself.
+/// Ignored until then; see docs/proposals/1247-balance-supported-assets.md.
+#[tokio::test]
+#[ignore = "#1247 changes GET /balance from an array to an object; needs a coordinated frontend release"]
+async fn new_merchant_balance_lists_supported_assets() {
+    let state = state().await;
+    let app = aframp::router(state);
+    let (token, _) = ensure_merchant(&app, "bal_supported").await;
+
+    let (status, json) = send(app.clone(), "GET", "/balance", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "balance failed: {json}");
+    assert_eq!(json["supported_assets"], json!(["XLM", "cNGN"]));
+    let rows = json["balances"].as_array().expect("balances array");
+    assert_eq!(rows.len(), 2, "one zero entry per supported asset: {json}");
+    for (row, asset) in rows.iter().zip(["XLM", "cNGN"]) {
+        assert_eq!(row["asset"], asset);
+        assert_eq!(row["available"], 0);
+        assert_eq!(row["pending"], 0);
+    }
+}

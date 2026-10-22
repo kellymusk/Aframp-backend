@@ -44,7 +44,7 @@ Two things worth building for up front:
 
 ### CORS
 
-Browser origins must be allowlisted server-side via the `CORS_ALLOWED_ORIGINS` env var (comma-separated, defaults to `http://localhost:3001`). Allowed methods are `GET`/`POST`; allowed headers are `Authorization` and `Content-Type`. Credentials **are** enabled, so the origin list is never mirrored back — an origin that isn't listed fails preflight.
+Browser origins must be allowlisted server-side via the `CORS_ALLOWED_ORIGINS` env var (comma-separated, defaults to `http://localhost:3001`). Allowed methods are `GET`, `POST`, `PUT`, `PATCH` and `DELETE` (`PATCH`/`DELETE` are listed proactively so new endpoints don't fail preflight — see #1249); allowed headers are `Authorization` and `Content-Type`. Credentials **are** enabled, so the origin list is never mirrored back — an origin that isn't listed fails preflight.
 
 The supported deployment is **same-origin**: serve the frontend and this API behind one hostname (the reverse proxy routes `/api/*` here) and CORS stops applying at all. Cross-origin cookie auth additionally needs `COOKIE_SAME_SITE=none`, which lets the session ride cross-site requests and reintroduces CSRF as something you have to handle. With the default `SameSite=Lax`, a cross-origin frontend won't get the cookie sent at all and has to fall back to the bearer header.
 
@@ -645,6 +645,20 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 ```
 
 `available` is withdrawable; `pending` is detected but not yet confirmed. In practice `pending` is almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet).
+
+**Planned response envelope (#1247).** The supported assets are `XLM` and `cNGN`. The planned shape wraps the list so a new merchant sees a zero entry per supported asset instead of `[]`:
+
+```json
+{
+  "supported_assets": ["XLM", "cNGN"],
+  "balances": [
+    { "merchant_id": "6a91d75c-…", "asset": "XLM",  "available": 0, "pending": 0, "updated_at": null },
+    { "merchant_id": "6a91d75c-…", "asset": "cNGN", "available": 0, "pending": 0, "updated_at": null }
+  ]
+}
+```
+
+`updated_at` is `null` for a synthesized zero entry (no row exists yet). Until the server change lands (it touches protected `src/`), clients should treat a missing asset in today's array as a zero balance. See [`docs/proposals/1247-balance-supported-assets.md`](docs/proposals/1247-balance-supported-assets.md).
 
 ### `GET /transactions`
 Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200), `?cursor=` (see [Pagination](#pagination)), and the optional filters `?asset=` (exact match, e.g. `XLM` or `cNGN`) and `?status=` (`detected`, `verified`, `confirmed` or `failed`; anything else is `400 INVALID_PARAMETERS`). Filters combine with pagination: keep sending the same `asset`/`status` alongside each `cursor`. The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:

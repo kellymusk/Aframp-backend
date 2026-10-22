@@ -33,6 +33,14 @@ All 100 issues in this repo are fair game. Each one is grounded in a real gap, b
 5. Open a PR targeting `dev-backend`.
 6. CI must be green (guard + build + lint) before review.
 
+## Adding a new HTTP method
+
+The CORS layer in `src/main.rs` has an explicit `allow_methods` list. It already
+includes `GET`, `POST`, `PUT`, `PATCH` and `DELETE`. If you add an endpoint using
+any other method, update that list (and `tests/cors_preflight.rs`) in the same
+change — otherwise cross-origin browser requests fail preflight silently, which is
+hard to debug (#1249).
+
 ## Code review process
 
 There are **two independent layers** of review on `dev-backend`. Both must pass
