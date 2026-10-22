@@ -722,6 +722,105 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /analytics/payments:
+    get:
+      tags: [Analytics]
+      summary: Daily payment volume for the authenticated merchant
+      description: >
+        Returns daily aggregates of confirmed payments for the authenticated
+        merchant within the requested date range. Only payments with status
+        `confirmed` are included — `detected` and `verified` payments are
+        still in-flight and excluded. All timestamps and date keys are UTC.
+        Amounts are always integer stroops (1 XLM = 10,000,000 stroops).
+
+
+        **Default range:** last 30 days (today minus 29 days through today
+        inclusive, UTC).  Supply `from` and/or `to` to override.  At most
+        366 days may be requested in a single call; a wider window returns
+        400 INVALID_PARAMETERS.
+
+
+        **Implementation notes for the backend (issue #1266):**
+
+        - Query: `SELECT DATE(created_at AT TIME ZONE 'UTC') AS date, COUNT(*) AS
+          count, SUM(amount_stroops) AS total_stroops, asset FROM payments WHERE
+          merchant_id = $1 AND status = 'confirmed' AND created_at >= $2 AND
+          created_at < $3 GROUP BY 1, asset ORDER BY 1`.
+
+        - A DB index on `payments(merchant_id, status, created_at)` is required
+          to keep this query sub-millisecond at scale.
+
+        - Dates with zero activity are **omitted** from the response array
+          (sparse representation); clients must fill gaps themselves.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: >
+            Start date, inclusive. ISO 8601 calendar date (`YYYY-MM-DD`).
+            Interpreted as midnight UTC. Defaults to today minus 29 days.
+          schema:
+            type: string
+            format: date
+            example: '2026-09-19'
+        - name: to
+          in: query
+          required: false
+          description: >
+            End date, inclusive. ISO 8601 calendar date (`YYYY-MM-DD`).
+            Interpreted as 23:59:59.999 UTC. Defaults to today.
+          schema:
+            type: string
+            format: date
+            example: '2026-10-19'
+      responses:
+        '200':
+          description: Daily payment volume aggregates for the requested window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [from, to, data]
+                properties:
+                  from:
+                    type: string
+                    format: date
+                    description: Actual start date used (after defaulting), inclusive.
+                    example: '2026-09-19'
+                  to:
+                    type: string
+                    format: date
+                    description: Actual end date used (after defaulting), inclusive.
+                    example: '2026-10-19'
+                  data:
+                    type: array
+                    description: >
+                      Sparse list of days that had at least one confirmed payment.
+                      Ordered by `date` ascending.
+                    items:
+                      $ref: '#/components/schemas/DailyPaymentAggregate'
+              example:
+                from: '2026-09-19'
+                to: '2026-10-19'
+                data:
+                  - date: '2026-10-01'
+                    count: 3
+                    total_stroops: 30000000
+                    asset: XLM
+                  - date: '2026-10-03'
+                    count: 1
+                    total_stroops: 5000000
+                    asset: XLM
+        '400':
+          description: >
+            INVALID_PARAMETERS — malformed `from`/`to` date, `from` is after
+            `to`, or the window exceeds 366 days.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /withdraw:
     post:
       tags: [Money]
@@ -1466,6 +1565,36 @@ components:
           description: Currently always 0 — confirmation-depth tracking is not implemented. Do not display.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    DailyPaymentAggregate:
+      type: object
+      required: [date, count, total_stroops, asset]
+      description: >
+        Aggregated confirmed-payment statistics for a single calendar day and
+        asset. Days with no confirmed payments are omitted from the response
+        (sparse representation).
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar date of the aggregation bucket.
+          example: '2026-10-01'
+        count:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Number of confirmed payments on this date for this asset.
+          example: 3
+        total_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Sum of `amount_stroops` for all confirmed payments in this bucket.
+          example: 30000000
+        asset:
+          type: string
+          description: Asset code (e.g. `XLM`, `cNGN`).
+          example: XLM
 
     AnalyticsResponse:
       type: object

@@ -844,6 +844,54 @@ The `/admin` dashboard's login form uses the old one-step `/login` flow. If the 
 
 3. **The dashboard now handles the OTP step inline** — if `/login` returns a `challenge_id`, a code-entry form is shown automatically (see the updated `admin_dashboard.html`).
 
+### `GET /analytics/payments`
+
+Auth required. Returns daily confirmed-payment aggregates for the authenticated merchant.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `from` | ISO 8601 date (`YYYY-MM-DD`) | today − 29 days | Start date, inclusive (midnight UTC). |
+| `to`   | ISO 8601 date (`YYYY-MM-DD`) | today           | End date, inclusive (23:59:59 UTC). |
+
+The window may span at most **366 days**. A wider window returns `400 INVALID_PARAMETERS`.
+
+**Filters:** Only `status = confirmed` payments are counted. In-flight payments (`detected`, `verified`) are excluded.
+
+`200` → a sparse list of days that had at least one confirmed payment, ordered ascending:
+
+```json
+{
+  "from": "2026-09-19",
+  "to": "2026-10-19",
+  "data": [
+    { "date": "2026-10-01", "count": 3, "total_stroops": 30000000, "asset": "XLM" },
+    { "date": "2026-10-03", "count": 1, "total_stroops":  5000000, "asset": "XLM" }
+  ]
+}
+```
+
+Days with no confirmed payments are **omitted** (sparse). Clients must fill date gaps themselves when rendering charts.
+
+Each item in `data`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `date` | string (`YYYY-MM-DD`) | UTC calendar date of the bucket. |
+| `count` | integer | Number of confirmed payments on this date for this asset. |
+| `total_stroops` | integer | Sum of `amount_stroops` for all confirmed payments in this bucket. |
+| `asset` | string | Asset code — `XLM`, `cNGN`, etc. |
+
+**Error responses:**
+
+| Status | Code | When |
+|--------|------|------|
+| `400` | `INVALID_PARAMETERS` | Malformed date, `from` after `to`, or window > 366 days. |
+| `401` | `INVALID_CREDENTIALS` | Missing or expired token. |
+
+---
+
 ## Not available yet
 
 Worth knowing before you design around them:
@@ -854,6 +902,6 @@ Worth knowing before you design around them:
 - **No rate limiting on the password check itself.** OTP sends are throttled (60s cooldown, 5/hour per phone), but nothing yet stops repeated wrong-password guesses against `/login` before it ever gets to that step.
 - **No cancel/delete on payment requests.** They can only expire naturally.
 - **`DELETE /payment-requests/{id}`** soft-cancels a request (sets `cancelled_at`). CORS allows `GET`/`POST`/`DELETE`.
-- **Merchant analytics** (`GET /analytics?period=7d|30d|90d`) is a proposed contract only and is not available until the endpoint is implemented. The proposed response includes daily confirmed-payment counts and volume by asset in stroops, paid requests created in the selected period, and a 0–1 paid-request success rate.
+- **Legacy analytics endpoint** (`GET /analytics?period=7d|30d|90d`) is a proposed contract only and is not currently served. See `GET /analytics/payments` for the implemented contract.
 - **cNGN QR codes**, pending a real issuer address.
 - **Completed payouts**, pending funding (see `PRD.md` §9.1).

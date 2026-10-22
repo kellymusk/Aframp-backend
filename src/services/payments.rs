@@ -378,3 +378,39 @@ pub async fn promote_confirmed(db: &PgPool, min_confirmations: i32) -> Result<Ve
     }
     Ok(promoted)
 }
+
+/// One UTC day's confirmed-payment totals for one asset.
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct DailyPaymentAggregate {
+    pub date: chrono::NaiveDate,
+    pub count: i64,
+    pub total_stroops: i64,
+    pub asset: String,
+}
+
+/// Confirmed payments for `merchant_id` created in `[start, end)`, grouped by
+/// UTC calendar day and asset, oldest day first. Days with no payments are
+/// absent rather than zero-filled.
+pub async fn daily_confirmed_totals(
+    db: &PgPool,
+    merchant_id: Uuid,
+    start: chrono::DateTime<chrono::Utc>,
+    end: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<DailyPaymentAggregate>, sqlx::Error> {
+    sqlx::query_as::<_, DailyPaymentAggregate>(
+        "SELECT (created_at AT TIME ZONE 'UTC')::date AS date,
+                COUNT(*) AS count,
+                SUM(amount_stroops)::bigint AS total_stroops,
+                asset
+           FROM payments
+          WHERE merchant_id = $1 AND status = 'confirmed'
+            AND created_at >= $2 AND created_at < $3
+          GROUP BY 1, asset
+          ORDER BY 1, asset",
+    )
+    .bind(merchant_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(db)
+    .await
+}

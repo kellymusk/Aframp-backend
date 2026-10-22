@@ -173,6 +173,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))
         .route("/balance", axum::routing::get(api::balances::get))
+        .route("/analytics/payments", axum::routing::get(api::analytics::payments))
         .route("/transactions", axum::routing::get(api::transactions::list))
         .route(
             "/transactions/export",
