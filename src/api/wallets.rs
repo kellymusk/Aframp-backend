@@ -10,8 +10,14 @@ use crate::AppState;
 pub async fn create(
     State(state): State<AppState>,
     auth: AuthUser,
-    Json(req): Json<CreateWalletRequest>,
+    body: axum::body::Bytes,
 ) -> ApiResult<Json<Wallet>> {
+    // Every field is optional, so an empty body means "all defaults".
+    let req: CreateWalletRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        CreateWalletRequest { network: None }
+    } else {
+        serde_json::from_slice(&body).map_err(|_| bad_request(ErrorCode::InvalidParameters, "invalid JSON body"))?
+    };
     let merchant_id = auth.merchant_id.ok_or_else(|| {
         bad_request(
             ErrorCode::MerchantNotFound,
