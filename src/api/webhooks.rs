@@ -35,7 +35,7 @@ pub async fn termii(
         return Err(forbidden(ErrorCode::Forbidden, "invalid webhook signature"));
     }
 
-    match serde_json::from_slice::<TermiiWebhookEvent>(&body) {
+    let (event_type, message_id) = match serde_json::from_slice::<TermiiWebhookEvent>(&body) {
         Ok(event) => {
             tracing::info!(
                 message_id = event.message_id.as_deref().unwrap_or(""),
@@ -44,13 +44,44 @@ pub async fn termii(
                 channel = event.channel.as_deref().unwrap_or(""),
                 "termii webhook event"
             );
+            (event.status.unwrap_or_else(|| "unknown".into()), event.message_id)
         }
         Err(err) => {
             tracing::warn!(error = %err, body = %String::from_utf8_lossy(&body), "termii webhook: unrecognized payload shape");
+            ("unrecognized".to_string(), None)
         }
-    }
+    };
+    record_termii_event(&state, &body, &event_type, message_id.as_deref()).await;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Keeps a verified Termii callback in `webhook_events` as an audit record.
+/// One message gets a callback per status change, so the key is message id
+/// plus status (or the body's hash when there is no id); a retried delivery
+/// of the same callback is a no-op. Never fails the request: the provider
+/// would only retry a genuine event.
+async fn record_termii_event(state: &AppState, body: &[u8], event_type: &str, message_id: Option<&str>) {
+    use sha2::{Digest, Sha256};
+    let external_id = match message_id {
+        Some(id) => format!("{id}:{event_type}"),
+        None => format!("sha256:{}", hex::encode(Sha256::digest(body))),
+    };
+    let payload = serde_json::from_slice::<serde_json::Value>(body)
+        .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(body) }));
+    if let Err(err) = sqlx::query(
+        "INSERT INTO webhook_events (provider, external_id, event_type, payload)
+         VALUES ('termii', $1, $2, $3)
+         ON CONFLICT (provider, external_id) DO NOTHING",
+    )
+    .bind(&external_id)
+    .bind(event_type)
+    .bind(payload)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(error = %err, "failed to record termii webhook event");
+    }
 }
 
 /// Paystack transfer webhook (transfer.success / transfer.failed /

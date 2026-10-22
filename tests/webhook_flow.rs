@@ -139,3 +139,40 @@ async fn non_json_body_with_valid_signature_is_acknowledged() {
     let (status, body) = post_termii(&app, Some(MOCK_SIGNATURE), b"not json at all".to_vec()).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 }
+
+/// Verified Termii callbacks are kept in webhook_events; a retried delivery
+/// is recorded once, and a rejected (bad signature) one not at all.
+#[tokio::test]
+async fn verified_termii_callbacks_are_recorded_once() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let message_id = format!("msg-{}", uuid::Uuid::new_v4().simple());
+    let body = serde_json::to_vec(&json!({ "message_id": message_id, "status": "Delivered" })).unwrap();
+
+    for _ in 0..2 {
+        let (status, _) = post_termii(&app, Some(MOCK_SIGNATURE), body.clone()).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    let (status, _) = post_termii(&app, Some("forged"), body.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT external_id, event_type FROM webhook_events WHERE provider = 'termii' AND external_id LIKE $1",
+    )
+    .bind(format!("{message_id}:%"))
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![(format!("{message_id}:Delivered"), Some("Delivered".to_string()))]);
+
+    // A non-JSON body with a valid signature is still recorded (by hash).
+    let (status, _) = post_termii(&app, Some(MOCK_SIGNATURE), b"not json".to_vec()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let raw: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM webhook_events WHERE provider = 'termii' AND payload->>'raw' = 'not json'",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(raw, 1);
+}
