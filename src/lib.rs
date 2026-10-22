@@ -82,6 +82,7 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
     let db = PgPoolOptions::new()
         .max_connections(config.database_max_connections)
         .min_connections(config.database_min_connections)
+        .acquire_timeout(std::time::Duration::from_secs(config.database_acquire_timeout_secs.into()))
         .connect(&config.database_url)
         .await?;
     let wallet_encryption_key = blockchain::wallet_crypto::parse_key(config.wallet_encryption_key.as_str())?;

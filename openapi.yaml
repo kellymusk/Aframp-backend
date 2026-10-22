@@ -477,6 +477,16 @@ paths:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /payment-requests/{id}/status:
+    get:
+      tags: [Payment requests]
+      summary: Poll a payment request's status (public)
+      description: >
+        Lightweight alternative to GET /payment-requests/{id} for high-frequency
+        polling: returns only the id, status, and paid_at, not the full request
+        object. Public, like the parent endpoint. 'expired' is computed at read
+        time from expires_at; a request that expires and is then paid still flips
+        to 'paid'.
   /payment-requests/{id}/cancel:
     post:
       tags: [Payment requests]
@@ -513,6 +523,11 @@ paths:
         - name: id
           in: path
           required: true
+          description: Payment request id.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Payment request status
           schema: { type: string, format: uuid }
       responses:
         '200':
@@ -1091,11 +1106,21 @@ components:
 
     SignupRequest:
       type: object
+      description: Credentials for starting a signup. The account is not created until POST /verify-otp succeeds.
       required: [email, password, name, phone_number]
       properties:
         email:
           type: string
           format: email
+          description: Account email. Must be unique among verified accounts.
+        password:
+          type: string
+          minLength: 8
+          description: At least 8 characters.
+        name:
+          type: string
+          minLength: 1
+          description: Display name for the user and merchant.
           maxLength: 254
           description: RFC 5321 max length 254; local-part ≤ 64, domain ≤ 255.
         password: { type: string, minLength: 8 }
@@ -1107,17 +1132,29 @@ components:
 
     LoginRequest:
       type: object
+      description: Credentials for authenticating. A phone-verified account receives an OTP challenge instead of a session.
       required: [email, password]
       properties:
-        email: { type: string, format: email }
-        password: { type: string }
+        email:
+          type: string
+          format: email
+          description: Account email.
+        password:
+          type: string
+          description: Account password.
 
     VerifyOtpRequest:
       type: object
+      description: Completes a signup or login challenge and issues a session.
       required: [challenge_id, code]
       properties:
-        challenge_id: { type: string, format: uuid }
-        code: { type: string, description: 6-digit code. }
+        challenge_id:
+          type: string
+          format: uuid
+          description: Challenge id returned by /signup or /login.
+        code:
+          type: string
+          description: 6-digit code sent to the account's phone number.
 
     OtpChallengeResponse:
       type: object
@@ -1229,6 +1266,24 @@ components:
           format: int64
           default: 900
           description: Clamped server-side to 60-86400.
+
+    PaymentRequestStatus:
+      type: object
+      description: Lightweight status projection of a payment request, for polling.
+      required: [id, status, paid_at]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, paid, partial, expired]
+          description: >
+            'expired' is computed at read time from expires_at. A request that
+            expires and is then paid still flips to 'paid'.
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the request was fully paid; null while pending, partial, or expired.
 
     PaymentRequest:
       type: object

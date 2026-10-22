@@ -266,6 +266,38 @@ pub async fn ensure_merchant(app: &Router, seed: &str) -> (String, String) {
     )
 }
 
+/// Inserts (or resets) a real balance row for `merchant_id`/`asset`, so
+/// withdrawal tests can start from a known, non-zero available balance
+/// without going through the deposit-detection path.
+pub async fn seed_balance(db: &sqlx::PgPool, merchant_id: &str, asset: &str, available: i64) {
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending) \
+         VALUES ($1::uuid, $2, $3, 0) \
+         ON CONFLICT (merchant_id, asset) DO UPDATE \
+         SET available = EXCLUDED.available, pending = 0",
+    )
+    .bind(merchant_id)
+    .bind(asset)
+    .bind(available)
+    .execute(db)
+    .await
+    .expect("seeding balance failed");
+}
+
+/// Reads back the `available` column for `merchant_id`/`asset`, returning 0
+/// when no row exists yet.
+pub async fn available_balance(db: &sqlx::PgPool, merchant_id: &str, asset: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = $2",
+    )
+    .bind(merchant_id)
+    .bind(asset)
+    .fetch_optional(db)
+    .await
+    .expect("reading balance failed")
+    .unwrap_or(0)
+}
+
 /// Pulls the 6-digit code out of a mock-provider message body, ignoring
 /// surrounding punctuation (e.g. the trailing period after the code).
 pub fn extract_otp_code(message: &str) -> String {

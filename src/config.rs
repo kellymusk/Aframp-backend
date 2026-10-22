@@ -64,6 +64,8 @@ pub struct AppConfig {
     pub database_max_connections: u32,
     /// Connections kept warm so bursts don't pay full connect latency.
     pub database_min_connections: u32,
+    /// Seconds a request waits for a free pooled connection before failing.
+    pub database_acquire_timeout_secs: u32,
     pub bind_addr: String,
     pub jwt_secret: SecretString,
     pub webhook_secret: SecretString,
@@ -201,6 +203,7 @@ impl AppConfig {
 
         let database_max_connections = number("DATABASE_MAX_CONNECTIONS", 10)?;
         let database_min_connections = number("DATABASE_MIN_CONNECTIONS", 2)?;
+        let database_acquire_timeout_secs = number("DATABASE_ACQUIRE_TIMEOUT_SECS", 30)?;
         if database_max_connections == 0 {
             return Err("DATABASE_MAX_CONNECTIONS must be greater than 0".into());
         }
@@ -214,6 +217,7 @@ impl AppConfig {
             database_url: env("DATABASE_URL")?,
             database_max_connections,
             database_min_connections,
+            database_acquire_timeout_secs,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
             jwt_secret: secret("JWT_SECRET")?,
             webhook_secret: secret("WEBHOOK_SECRET")?,
@@ -515,6 +519,7 @@ mod tests {
                 database_url: "postgres://localhost".to_string(),
                 database_max_connections: 10,
                 database_min_connections: 2,
+                database_acquire_timeout_secs: 30,
                 bind_addr: "127.0.0.1:3000".to_string(),
                 jwt_secret: SecretString::new("jwt-secret-value".to_string()),
                 webhook_secret: SecretString::new("webhook-secret-value".to_string()),
