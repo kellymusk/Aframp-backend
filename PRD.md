@@ -137,7 +137,7 @@ No target numbers exist yet from the business side; these are proposed instrumen
 
 ## 12. Roadmap — near-term, ordered
 
-1. Settlement & payout pipeline: sweep merchant wallets → redeem cNGN via the issuer → last-mile payout via Paystack/Flutterwave (closes the "ledger says X, bank account has 0" gap — see §9.1)
+1. Settlement & payout pipeline: sweep merchant wallets → redeem cNGN via the issuer → last-mile payout via Paystack/Flutterwave (closes the "ledger says X, bank account has 0" gap — see §9.1). Full implementation plan in [`docs/settlement-sweep-wallet.md`](docs/settlement-sweep-wallet.md) (issue [#1276](https://github.com/kellymusk/Aframp-backend/issues/1276))
 2. Source a real cNGN issuer Stellar address (unblocks cNGN QR codes and cNGN-denominated payment requests — see §9.4)
 3. Confirmation-depth policy decision + implementation
 4. Cleanup: remove or repurpose `src/stellar/mod.rs`
