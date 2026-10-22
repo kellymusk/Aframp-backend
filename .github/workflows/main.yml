@@ -110,5 +110,5 @@ jobs:
 
       - name: Run cargo audit
         # --deny warnings fails the job on any advisory (high/critical included).
-        # Known false positives are ignored via cargo-audit.toml with justification.
+        # Known false positives are ignored via .cargo/audit.toml with justification.
         run: cargo audit --deny warnings
