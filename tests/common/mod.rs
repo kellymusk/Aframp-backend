@@ -335,3 +335,50 @@ pub fn extract_otp_code(message: &str) -> String {
         .expect("message should contain a 6-digit code")
         .to_string()
 }
+
+/// Substrings that must never appear in any API response body. `password_hash`
+/// is the serialized field name; `argon2` is the hashing algorithm prefix that
+/// would leak if a hash were ever embedded in a response.
+pub const SENSITIVE_MARKERS: [&str; 2] = ["password_hash", "argon2"];
+
+/// Authenticated `GET` endpoints that return user-scoped data. New endpoints
+/// should be added here so [`assert_authenticated_endpoints_clean`] covers them.
+pub const AUTHENTICATED_GET_ENDPOINTS: [&str; 8] = [
+    "/me",
+    "/merchants/me",
+    "/wallet",
+    "/balance",
+    "/transactions",
+    "/payment-requests",
+    "/withdrawals",
+    "/analytics/payments",
+];
+
+/// Panics if `body` contains any of [`SENSITIVE_MARKERS`]; `context` names the
+/// request in the failure message.
+pub fn assert_no_sensitive_fields(body: &str, context: &str) {
+    for marker in SENSITIVE_MARKERS {
+        assert!(
+            !body.contains(marker),
+            "{context} leaked sensitive marker {marker:?}: {body}"
+        );
+    }
+}
+
+/// Panics if the serialized form of `value` contains any sensitive marker.
+pub fn assert_no_sensitive_fields_json(value: &serde_json::Value, context: &str) {
+    assert_no_sensitive_fields(&value.to_string(), context);
+}
+
+/// Calls every endpoint in [`AUTHENTICATED_GET_ENDPOINTS`] with `token` and
+/// asserts each succeeds without leaking sensitive fields. A wallet is created
+/// first so `GET /wallet` has something to return.
+pub async fn assert_authenticated_endpoints_clean(app: &Router, token: &str) {
+    let (status, json) = send(app.clone(), "POST", "/wallet/create", Some(token), None).await;
+    assert!(status.is_success(), "wallet create returned {status}: {json}");
+    for uri in AUTHENTICATED_GET_ENDPOINTS {
+        let (status, json) = send(app.clone(), "GET", uri, Some(token), None).await;
+        assert!(status.is_success(), "GET {uri} returned {status}: {json}");
+        assert_no_sensitive_fields_json(&json, &format!("GET {uri}"));
+    }
+}

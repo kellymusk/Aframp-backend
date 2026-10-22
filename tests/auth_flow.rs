@@ -498,10 +498,19 @@ async fn me_returns_profile_for_a_valid_token() {
     assert_eq!(me["user_id"], verified["user_id"]);
     assert_eq!(me["merchant_id"], verified["merchant_id"]);
     assert_eq!(me["merchant_name"], "Test User");
-    assert!(
-        me.get("password_hash").is_none(),
-        "the password hash must never be serialized to a client"
-    );
+    common::assert_no_sensitive_fields_json(&me, "GET /me");
+}
+
+#[tokio::test]
+async fn password_hash_never_serialized_across_authenticated_endpoints() {
+    let app = app().await;
+    let (_, _, verified) = signup_and_verify(&app, "leakcheck").await;
+    let token = verified["token"].as_str().unwrap();
+
+    // The signup/verify response itself must already be clean.
+    common::assert_no_sensitive_fields_json(&verified, "POST /verify-otp");
+
+    common::assert_authenticated_endpoints_clean(&app, token).await;
 }
 
 #[tokio::test]

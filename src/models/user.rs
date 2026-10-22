@@ -79,6 +79,32 @@ pub struct NewUser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_user() -> User {
+        let now = Utc::now();
+        User {
+            id: Uuid::new_v4(),
+            email: "leak-check@example.com".to_string(),
+            // Distinctive marker + argon2 prefix so a leak is easy to spot.
+            password_hash: "argon2id$v=19$m=19456,t=2,p=1$LEAKMARKER$hash".to_string(),
+            name: "Leak Check".to_string(),
+            is_admin: false,
+            phone_number: Some("+2348011122233".to_string()),
+            phone_verified: true,
+            failed_login_count: 0,
+            locked_until: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn user_serialization_never_includes_the_password_hash() {
+        let json = serde_json::to_string(&sample_user()).expect("User must serialize");
+        assert!(!json.contains("password_hash"), "{json}");
+        assert!(!json.contains("argon2"), "{json}");
+        assert!(!json.contains("LEAKMARKER"), "{json}");
+    }
     use sqlx::postgres::PgPoolOptions;
 
     /// Verifies the database itself rejects names longer than
