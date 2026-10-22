@@ -179,3 +179,47 @@ async fn worker_stops_on_shutdown_signal() {
         .expect("worker must stop mid-sleep once shutdown is signalled")
         .unwrap();
 }
+
+/// An oversized deposit is still credited but flagged for review; a normal
+/// one is not.
+#[tokio::test]
+async fn oversized_deposit_is_credited_and_flagged() {
+    let app_state = state().await;
+    let router = aframp::router(app_state.clone());
+    let (_, merchant_id) = ensure_merchant(&router, "deposit-anomaly").await;
+    let merchant_id: Uuid = merchant_id.parse().unwrap();
+    let wallet = wallets::create_wallet(&app_state.db, merchant_id, "stellar", &app_state.wallet_encryption_key)
+        .await
+        .unwrap();
+
+    let deposit = |tx: &str, amount: i64| DetectedDeposit {
+        tx_hash: tx.to_string(),
+        destination: wallet.address.clone(),
+        amount_stroops: amount,
+        asset: "XLM".to_string(),
+        confirmations: 1,
+        memo: None,
+    };
+    let small = format!("anomaly-small-{}", Uuid::new_v4());
+    let large = format!("anomaly-large-{}", Uuid::new_v4());
+    // Default single-deposit threshold is 100_000_000_000 stroops.
+    let listener = FakeListener { deposits: vec![deposit(&small, 10_000_000), deposit(&large, 100_000_000_001)] };
+    poll_once(&app_state.db, &listener).await.expect("poll_once failed");
+
+    let flagged = |tx: String| {
+        let db = app_state.db.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>("SELECT flagged FROM payments WHERE tx_hash = $1")
+                .bind(tx)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(!flagged(small).await, "a normal deposit must not be flagged");
+    assert!(flagged(large).await, "an oversized deposit must be flagged");
+
+    let balance = balances::get_balances(&app_state.db, merchant_id).await.unwrap();
+    let xlm = balance.iter().find(|b| b.asset == "XLM").unwrap();
+    assert_eq!(xlm.available, 100_000_000_001 + 10_000_000, "flagged deposits are still credited");
+}

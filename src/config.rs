@@ -102,6 +102,12 @@ pub struct AppConfig {
     pub stellar_system_wallet: Arc<String>,
     pub stellar_horizon_url: String,
     pub stellar_poll_interval_secs: u64,
+    /// A single deposit above this many stroops is credited but flagged for
+    /// review (`MAX_SINGLE_DEPOSIT_STROOPS`, default 10,000 units).
+    pub max_single_deposit_stroops: i64,
+    /// A merchant's deposits of one asset totalling more than this within an
+    /// hour are flagged (`MAX_HOURLY_DEPOSIT_STROOPS`, default 50,000 units).
+    pub max_hourly_deposit_stroops: i64,
     /// Maximum number of Horizon requests the deposit worker keeps in flight
     /// at once. Bounds the fan-out when polling many wallet addresses so a
     /// large merchant set doesn't open thousands of sockets simultaneously.
@@ -263,6 +269,8 @@ impl AppConfig {
             stellar_horizon_url: std::env::var("STELLAR_HORIZON_URL")
                 .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".into()),
             stellar_poll_interval_secs,
+            max_single_deposit_stroops: positive_stroops("MAX_SINGLE_DEPOSIT_STROOPS", 100_000_000_000)?,
+            max_hourly_deposit_stroops: positive_stroops("MAX_HOURLY_DEPOSIT_STROOPS", 500_000_000_000)?,
             stellar_poll_concurrency,
             stellar_min_confirmations: std::env::var("STELLAR_MIN_CONFIRMATIONS")
                 .ok()
@@ -376,6 +384,18 @@ fn validate_origin(origin: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A positive stroop amount from the environment. Zero, negative or garbage is
+/// a startup error, so a typo can't silently disable anomaly flagging.
+fn positive_stroops(name: &str, default: i64) -> Result<i64, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) => match value.trim().parse::<i64>() {
+            Ok(v) if v > 0 => Ok(v),
+            _ => Err(format!("{name} must be a positive number of stroops, got `{value}`")),
+        },
+    }
 }
 
 /// Shortest accepted deposit poll interval, in seconds.
@@ -498,6 +518,16 @@ mod tests {
     }
 
     #[test]
+    fn deposit_anomaly_thresholds_must_be_positive() {
+        let _env = set_valid_env();
+        std::env::set_var("MAX_SINGLE_DEPOSIT_STROOPS", "0");
+        let zero = AppConfig::from_env();
+        std::env::remove_var("MAX_SINGLE_DEPOSIT_STROOPS");
+        assert!(zero.unwrap_err().contains("MAX_SINGLE_DEPOSIT_STROOPS"));
+        assert_eq!(AppConfig::from_env().unwrap().max_single_deposit_stroops, 100_000_000_000);
+    }
+
+    #[test]
     fn production_refuses_insecure_session_cookie() {
         let _env = set_valid_env();
         std::env::set_var("APP_ENV", "production");
@@ -590,6 +620,8 @@ mod tests {
                 stellar_system_wallet: Arc::new("GXXXXXXX".to_string()),
                 stellar_horizon_url: "https://horizon.stellar.org".to_string(),
                 stellar_poll_interval_secs: 60,
+                max_single_deposit_stroops: 100_000_000_000,
+                max_hourly_deposit_stroops: 500_000_000_000,
                 stellar_poll_concurrency: 50,
                 stellar_min_confirmations: 1,
                 wallet_encryption_key: SecretString::new("encryption-key".to_string()),

@@ -19,6 +19,9 @@ pub struct Payment {
     pub confirmations: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set when the deposit tripped an anomaly threshold; see
+    /// `blockchain::worker::DepositAnomalyThresholds`.
+    pub flagged: bool,
 }
 
 impl Payment {

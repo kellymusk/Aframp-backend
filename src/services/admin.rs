@@ -184,7 +184,7 @@ pub async fn transactions(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Re
     let rows = sqlx::query_as::<_, AdminTransactionRow>(
         "SELECT p.id, p.merchant_id, m.name AS merchant_name, p.wallet_address, p.tx_hash,
                 p.amount_stroops, p.asset, p.network, p.status, p.confirmations,
-                p.created_at, p.updated_at
+                p.created_at, p.updated_at, p.flagged
          FROM payments p
          JOIN merchants m ON m.id = p.merchant_id
          WHERE ($1::timestamptz IS NULL OR (p.created_at, p.id) < ($1, $2::uuid))

@@ -171,6 +171,58 @@ fn webhook_http_client() -> &'static reqwest::Client {
     })
 }
 
+/// Sizes above which a deposit is flagged for review (it is still credited).
+/// Raw stroops, compared per asset.
+#[derive(Debug, Clone, Copy)]
+pub struct DepositAnomalyThresholds {
+    pub max_single_stroops: i64,
+    pub max_hourly_stroops: i64,
+}
+
+impl Default for DepositAnomalyThresholds {
+    fn default() -> Self {
+        Self {
+            max_single_stroops: 100_000_000_000,  // 10,000 units
+            max_hourly_stroops: 500_000_000_000,  // 50,000 units
+        }
+    }
+}
+
+static ANOMALY_THRESHOLDS: std::sync::OnceLock<DepositAnomalyThresholds> = std::sync::OnceLock::new();
+
+/// Sets the thresholds from config at startup; later calls are ignored.
+pub fn set_anomaly_thresholds(thresholds: DepositAnomalyThresholds) {
+    let _ = ANOMALY_THRESHOLDS.set(thresholds);
+}
+
+fn anomaly_thresholds() -> DepositAnomalyThresholds {
+    ANOMALY_THRESHOLDS.get().copied().unwrap_or_default()
+}
+
+/// Flags (and logs at warn) a freshly recorded deposit that is unusually
+/// large on its own or pushes the merchant's last-hour total over the limit.
+async fn flag_if_anomalous(db: &PgPool, payment_id: uuid::Uuid, merchant_id: uuid::Uuid, d: &DetectedDeposit) -> Result<(), String> {
+    let limits = anomaly_thresholds();
+    let hourly = payments::deposits_in_last_hour(db, merchant_id, &d.asset)
+        .await
+        .map_err(|e| e.to_string())?;
+    let single = d.amount_stroops > limits.max_single_stroops;
+    let burst = hourly > limits.max_hourly_stroops;
+    if single || burst {
+        tracing::warn!(
+            %merchant_id,
+            tx_hash = %d.tx_hash,
+            amount_stroops = d.amount_stroops,
+            hourly_total_stroops = hourly,
+            single,
+            burst,
+            "SECURITY: anomalous deposit flagged for review"
+        );
+        payments::flag_payment(db, payment_id).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tracing::instrument(skip_all, err, fields(tx_hash = %d.tx_hash, destination = %d.destination, amount_stroops = d.amount_stroops, asset = %d.asset))]
 pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), String> {
     let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
@@ -197,6 +249,7 @@ pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), Stri
     if payment.status != crate::models::status::PaymentStatus::Detected {
         return Ok(());
     }
+    flag_if_anomalous(db, payment.id, wallet.merchant_id, &d).await?;
 
     payments::set_status(db, payment.id, UpdatePaymentStatus::Verified)
         .await

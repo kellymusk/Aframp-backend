@@ -5,7 +5,7 @@ use crate::models::status::PaymentStatus;
 use crate::models::{NewPayment, Payment, UpdatePaymentStatus};
 
 /// Columns selected for a [`Payment`] row.
-const PAYMENT_COLUMNS: &str = "id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at";
+const PAYMENT_COLUMNS: &str = "id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at, flagged";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PaymentError {
@@ -404,5 +404,27 @@ pub async fn daily_confirmed_totals(
     .bind(start)
     .bind(end)
     .fetch_all(db)
+    .await
+}
+
+/// Marks a payment as anomalous for admin review.
+pub async fn flag_payment(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE payments SET flagged = true, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Total of a merchant's `asset` deposits recorded in the last hour, including
+/// the one just recorded.
+pub async fn deposits_in_last_hour(db: &PgPool, merchant_id: Uuid, asset: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount_stroops), 0)::bigint FROM payments
+          WHERE merchant_id = $1 AND asset = $2 AND created_at > now() - interval '1 hour'",
+    )
+    .bind(merchant_id)
+    .bind(asset)
+    .fetch_one(db)
     .await
 }

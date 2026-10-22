@@ -48,6 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Flipped to `true` on SIGTERM/Ctrl-C so the deposit worker stops between
     // polls instead of being killed mid-deposit.
+    aframp::blockchain::worker::set_anomaly_thresholds(aframp::blockchain::worker::DepositAnomalyThresholds {
+        max_single_stroops: config.max_single_deposit_stroops,
+        max_hourly_stroops: config.max_hourly_deposit_stroops,
+    });
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let worker = tokio::spawn(aframp::blockchain::worker::run(
         state.clone(),
