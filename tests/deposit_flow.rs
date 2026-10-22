@@ -23,7 +23,14 @@ async fn deposit_becomes_available_only_after_min_confirmations() {
     let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "deposit_confirmations").await;
-    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    let (status, wallet) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{wallet}");
     let address = wallet["address"].as_str().unwrap();
     let tx_hash = format!("tx_{}", uuid::Uuid::new_v4().simple());
@@ -39,19 +46,27 @@ async fn deposit_becomes_available_only_after_min_confirmations() {
     };
 
     // First pass: detected — pending only, even after the promotion pass.
-    process_deposit(&state.db, deposit(address, &tx_hash)).await.unwrap();
+    process_deposit(&state.db, deposit(address, &tx_hash))
+        .await
+        .unwrap();
     promote_confirmed_deposits(&state.db, 2).await.unwrap();
     assert_eq!(balance().await, (0, 50_000_000));
 
     // Next poll pass (cursor polling doesn't re-fetch it; it just ages):
     // now at 2 confirmations and promoted.
-    aframp::services::payments::age_verified_deposits(&state.db).await.unwrap();
+    aframp::services::payments::age_verified_deposits(&state.db)
+        .await
+        .unwrap();
     promote_confirmed_deposits(&state.db, 2).await.unwrap();
     assert_eq!(balance().await, (50_000_000, 0));
 
     // Further passes, or a re-sighting, don't credit it twice.
-    process_deposit(&state.db, deposit(address, &tx_hash)).await.unwrap();
-    aframp::services::payments::age_verified_deposits(&state.db).await.unwrap();
+    process_deposit(&state.db, deposit(address, &tx_hash))
+        .await
+        .unwrap();
+    aframp::services::payments::age_verified_deposits(&state.db)
+        .await
+        .unwrap();
     promote_confirmed_deposits(&state.db, 2).await.unwrap();
     assert_eq!(balance().await, (50_000_000, 0));
 
@@ -68,11 +83,20 @@ async fn deposit_with_default_one_confirmation_is_available_after_first_pass() {
     let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "deposit_default_confirmations").await;
-    let (_, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    let (_, wallet) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
     let address = wallet["address"].as_str().unwrap();
     let tx_hash = format!("tx_{}", uuid::Uuid::new_v4().simple());
 
-    process_deposit(&state.db, deposit(address, &tx_hash)).await.unwrap();
+    process_deposit(&state.db, deposit(address, &tx_hash))
+        .await
+        .unwrap();
     promote_confirmed_deposits(&state.db, 1).await.unwrap();
 
     let (available, pending): (i64, i64) = sqlx::query_as(

@@ -142,9 +142,19 @@ async fn me_join_returns_none_merchant_fields_when_no_merchant_row() {
         .expect("delete merchant");
 
     let (status, me) = send(app.clone(), "GET", "/me", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "GET /me after merchant delete: {me}");
-    assert!(me["merchant_id"].is_null(), "merchant_id should be null: {me}");
-    assert!(me["merchant_name"].is_null(), "merchant_name should be null: {me}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "GET /me after merchant delete: {me}"
+    );
+    assert!(
+        me["merchant_id"].is_null(),
+        "merchant_id should be null: {me}"
+    );
+    assert!(
+        me["merchant_name"].is_null(),
+        "merchant_name should be null: {me}"
+    );
 
     let row = join_user_with_merchant(&state.db, user_id)
         .await

@@ -52,17 +52,28 @@ pub async fn detailed(State(state): State<AppState>) -> (StatusCode, Json<Detail
     });
 
     let database = tokio::time::timeout(CHECK_TIMEOUT, sqlx::query("SELECT 1").execute(&state.db));
-    let horizon = tokio::time::timeout(CHECK_TIMEOUT, http.get(state.stellar_horizon_url.as_str()).send());
+    let horizon = tokio::time::timeout(
+        CHECK_TIMEOUT,
+        http.get(state.stellar_horizon_url.as_str()).send(),
+    );
     let (database, horizon) = tokio::join!(database, horizon);
 
-    let database = if matches!(database, Ok(Ok(_))) { "ok" } else { "fail" };
+    let database = if matches!(database, Ok(Ok(_))) {
+        "ok"
+    } else {
+        "fail"
+    };
     let horizon = match horizon {
         Ok(Ok(resp)) if resp.status().is_success() => "ok",
         _ => "fail",
     };
     let healthy = database == "ok" && horizon == "ok";
     (
-        if healthy { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
+        if healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         Json(DetailedHealth {
             status: if healthy { "ok" } else { "degraded" },
             version: env!("CARGO_PKG_VERSION"),

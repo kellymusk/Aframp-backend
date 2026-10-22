@@ -102,8 +102,12 @@ async fn poll_once_is_idempotent_for_a_repeated_deposit() {
         }],
     };
 
-    poll_once(&app_state.db, &listener).await.expect("first poll_once failed");
-    poll_once(&app_state.db, &listener).await.expect("second poll_once failed");
+    poll_once(&app_state.db, &listener)
+        .await
+        .expect("first poll_once failed");
+    poll_once(&app_state.db, &listener)
+        .await
+        .expect("second poll_once failed");
 
     let payment_rows = payments::payments_by_merchant(&app_state.db, merchant_id, 50, None)
         .await
@@ -136,7 +140,10 @@ async fn poll_once_skips_deposit_to_unknown_address() {
     let listener = FakeListener {
         deposits: vec![DetectedDeposit {
             tx_hash: tx_hash.clone(),
-            destination: format!("GUNKNOWN{}", Uuid::new_v4().simple().to_string().to_uppercase()),
+            destination: format!(
+                "GUNKNOWN{}",
+                Uuid::new_v4().simple().to_string().to_uppercase()
+            ),
             amount_stroops: 10_000_000,
             asset: "XLM".to_string(),
             confirmations: 1,
@@ -144,14 +151,19 @@ async fn poll_once_skips_deposit_to_unknown_address() {
         }],
     };
 
-    poll_once(&app_state.db, &listener).await.expect("poll_once failed");
+    poll_once(&app_state.db, &listener)
+        .await
+        .expect("poll_once failed");
 
     let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM payments WHERE tx_hash = $1")
         .bind(&tx_hash)
         .fetch_one(&app_state.db)
         .await
         .unwrap();
-    assert_eq!(recorded, 0, "a deposit to an unknown address must not be recorded");
+    assert_eq!(
+        recorded, 0,
+        "a deposit to an unknown address must not be recorded"
+    );
 }
 
 /// The worker exits promptly once shutdown is signalled, both when it was
@@ -163,7 +175,14 @@ async fn worker_stops_on_shutdown_signal() {
     let horizon = "http://127.0.0.1:9".to_string();
 
     let (tx, rx) = tokio::sync::watch::channel(true);
-    let already = tokio::spawn(aframp::blockchain::worker::run(state.clone(), horizon.clone(), 3600, 1, 1, rx));
+    let already = tokio::spawn(aframp::blockchain::worker::run(
+        state.clone(),
+        horizon.clone(),
+        3600,
+        1,
+        1,
+        rx,
+    ));
     tokio::time::timeout(std::time::Duration::from_secs(5), already)
         .await
         .expect("worker must not start when shutdown is already set")
@@ -171,7 +190,9 @@ async fn worker_stops_on_shutdown_signal() {
     drop(tx);
 
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let sleeping = tokio::spawn(aframp::blockchain::worker::run(state, horizon, 3600, 1, 1, rx));
+    let sleeping = tokio::spawn(aframp::blockchain::worker::run(
+        state, horizon, 3600, 1, 1, rx,
+    ));
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     tx.send(true).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), sleeping)
@@ -188,9 +209,14 @@ async fn oversized_deposit_is_credited_and_flagged() {
     let router = aframp::router(app_state.clone());
     let (_, merchant_id) = ensure_merchant(&router, "deposit-anomaly").await;
     let merchant_id: Uuid = merchant_id.parse().unwrap();
-    let wallet = wallets::create_wallet(&app_state.db, merchant_id, "stellar", &app_state.wallet_encryption_key)
-        .await
-        .unwrap();
+    let wallet = wallets::create_wallet(
+        &app_state.db,
+        merchant_id,
+        "stellar",
+        &app_state.wallet_encryption_key,
+    )
+    .await
+    .unwrap();
 
     let deposit = |tx: &str, amount: i64| DetectedDeposit {
         tx_hash: tx.to_string(),
@@ -203,8 +229,15 @@ async fn oversized_deposit_is_credited_and_flagged() {
     let small = format!("anomaly-small-{}", Uuid::new_v4());
     let large = format!("anomaly-large-{}", Uuid::new_v4());
     // Default single-deposit threshold is 100_000_000_000 stroops.
-    let listener = FakeListener { deposits: vec![deposit(&small, 10_000_000), deposit(&large, 100_000_000_001)] };
-    poll_once(&app_state.db, &listener).await.expect("poll_once failed");
+    let listener = FakeListener {
+        deposits: vec![
+            deposit(&small, 10_000_000),
+            deposit(&large, 100_000_000_001),
+        ],
+    };
+    poll_once(&app_state.db, &listener)
+        .await
+        .expect("poll_once failed");
 
     let flagged = |tx: String| {
         let db = app_state.db.clone();
@@ -216,10 +249,19 @@ async fn oversized_deposit_is_credited_and_flagged() {
                 .unwrap()
         }
     };
-    assert!(!flagged(small).await, "a normal deposit must not be flagged");
+    assert!(
+        !flagged(small).await,
+        "a normal deposit must not be flagged"
+    );
     assert!(flagged(large).await, "an oversized deposit must be flagged");
 
-    let balance = balances::get_balances(&app_state.db, merchant_id).await.unwrap();
+    let balance = balances::get_balances(&app_state.db, merchant_id)
+        .await
+        .unwrap();
     let xlm = balance.iter().find(|b| b.asset == "XLM").unwrap();
-    assert_eq!(xlm.available, 100_000_000_001 + 10_000_000, "flagged deposits are still credited");
+    assert_eq!(
+        xlm.available,
+        100_000_000_001 + 10_000_000,
+        "flagged deposits are still credited"
+    );
 }

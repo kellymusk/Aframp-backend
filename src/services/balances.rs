@@ -4,10 +4,7 @@ use uuid::Uuid;
 use crate::models::{Balance, UpdateBalance};
 
 #[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id))]
-pub async fn get_balances(
-    db: &PgPool,
-    merchant_id: Uuid,
-) -> Result<Vec<Balance>, sqlx::Error> {
+pub async fn get_balances(db: &PgPool, merchant_id: Uuid) -> Result<Vec<Balance>, sqlx::Error> {
     sqlx::query_as::<_, Balance>(
         "SELECT merchant_id, asset, available, pending, updated_at
            FROM balances

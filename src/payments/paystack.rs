@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -69,7 +68,11 @@ impl PaystackProvider {
         }
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T, String> {
+    async fn get<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, String> {
         let response = self
             .http
             .get(format!("{}{path}", self.base_url))
@@ -81,7 +84,11 @@ impl PaystackProvider {
         Self::unwrap_response(response).await
     }
 
-    async fn post<T: DeserializeOwned>(&self, path: &str, body: &serde_json::Value) -> Result<T, String> {
+    async fn post<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<T, String> {
         let response = self
             .http
             .post(format!("{}{path}", self.base_url))
@@ -93,7 +100,9 @@ impl PaystackProvider {
         Self::unwrap_response(response).await
     }
 
-    async fn unwrap_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, String> {
+    async fn unwrap_response<T: DeserializeOwned>(
+        response: reqwest::Response,
+    ) -> Result<T, String> {
         let status = response.status();
         let raw = response.text().await.map_err(|e| e.to_string())?;
         let body: PaystackResponse<T> = serde_json::from_str(&raw).map_err(|e| {
@@ -102,7 +111,8 @@ impl PaystackProvider {
         if !status.is_success() || !body.status {
             return Err(format!("Paystack error (HTTP {status}): {}", body.message));
         }
-        body.data.ok_or_else(|| "Paystack response missing data".to_string())
+        body.data
+            .ok_or_else(|| "Paystack response missing data".to_string())
     }
 
     /// Resolve a bank account to its registered account holder name.
@@ -219,7 +229,11 @@ impl PaystackWebhookEvent {
 
 #[async_trait]
 impl PaymentProvider for PaystackProvider {
-    async fn resolve_account(&self, bank_code: &str, account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        bank_code: &str,
+        account_number: &str,
+    ) -> Result<String, String> {
         self.verify_bank_account(account_number, bank_code).await
     }
 
@@ -568,7 +582,10 @@ mod contract_tests {
             .await
             .expect_err("insufficient balance should surface as an error");
 
-        assert!(err.contains("Insufficient balance"), "unexpected error: {err}");
+        assert!(
+            err.contains("Insufficient balance"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

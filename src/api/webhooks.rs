@@ -25,7 +25,10 @@ pub async fn termii(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if !state.otp_provider.verify_webhook_signature(&body, signature) {
+    if !state
+        .otp_provider
+        .verify_webhook_signature(&body, signature)
+    {
         // Logged so a key mismatch (every genuine event rejected) is visible
         // instead of silent 403s — see README "Termii webhook".
         tracing::warn!(
@@ -44,7 +47,10 @@ pub async fn termii(
                 channel = event.channel.as_deref().unwrap_or(""),
                 "termii webhook event"
             );
-            (event.status.unwrap_or_else(|| "unknown".into()), event.message_id)
+            (
+                event.status.unwrap_or_else(|| "unknown".into()),
+                event.message_id,
+            )
         }
         Err(err) => {
             tracing::warn!(error = %err, body = %String::from_utf8_lossy(&body), "termii webhook: unrecognized payload shape");
@@ -61,7 +67,12 @@ pub async fn termii(
 /// plus status (or the body's hash when there is no id); a retried delivery
 /// of the same callback is a no-op. Never fails the request: the provider
 /// would only retry a genuine event.
-async fn record_termii_event(state: &AppState, body: &[u8], event_type: &str, message_id: Option<&str>) {
+async fn record_termii_event(
+    state: &AppState,
+    body: &[u8],
+    event_type: &str,
+    message_id: Option<&str>,
+) {
     use sha2::{Digest, Sha256};
     let external_id = match message_id {
         Some(id) => format!("{id}:{event_type}"),
@@ -110,7 +121,10 @@ pub async fn paystack(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if !state.payment_provider.verify_webhook_signature(&body, signature) {
+    if !state
+        .payment_provider
+        .verify_webhook_signature(&body, signature)
+    {
         return Err(forbidden(ErrorCode::Forbidden, "invalid webhook signature"));
     }
 

@@ -20,17 +20,23 @@ pub enum BitcoinNetwork {
     Regtest,
 }
 
-impl BitcoinNetwork {
-    pub fn from_str(s: &str) -> Result<Self, BtcError> {
+impl std::str::FromStr for BitcoinNetwork {
+    type Err = BtcError;
+
+    fn from_str(s: &str) -> Result<Self, BtcError> {
         match s.trim().to_ascii_lowercase().as_str() {
             "main" | "mainnet" => Ok(Self::Mainnet),
             "test" | "testnet" => Ok(Self::Testnet),
             "signet" => Ok(Self::Signet),
             "regtest" => Ok(Self::Regtest),
-            other => Err(BtcError::Config(format!("unknown bitcoin network `{other}`"))),
+            other => Err(BtcError::Config(format!(
+                "unknown bitcoin network `{other}`"
+            ))),
         }
     }
+}
 
+impl BitcoinNetwork {
     fn chain_name(self) -> &'static str {
         match self {
             Self::Mainnet => "main",
@@ -100,7 +106,11 @@ impl BitcoinService {
         Ok(service)
     }
 
-    async fn call<T: DeserializeOwned>(&self, method: &str, params: serde_json::Value) -> Result<T, BtcError> {
+    async fn call<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, BtcError> {
         let response = self
             .http
             .post(&self.url)
@@ -121,9 +131,13 @@ impl BitcoinService {
             .map_err(|e| BtcError::Rpc(format!("unexpected rpc response: {e}")))?;
 
         if let Some(err) = raw.error {
-            return Err(BtcError::Rpc(format!("{} (code {})", err.message, err.code)));
+            return Err(BtcError::Rpc(format!(
+                "{} (code {})",
+                err.message, err.code
+            )));
         }
-        raw.result.ok_or_else(|| BtcError::Rpc("rpc response missing result".into()))
+        raw.result
+            .ok_or_else(|| BtcError::Rpc("rpc response missing result".into()))
     }
 
     /// Structural validation only (Base58Check with checksum, or Bech32 v0
@@ -132,7 +146,8 @@ impl BitcoinService {
     /// input. `getblockchaininfo`-verified nodes can additionally call
     /// `validate_address_via_node` for the node's own authoritative check.
     pub fn validate_address(&self, address: &str) -> Result<bool, BtcError> {
-        Ok(is_valid_base58_address(address, self.network) || is_valid_bech32_address(address, self.network))
+        Ok(is_valid_base58_address(address, self.network)
+            || is_valid_bech32_address(address, self.network))
     }
 
     /// Authoritative address validation via the node's own `validateaddress`
@@ -161,7 +176,9 @@ impl BitcoinService {
     /// Relays an already-signed raw transaction. Returns the broadcast txid.
     pub async fn broadcast_tx(&self, raw_tx_hex: &str) -> Result<String, BtcError> {
         if raw_tx_hex.is_empty() || !raw_tx_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(BtcError::BroadcastFailed("raw transaction must be non-empty hex".into()));
+            return Err(BtcError::BroadcastFailed(
+                "raw transaction must be non-empty hex".into(),
+            ));
         }
         self.call("sendrawtransaction", json!([raw_tx_hex]))
             .await
@@ -255,7 +272,13 @@ fn is_valid_base58_address(address: &str, network: BitcoinNetwork) -> bool {
 const BECH32_CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
 fn bech32_polymod(values: &[u8]) -> u32 {
-    let gen = [0x3b6a57b2u32, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let gen = [
+        0x3b6a57b2u32,
+        0x26508e6d,
+        0x1ea119fa,
+        0x3d4233dd,
+        0x2a1462b3,
+    ];
     let mut chk: u32 = 1;
     for &v in values {
         let top = chk >> 25;

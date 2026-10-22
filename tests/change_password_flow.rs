@@ -47,9 +47,15 @@ async fn signup_and_verify(app: &axum::Router, seed: &str) -> (String, String) {
 /// `POST /login` answers 200 (an OTP challenge) for a correct password and
 /// 401 for a wrong one, so its status tells us which password is current.
 async fn login_status(app: &axum::Router, email: &str, password: &str) -> StatusCode {
-    send(app.clone(), "POST", "/login", None, Some(json!({ "email": email, "password": password })))
-        .await
-        .0
+    send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": password })),
+    )
+    .await
+    .0
 }
 
 #[tokio::test]
@@ -69,23 +75,44 @@ async fn change_password_replaces_the_password_and_revokes_older_sessions() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "change-password failed: {body}");
-    let new_token = body["token"].as_str().expect("a fresh session token").to_string();
+    let new_token = body["token"]
+        .as_str()
+        .expect("a fresh session token")
+        .to_string();
     assert_ne!(new_token, old_token);
 
     // The session that made the change, and any other one, is revoked...
     let (status, _) = send(app.clone(), "GET", "/me", Some(&old_token), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "pre-change session must be revoked");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "pre-change session must be revoked"
+    );
     let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&old_token), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "a revoked session must not be refreshable");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked session must not be refreshable"
+    );
 
     // ...while the replacement session works.
     let (status, me) = send(app.clone(), "GET", "/me", Some(&new_token), None).await;
-    assert_eq!(status, StatusCode::OK, "replacement session must work: {me}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "replacement session must work: {me}"
+    );
     assert_eq!(me["email"], email);
 
     // Only the new password logs in now.
-    assert_eq!(login_status(&app, &email, "Password123!").await, StatusCode::UNAUTHORIZED);
-    assert_eq!(login_status(&app, &email, "Brand-New-Pass9").await, StatusCode::OK);
+    assert_eq!(
+        login_status(&app, &email, "Password123!").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        login_status(&app, &email, "Brand-New-Pass9").await,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -107,8 +134,14 @@ async fn change_password_rejects_a_wrong_current_password() {
     // Nothing changed: the session still works and the old password still logs in.
     let (status, _) = send(app.clone(), "GET", "/me", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(login_status(&app, &email, "Password123!").await, StatusCode::OK);
-    assert_eq!(login_status(&app, &email, "Brand-New-Pass9").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        login_status(&app, &email, "Password123!").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        login_status(&app, &email, "Brand-New-Pass9").await,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
@@ -126,7 +159,10 @@ async fn change_password_enforces_the_minimum_length() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["field"], "new_password");
-    assert_eq!(login_status(&app, &email, "Password123!").await, StatusCode::OK);
+    assert_eq!(
+        login_status(&app, &email, "Password123!").await,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

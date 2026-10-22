@@ -6,7 +6,14 @@ use serde_json::json;
 use common::{ensure_merchant, send, state};
 
 async fn create_wallet(app: &axum::Router, token: &str) {
-    let (status, json) = send(app.clone(), "POST", "/wallet/create", Some(token), Some(json!({}))).await;
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "wallet create failed: {json}");
 }
 
@@ -86,7 +93,11 @@ async fn payment_request_cancel_rejects_other_merchants() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "other merchant cancel: {json}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "other merchant cancel: {json}"
+    );
 }
 
 #[tokio::test]
@@ -142,7 +153,11 @@ async fn payment_request_list_excludes_cancelled_by_default() {
     .await;
     assert_eq!(status, StatusCode::OK, "list all failed: {list_all}");
     let rows_all = list_rows(&list_all);
-    assert_eq!(rows_all.len(), 2, "include_cancelled should show both: {list_all}");
+    assert_eq!(
+        rows_all.len(),
+        2,
+        "include_cancelled should show both: {list_all}"
+    );
 }
 
 #[tokio::test]
@@ -218,7 +233,10 @@ async fn payment_request_post_cancel_route_cancels() {
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_post_cancel").await;
     create_wallet(&app, &token).await;
-    let id = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+    let id = create_request(&app, &token).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (status, cancelled) = send(
         app.clone(),
@@ -256,9 +274,19 @@ async fn payment_request_cancel_requires_auth() {
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "pr_cancel_auth").await;
     create_wallet(&app, &token).await;
-    let id = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
+    let id = create_request(&app, &token).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let (status, _) = send(app.clone(), "POST", &format!("/payment-requests/{id}/cancel"), None, None).await;
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        &format!("/payment-requests/{id}/cancel"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -271,11 +299,12 @@ async fn payment_request_cancel_paid_returns_409() {
     let created = create_request(&app, &token).await;
     let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
     let memo = created["memo"].as_str().unwrap();
-    let wallet_id: uuid::Uuid = sqlx::query_scalar("SELECT wallet_id FROM payment_requests WHERE id = $1")
-        .bind(id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap();
+    let wallet_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT wallet_id FROM payment_requests WHERE id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
 
     let payment_id = uuid::Uuid::new_v4();
     sqlx::query(
@@ -301,7 +330,11 @@ async fn payment_request_cancel_paid_returns_409() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "a paid request cannot be cancelled: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a paid request cannot be cancelled: {body}"
+    );
     assert_eq!(body["code"], "PAYMENT_REQUEST_NOT_CANCELLABLE");
 }
 
@@ -314,26 +347,64 @@ async fn payment_request_list_filters_by_reported_status() {
     let (token, _) = ensure_merchant(&app, "pr_status_filter").await;
     create_wallet(&app, &token).await;
 
-    let pending = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
-    let expired = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
-    let cancelled = create_request(&app, &token).await["id"].as_str().unwrap().to_string();
-    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid")
-        .bind(&expired)
-        .execute(&state.db)
-        .await
-        .unwrap();
-    let (status, _) = send(app.clone(), "DELETE", &format!("/payment-requests/{cancelled}"), Some(&token), None).await;
+    let pending = create_request(&app, &token).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expired = create_request(&app, &token).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cancelled = create_request(&app, &token).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sqlx::query(
+        "UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid",
+    )
+    .bind(&expired)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let (status, _) = send(
+        app.clone(),
+        "DELETE",
+        &format!("/payment-requests/{cancelled}"),
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
-    for (filter, expected) in [("pending", &pending), ("expired", &expired), ("cancelled", &cancelled)] {
-        let (status, list) =
-            send(app.clone(), "GET", &format!("/payment-requests?status={filter}"), Some(&token), None).await;
+    for (filter, expected) in [
+        ("pending", &pending),
+        ("expired", &expired),
+        ("cancelled", &cancelled),
+    ] {
+        let (status, list) = send(
+            app.clone(),
+            "GET",
+            &format!("/payment-requests?status={filter}"),
+            Some(&token),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{list}");
-        let ids: Vec<&str> = list_rows(&list).iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = list_rows(&list)
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, vec![expected.as_str()], "status={filter}");
     }
 
-    let (status, body) = send(app.clone(), "GET", "/payment-requests?status=bogus", Some(&token), None).await;
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests?status=bogus",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["field"], "status");
 }

@@ -3,13 +3,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-/// Maximum number of characters allowed in a user or merchant name.
-///
-/// This mirrors the `CHECK (char_length(name) <= 100)` constraints added to
-/// the `users` and `merchants` tables in `migrations/0011_name_length_check.sql`
-/// and the application-level check in `validate_name`.
-pub const MAX_NAME_LENGTH: usize = 100;
-
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct User {
     pub id: Uuid,
@@ -79,6 +72,7 @@ pub struct NewUser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::validation::MAX_NAME_LEN;
 
     fn sample_user() -> User {
         let now = Utc::now();
@@ -105,14 +99,13 @@ mod tests {
         assert!(!json.contains("argon2"), "{json}");
         assert!(!json.contains("LEAKMARKER"), "{json}");
     }
-    use sqlx::postgres::PgPoolOptions;
 
     /// Verifies the database itself rejects names longer than
-    /// `MAX_NAME_LENGTH`, even when the application-level `validate_name`
+    /// `MAX_NAME_LEN`, even when the application-level `validate_name`
     /// check is bypassed by inserting directly.
     #[sqlx::test]
     async fn db_rejects_user_name_over_max_length(pool: sqlx::PgPool) {
-        let long_name = "a".repeat(MAX_NAME_LENGTH + 1);
+        let long_name = "a".repeat(MAX_NAME_LEN + 1);
 
         let result = sqlx::query(
             "INSERT INTO users (id, email, password_hash, name, is_admin, phone_verified, created_at, updated_at) \
@@ -127,14 +120,14 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "database should reject a user name longer than {MAX_NAME_LENGTH} characters"
+            "database should reject a user name longer than {MAX_NAME_LEN} characters"
         );
     }
 
     /// Sanity check that a name at the boundary is still accepted.
     #[sqlx::test]
     async fn db_accepts_user_name_at_max_length(pool: sqlx::PgPool) {
-        let name = "a".repeat(MAX_NAME_LENGTH);
+        let name = "a".repeat(MAX_NAME_LEN);
 
         let result = sqlx::query(
             "INSERT INTO users (id, email, password_hash, name, is_admin, phone_verified, created_at, updated_at) \
@@ -149,7 +142,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "database should accept a user name of exactly {MAX_NAME_LENGTH} characters"
+            "database should accept a user name of exactly {MAX_NAME_LEN} characters"
         );
     }
 }

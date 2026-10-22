@@ -181,7 +181,10 @@ impl BlockchainListener for StellarListener {
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
         let entries: Vec<AddressCursor> = addresses
             .iter()
-            .map(|address| AddressCursor { address: address.clone(), cursor: None })
+            .map(|address| AddressCursor {
+                address: address.clone(),
+                cursor: None,
+            })
             .collect();
         Ok(self
             .fetch_deposits_since(&entries)
@@ -260,8 +263,6 @@ struct OperationRecord {
     account: Option<String>,
     #[serde(default)]
     amount: Option<String>,
-    #[serde(default)]
-    amount_sent: Option<String>,
     #[serde(default)]
     starting_balance: Option<String>,
     #[serde(default)]
@@ -378,21 +379,20 @@ fn record_to_deposit(record: OperationRecord, address: &str) -> Option<DetectedD
             record.starting_balance.as_deref()
         }
         // `payment` and `path_payment_strict_receive` populate `to`.
-        "payment" | "path_payment_strict_receive"
-            if record.to.as_deref() == Some(address) =>
-        {
+        "payment" | "path_payment_strict_receive" if record.to.as_deref() == Some(address) => {
             record.amount.as_deref()
         }
         // `path_payment_strict_send` uses `destination` instead of `to`.
-        "path_payment_strict_send"
-            if record.destination.as_deref() == Some(address) =>
-        {
+        "path_payment_strict_send" if record.destination.as_deref() == Some(address) => {
             record.amount.as_deref()
         }
         // `claimable_balance_created`: funds delivered when claimant
         // destination matches the wallet address.
         "claimable_balance_created"
-            if record.claimant.as_ref().is_some_and(|c| c.destination == address) =>
+            if record
+                .claimant
+                .as_ref()
+                .is_some_and(|c| c.destination == address) =>
         {
             record.amount.as_deref()
         }
@@ -422,7 +422,10 @@ fn record_to_deposit(record: OperationRecord, address: &str) -> Option<DetectedD
     } else {
         match record.asset_type.as_deref() {
             Some("native") | None => "XLM".to_string(),
-            _ => record.asset_code.clone().unwrap_or_else(|| "unknown".into()),
+            _ => record
+                .asset_code
+                .clone()
+                .unwrap_or_else(|| "unknown".into()),
         }
     };
 
@@ -461,7 +464,10 @@ fn parse_amount_to_stroops(amount: &str) -> Result<i64, String> {
     }
     // Both parts must be plain digits: `str::parse` would otherwise accept a
     // sign, so "1.-5" would parse as 0.95 and "+5" as 5.
-    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
         return Err(format!("invalid amount: {amount}"));
     }
     let frac_padded = format!("{frac:0<7}");
@@ -522,7 +528,10 @@ mod tests {
     #[test]
     fn parse_amount_rejects_signs() {
         for bad in ["1.-5", "-1", "+5", "1.+5", ".5", "-0.0000001"] {
-            assert!(parse_amount_to_stroops(bad).is_err(), "{bad:?} must be rejected");
+            assert!(
+                parse_amount_to_stroops(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
         }
     }
 
@@ -530,10 +539,16 @@ mod tests {
 
     #[test]
     fn parses_whole_and_fractional_amounts() {
-        assert_eq!(parse_amount_to_stroops("10000.0000000").unwrap(), 100_000_000_000);
+        assert_eq!(
+            parse_amount_to_stroops("10000.0000000").unwrap(),
+            100_000_000_000
+        );
         assert_eq!(parse_amount_to_stroops("0.5").unwrap(), 5_000_000);
         assert_eq!(parse_amount_to_stroops("1").unwrap(), 10_000_000);
-        assert_eq!(parse_amount_to_stroops("123.4567890").unwrap(), 1_234_567_890);
+        assert_eq!(
+            parse_amount_to_stroops("123.4567890").unwrap(),
+            1_234_567_890
+        );
     }
 
     #[test]
@@ -554,7 +569,6 @@ mod tests {
             destination: None,
             account: None,
             amount: None,
-            amount_sent: None,
             starting_balance: None,
             asset_type: Some("native".to_string()),
             asset_code: None,
@@ -593,7 +607,10 @@ mod tests {
 
         let listener = StellarListener::new(url).with_concurrency(4);
         let addresses: Vec<AddressCursor> = (0..40)
-            .map(|i| AddressCursor { address: format!("GWALLET{i}"), cursor: None })
+            .map(|i| AddressCursor {
+                address: format!("GWALLET{i}"),
+                cursor: None,
+            })
             .collect();
         listener.fetch_deposits_since(&addresses).await.unwrap();
 
@@ -615,7 +632,9 @@ mod tests {
             axum::routing::get(move |uri: axum::http::Uri| {
                 let seen = seen_in_handler.clone();
                 async move {
-                    seen.lock().unwrap().push(uri.query().unwrap_or("").to_string());
+                    seen.lock()
+                        .unwrap()
+                        .push(uri.query().unwrap_or("").to_string());
                     axum::Json(serde_json::json!({
                         "_embedded": { "records": [{
                             "type": "payment",
@@ -636,13 +655,19 @@ mod tests {
         let listener = StellarListener::new(url);
 
         let first = listener
-            .fetch_deposits_since(&[AddressCursor { address: ADDR.into(), cursor: None }])
+            .fetch_deposits_since(&[AddressCursor {
+                address: ADDR.into(),
+                cursor: None,
+            }])
             .await
             .unwrap();
         assert_eq!(first[0].next_cursor.as_deref(), Some("200"));
 
         listener
-            .fetch_deposits_since(&[AddressCursor { address: ADDR.into(), cursor: Some("200".into()) }])
+            .fetch_deposits_since(&[AddressCursor {
+                address: ADDR.into(),
+                cursor: Some("200".into()),
+            }])
             .await
             .unwrap();
         let queries = seen.lock().unwrap().clone();
@@ -927,22 +952,24 @@ mod tests {
         const FAST: &str = "GFAST";
         let app = axum::Router::new().route(
             "/accounts/{address}/payments",
-            axum::routing::get(|axum::extract::Path(address): axum::extract::Path<String>| async move {
-                if address == SLOW {
-                    // Longer than the listener's timeout: simulates a stuck node.
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-                axum::Json(serde_json::json!({
-                    "_embedded": { "records": [{
-                        "type": "payment",
-                        "transaction_successful": true,
-                        "transaction_hash": "fast-tx",
-                        "to": FAST,
-                        "amount": "10.0000000",
-                        "asset_type": "native"
-                    }] }
-                }))
-            }),
+            axum::routing::get(
+                |axum::extract::Path(address): axum::extract::Path<String>| async move {
+                    if address == SLOW {
+                        // Longer than the listener's timeout: simulates a stuck node.
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                    axum::Json(serde_json::json!({
+                        "_embedded": { "records": [{
+                            "type": "payment",
+                            "transaction_successful": true,
+                            "transaction_hash": "fast-tx",
+                            "to": FAST,
+                            "amount": "10.0000000",
+                            "asset_type": "native"
+                        }] }
+                    }))
+                },
+            ),
         );
         let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", server.local_addr().unwrap());
@@ -955,7 +982,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(started.elapsed() < Duration::from_secs(2), "the slow address must time out");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the slow address must time out"
+        );
         assert_eq!(deposits.len(), 1, "the other wallet is still polled");
         assert_eq!(deposits[0].tx_hash, "fast-tx");
     }
@@ -971,8 +1001,7 @@ mod tests {
     /// Helper: compute the backoff duration the listener will use after `n`
     /// consecutive 404s.  Mirrors the formula in `record_unfunded` exactly.
     fn expected_backoff(n: u32) -> Duration {
-        let secs = 30u64
-            .saturating_mul(2u64.saturating_pow(n.saturating_sub(1).min(10)));
+        let secs = 30u64.saturating_mul(2u64.saturating_pow(n.saturating_sub(1).min(10)));
         Duration::from_secs(secs).min(MAX_BACKOFF)
     }
 

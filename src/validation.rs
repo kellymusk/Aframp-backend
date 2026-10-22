@@ -104,7 +104,9 @@ pub fn normalize_ng_phone_number(input: &str) -> Result<String, &'static str> {
     };
 
     if local.len() != 10 || !local.chars().all(|c| c.is_ascii_digit()) {
-        return Err("phone_number must be a 10-digit Nigerian mobile number (e.g. 0801..., +234801...)");
+        return Err(
+            "phone_number must be a 10-digit Nigerian mobile number (e.g. 0801..., +234801...)",
+        );
     }
 
     Ok(format!("+234{local}"))
@@ -187,7 +189,9 @@ mod tests {
                 "must contain at least one special character",
             ]
         );
-        assert!(validate_password("Sh0rt!").unwrap_err().contains(&"must be at least 8 characters"));
+        assert!(validate_password("Sh0rt!")
+            .unwrap_err()
+            .contains(&"must be at least 8 characters"));
     }
     use proptest::prelude::*;
     use serde_json::json;
@@ -210,7 +214,10 @@ mod tests {
         );
 
         let missing = json!({});
-        assert_eq!(require_i64(&missing, "amount_stroops").unwrap_err(), "is required");
+        assert_eq!(
+            require_i64(&missing, "amount_stroops").unwrap_err(),
+            "is required"
+        );
     }
 
     #[test]
@@ -225,8 +232,18 @@ mod tests {
 
     #[test]
     fn normalizes_every_common_input_shape_to_e164() {
-        for input in ["08011122233", "8011122233", "+2348011122233", "2348011122233", "0801-112-2233"] {
-            assert_eq!(normalize_ng_phone_number(input).unwrap(), "+2348011122233", "input: {input}");
+        for input in [
+            "08011122233",
+            "8011122233",
+            "+2348011122233",
+            "2348011122233",
+            "0801-112-2233",
+        ] {
+            assert_eq!(
+                normalize_ng_phone_number(input).unwrap(),
+                "+2348011122233",
+                "input: {input}"
+            );
         }
     }
 
@@ -317,13 +334,7 @@ mod tests {
                     local
                         .chars()
                         .enumerate()
-                        .flat_map(|(i, c)| {
-                            if i == 0 {
-                                vec![c]
-                            } else {
-                                vec![sep, c]
-                            }
-                        })
+                        .flat_map(|(i, c)| if i == 0 { vec![c] } else { vec![sep, c] })
                         .collect()
                 } else {
                     local.clone()

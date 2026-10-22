@@ -43,13 +43,11 @@ pub async fn create_verified(
     phone_number: &str,
 ) -> Result<(User, Merchant), sqlx::Error> {
     let mut tx = db.begin().await?;
-    let user = sqlx::query_as::<_, User>(
-        &format!(
-            "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
+    let user = sqlx::query_as::<_, User>(&format!(
+        "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
              VALUES ($1, $2, $3, $4, true)
              RETURNING {USER_COLS}"
-        ),
-    )
+    ))
     .bind(email)
     .bind(password_hash)
     .bind(name)
@@ -88,12 +86,14 @@ pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
 /// Returns [`UserError::AccountLocked`] when the account is currently locked,
 /// regardless of whether the supplied password is correct.
 #[tracing::instrument(skip_all, err)]
-pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
-    let user = sqlx::query_as::<_, User>(
-        &format!(
-            "SELECT {USER_COLS} FROM users WHERE email = $1 AND deleted_at IS NULL"
-        ),
-    )
+pub async fn login(
+    db: &PgPool,
+    email: &str,
+    password_raw: &str,
+) -> Result<(User, Option<Merchant>), UserError> {
+    let user = sqlx::query_as::<_, User>(&format!(
+        "SELECT {USER_COLS} FROM users WHERE email = $1 AND deleted_at IS NULL"
+    ))
     .bind(email)
     .fetch_optional(db)
     .await?;
@@ -115,7 +115,9 @@ pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User
     // about whether a locked account's password is correct or not.
     if let Some(locked_until) = user.locked_until {
         if Utc::now() < locked_until {
-            return Err(UserError::AccountLocked { until: locked_until });
+            return Err(UserError::AccountLocked {
+                until: locked_until,
+            });
         }
     }
 
@@ -209,7 +211,10 @@ pub async fn merchant_by_user(db: &PgPool, user_id: Uuid) -> Result<Option<Merch
 }
 
 #[tracing::instrument(skip_all, err, fields(%merchant_id))]
-pub async fn merchant_by_id(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+pub async fn merchant_by_id(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE id = $1",
     )
@@ -264,17 +269,23 @@ pub async fn anonymize_and_delete(db: &PgPool, user_id: uuid::Uuid) -> Result<bo
 
 /// Whether the account exists and hasn't been deleted.
 pub async fn is_active(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
-    Ok(sqlx::query_scalar::<_, bool>("SELECT deleted_at IS NULL FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(db)
-        .await?
-        .unwrap_or(false))
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT deleted_at IS NULL FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?
+            .unwrap_or(false),
+    )
 }
 
 /// Whether a session that began at `session_start` (unix seconds — the
 /// token's `orig_iat`) is still valid: the account must be active and the
 /// session must not predate the last password change.
-pub async fn session_is_valid(db: &PgPool, user_id: Uuid, session_start: i64) -> Result<bool, sqlx::Error> {
+pub async fn session_is_valid(
+    db: &PgPool,
+    user_id: Uuid,
+    session_start: i64,
+) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query_scalar::<_, bool>(
         "SELECT deleted_at IS NULL
                 AND (password_changed_at IS NULL

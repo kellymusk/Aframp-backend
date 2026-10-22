@@ -3,8 +3,8 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::Json;
 
-use crate::auth::{cookie, jwt};
 use crate::auth::jwt::Claims;
+use crate::auth::{cookie, jwt};
 use crate::error::{forbidden, internal, ApiError, ErrorCode};
 use crate::services::users;
 use crate::AppState;
@@ -80,14 +80,20 @@ impl AdminUser {
     pub fn require_financials(&self) -> Result<(), (StatusCode, Json<ApiError>)> {
         match self.role {
             AdminRole::SuperAdmin | AdminRole::Finance => Ok(()),
-            AdminRole::Support => Err(forbidden(ErrorCode::Forbidden, "this admin role cannot view financial data")),
+            AdminRole::Support => Err(forbidden(
+                ErrorCode::Forbidden,
+                "this admin role cannot view financial data",
+            )),
         }
     }
 
     pub fn require_pii(&self) -> Result<(), (StatusCode, Json<ApiError>)> {
         match self.role {
             AdminRole::SuperAdmin | AdminRole::Support => Ok(()),
-            AdminRole::Finance => Err(forbidden(ErrorCode::Forbidden, "this admin role cannot view personal data")),
+            AdminRole::Finance => Err(forbidden(
+                ErrorCode::Forbidden,
+                "this admin role cannot view personal data",
+            )),
         }
     }
 }
@@ -104,7 +110,9 @@ fn bearer_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
         .and_then(|v| {
             // The auth scheme is case-insensitive (RFC 9110 §11.1).
             let (scheme, token) = v.split_once(' ')?;
-            scheme.eq_ignore_ascii_case("bearer").then(|| token.trim_start())
+            scheme
+                .eq_ignore_ascii_case("bearer")
+                .then(|| token.trim_start())
         })
 }
 
@@ -147,7 +155,10 @@ pub(crate) fn session_token(headers: &axum::http::HeaderMap) -> Option<&str> {
 }
 
 /// Verifies the session token and that it hasn't been revoked by a logout.
-async fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, (StatusCode, Json<ApiError>)> {
+async fn authenticate(
+    parts: &Parts,
+    state: &AppState,
+) -> Result<Claims, (StatusCode, Json<ApiError>)> {
     let unauthorized = |msg: &str| {
         (
             StatusCode::UNAUTHORIZED,
@@ -178,14 +189,23 @@ async fn authenticate_active(
     let claims = authenticate(parts, state).await?;
     // Refreshed tokens keep their original `orig_iat`, so a refresh can't
     // carry a session past a password change.
-    let session_start = if claims.orig_iat == 0 { claims.iat } else { claims.orig_iat } as i64;
+    let session_start = if claims.orig_iat == 0 {
+        claims.iat
+    } else {
+        claims.orig_iat
+    } as i64;
     if !users::session_is_valid(&state.db, claims.sub, session_start)
         .await
         .map_err(internal)?
     {
         return Err((
             StatusCode::UNAUTHORIZED,
-            Json(ApiError { code: ErrorCode::InvalidCredentials, error: "invalid or expired token".into(), field: None, retry_after_secs: None }),
+            Json(ApiError {
+                code: ErrorCode::InvalidCredentials,
+                error: "invalid or expired token".into(),
+                field: None,
+                retry_after_secs: None,
+            }),
         ));
     }
     Ok(claims)

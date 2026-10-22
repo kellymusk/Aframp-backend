@@ -31,11 +31,25 @@ async fn transactions_reject_unknown_status() {
     let app = app().await;
     let (token, _) = ensure_merchant(&app, "tx_filters_bad").await;
 
-    let (status, body) = send(app.clone(), "GET", "/transactions?status=pending", Some(&token), None).await;
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        "/transactions?status=pending",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["code"], "INVALID_PARAMETERS");
 
-    let (status, body) = send(app.clone(), "GET", "/transactions?asset=", Some(&token), None).await;
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        "/transactions?asset=",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["code"], "INVALID_PARAMETERS");
 }
@@ -45,10 +59,21 @@ async fn transactions_filters_narrow_the_result_set() {
     let state = state().await;
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "tx_filters_rows").await;
-    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    let (status, wallet) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet}");
 
-    for (asset, status) in [("XLM", "confirmed"), ("XLM", "detected"), ("cNGN", "confirmed")] {
+    for (asset, status) in [
+        ("XLM", "confirmed"),
+        ("XLM", "detected"),
+        ("cNGN", "confirmed"),
+    ] {
         sqlx::query(
             "INSERT INTO payments
                (merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status)
@@ -73,6 +98,10 @@ async fn transactions_filters_narrow_the_result_set() {
     ] {
         let (status, body) = send(app.clone(), "GET", path, Some(&token), None).await;
         assert_eq!(status, StatusCode::OK, "{path} failed: {body}");
-        assert_eq!(body["data"].as_array().unwrap().len(), expected, "{path}: {body}");
+        assert_eq!(
+            body["data"].as_array().unwrap().len(),
+            expected,
+            "{path}: {body}"
+        );
     }
 }

@@ -62,7 +62,10 @@ async fn health_succeeds_without_content_type_header() {
     let app = router(state);
 
     let status = get_no_headers(app, "/health").await;
-    assert!(status.is_success(), "GET /health must return 2xx even without a Content-Type header");
+    assert!(
+        status.is_success(),
+        "GET /health must return 2xx even without a Content-Type header"
+    );
 }
 
 /// `GET /health` must succeed even when the client sends a wrong
@@ -73,7 +76,10 @@ async fn health_succeeds_with_wrong_content_type() {
     let app = router(state);
 
     let status = get_with_content_type(app, "/health", "text/plain").await;
-    assert!(status.is_success(), "GET /health must return 2xx even with a non-JSON Content-Type");
+    assert!(
+        status.is_success(),
+        "GET /health must return 2xx even with a non-JSON Content-Type"
+    );
 }
 
 /// `GET /health` must not return `415 Unsupported Media Type` — that code is
@@ -150,44 +156,6 @@ async fn post_with_wrong_content_type_still_returns_415() {
 }
 
 // ── documentation / design tests (no DB) ─────────────────────────────────────
-
-/// Documents the intent of issue #1275: the middleware should be scoped to
-/// API routes only, not applied globally.
-///
-/// This is a compile-time documentation test — it always passes.
-#[test]
-fn middleware_scope_design_note() {
-    // Current behaviour (before the refactor):
-    //   - middleware applied via router().layer(from_fn(require_json_content_type))
-    //   - Short-circuits on GET/HEAD/DELETE, so /health and /admin are
-    //     functionally unaffected even though the layer runs.
-    //
-    // Desired behaviour (after issue #1275):
-    //   - JSON API routes are in a nested Router that has the middleware as a
-    //     layer; /health and /admin are in a separate, middleware-free Router.
-    //   - This makes the scope explicit and prevents accidentally catching a
-    //     future GET route that might return non-JSON.
-    //
-    // The proposed lib.rs structure:
-    //
-    //   let api_routes = Router::new()
-    //       .route("/signup", post(…))
-    //       // … all POST/PUT JSON API routes …
-    //       .layer(from_fn(require_json_content_type));
-    //
-    //   let non_api_routes = Router::new()
-    //       .route("/health", get(…))
-    //       .route("/admin", get(…))
-    //       .route("/admin/*path", get(…));
-    //
-    //   Router::new()
-    //       .merge(api_routes)
-    //       .merge(non_api_routes)
-    //       .with_state(state)
-    //
-    // See docs/middleware-scope-refactor.md for the full design note.
-    assert!(true, "design note always passes");
-}
 
 /// `/health/detailed` reports each dependency; the test Horizon is
 /// unreachable, so it answers 503 with the database still `ok`.

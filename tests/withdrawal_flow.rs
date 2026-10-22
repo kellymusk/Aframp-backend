@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use aframp::payments::mock::MockProvider;
-use aframp::payments::{PayoutVerification, PaymentProvider, PayoutRequest, PayoutResult};
+use aframp::payments::{PaymentProvider, PayoutRequest, PayoutResult, PayoutVerification};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use serde_json::json;
@@ -18,7 +18,11 @@ struct FailingProvider;
 
 #[async_trait]
 impl PaymentProvider for FailingProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -37,7 +41,11 @@ struct MockVerificationProvider {
 
 #[async_trait]
 impl PaymentProvider for MockVerificationProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -60,7 +68,11 @@ struct RowVanishingProvider(sqlx::PgPool);
 
 #[async_trait]
 impl PaymentProvider for RowVanishingProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -77,7 +89,10 @@ impl PaymentProvider for RowVanishingProvider {
         })
     }
 
-    async fn verify_payout(&self, _reference: &str) -> Result<aframp::payments::PayoutVerification, String> {
+    async fn verify_payout(
+        &self,
+        _reference: &str,
+    ) -> Result<aframp::payments::PayoutVerification, String> {
         Ok(aframp::payments::PayoutVerification::NotFound)
     }
 }
@@ -88,7 +103,11 @@ struct InvalidBankCodeProvider;
 
 #[async_trait]
 impl PaymentProvider for InvalidBankCodeProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -96,7 +115,10 @@ impl PaymentProvider for InvalidBankCodeProvider {
         Err("Invalid bank code".into())
     }
 
-    async fn verify_payout(&self, _reference: &str) -> Result<aframp::payments::PayoutVerification, String> {
+    async fn verify_payout(
+        &self,
+        _reference: &str,
+    ) -> Result<aframp::payments::PayoutVerification, String> {
         Ok(aframp::payments::PayoutVerification::NotFound)
     }
 }
@@ -107,7 +129,11 @@ struct InvalidAccountNumberProvider;
 
 #[async_trait]
 impl PaymentProvider for InvalidAccountNumberProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -115,7 +141,10 @@ impl PaymentProvider for InvalidAccountNumberProvider {
         Err("Could not resolve account number".into())
     }
 
-    async fn verify_payout(&self, _reference: &str) -> Result<aframp::payments::PayoutVerification, String> {
+    async fn verify_payout(
+        &self,
+        _reference: &str,
+    ) -> Result<aframp::payments::PayoutVerification, String> {
         Ok(aframp::payments::PayoutVerification::NotFound)
     }
 }
@@ -126,7 +155,11 @@ struct TimeoutProvider;
 
 #[async_trait]
 impl PaymentProvider for TimeoutProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -134,7 +167,10 @@ impl PaymentProvider for TimeoutProvider {
         Err("request to Paystack timed out".into())
     }
 
-    async fn verify_payout(&self, _reference: &str) -> Result<aframp::payments::PayoutVerification, String> {
+    async fn verify_payout(
+        &self,
+        _reference: &str,
+    ) -> Result<aframp::payments::PayoutVerification, String> {
         Ok(aframp::payments::PayoutVerification::NotFound)
     }
 }
@@ -472,8 +508,15 @@ async fn withdrawal_paystack_failure_returns_documented_502_payout_failed_shape(
 
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{json}");
     assert_eq!(json["code"], "PAYOUT_FAILED");
-    assert!(json["error"].as_str().unwrap().contains("simulated provider failure"));
-    assert_eq!(json.as_object().unwrap().len(), 2, "error body is only {{error, code}}: {json}");
+    assert!(json["error"]
+        .as_str()
+        .unwrap()
+        .contains("simulated provider failure"));
+    assert_eq!(
+        json.as_object().unwrap().len(),
+        2,
+        "error body is only {{error, code}}: {json}"
+    );
 
     // Prove the row exists so frontends know a retry would duplicate work.
     let failed_count = sqlx::query_scalar::<_, i64>(
@@ -676,8 +719,15 @@ async fn withdrawal_idempotency_key_returns_original_withdrawal() {
         &[("Idempotency-Key", "retry-key-1")],
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "retry should return the original response: {second}");
-    assert_eq!(first["id"], second["id"], "retry must return the original withdrawal id");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "retry should return the original response: {second}"
+    );
+    assert_eq!(
+        first["id"], second["id"],
+        "retry must return the original withdrawal id"
+    );
 
     let balance = sqlx::query_scalar::<_, i64>(
         "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
@@ -690,7 +740,11 @@ async fn withdrawal_idempotency_key_returns_original_withdrawal() {
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["data"].as_array().unwrap().len(), 1, "retry must not create a second withdrawal");
+    assert_eq!(
+        json["data"].as_array().unwrap().len(),
+        1,
+        "retry must not create a second withdrawal"
+    );
 
     // A different idempotency key is a distinct request and creates a new
     // withdrawal.
@@ -703,12 +757,23 @@ async fn withdrawal_idempotency_key_returns_original_withdrawal() {
         &[("Idempotency-Key", "retry-key-2")],
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "second distinct withdraw failed: {third}");
-    assert_ne!(first["id"], third["id"], "a different key must create a new withdrawal");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "second distinct withdraw failed: {third}"
+    );
+    assert_ne!(
+        first["id"], third["id"],
+        "a different key must create a new withdrawal"
+    );
 
     let (status, json) = send(app.clone(), "GET", "/withdrawals", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["data"].as_array().unwrap().len(), 2, "distinct keys create distinct withdrawals");
+    assert_eq!(
+        json["data"].as_array().unwrap().len(),
+        2,
+        "distinct keys create distinct withdrawals"
+    );
 }
 
 #[tokio::test]
@@ -788,7 +853,11 @@ async fn withdraw_amount_stroops_rejects_float_and_string() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "float should be 400: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "float should be 400: {json}"
+    );
     assert_eq!(json["code"], "INVALID_PARAMETERS");
     assert_eq!(json["field"], "amount_stroops");
 
@@ -804,7 +873,11 @@ async fn withdraw_amount_stroops_rejects_float_and_string() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "string should be 400: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "string should be 400: {json}"
+    );
     assert_eq!(json["code"], "INVALID_PARAMETERS");
     assert_eq!(json["field"], "amount_stroops");
 }
@@ -883,26 +956,25 @@ async fn reconciliation_completed_marks_status_completed() {
         },
     };
 
-    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
-        &state.db,
-        &provider,
-    )
-    .await
-    .unwrap();
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(&state.db, &provider)
+        .await
+        .unwrap();
 
     assert!(report.completed >= 1);
 
-    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
-        "SELECT * FROM withdrawals WHERE id = $1",
-    )
-    .bind(withdrawal_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap();
+    let row =
+        sqlx::query_as::<_, aframp::models::Withdrawal>("SELECT * FROM withdrawals WHERE id = $1")
+            .bind(withdrawal_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
 
     assert_eq!(row.status.as_str(), "completed");
     assert_eq!(row.provider.as_deref(), Some("paystack"));
-    assert_eq!(row.provider_reference.as_deref(), Some("TRF_test_completed"));
+    assert_eq!(
+        row.provider_reference.as_deref(),
+        Some("TRF_test_completed")
+    );
 }
 
 #[tokio::test]
@@ -945,25 +1017,24 @@ async fn reconciliation_failed_refunds_balance() {
         },
     };
 
-    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
-        &state.db,
-        &provider,
-    )
-    .await
-    .unwrap();
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(&state.db, &provider)
+        .await
+        .unwrap();
 
     assert!(report.failed_and_refunded >= 1);
 
-    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
-        "SELECT * FROM withdrawals WHERE id = $1",
-    )
-    .bind(withdrawal_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap();
+    let row =
+        sqlx::query_as::<_, aframp::models::Withdrawal>("SELECT * FROM withdrawals WHERE id = $1")
+            .bind(withdrawal_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
 
     assert_eq!(row.status.as_str(), "failed");
-    assert_eq!(row.failure_reason.as_deref(), Some("Paystack transfer status: failed"));
+    assert_eq!(
+        row.failure_reason.as_deref(),
+        Some("Paystack transfer status: failed")
+    );
 
     let balance = sqlx::query_scalar::<_, i64>(
         "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
@@ -972,7 +1043,10 @@ async fn reconciliation_failed_refunds_balance() {
     .fetch_one(&state.db)
     .await
     .unwrap();
-    assert_eq!(balance, 5_000_000, "balance must be refunded back to 5_000_000");
+    assert_eq!(
+        balance, 5_000_000,
+        "balance must be refunded back to 5_000_000"
+    );
 }
 
 #[tokio::test]
@@ -1010,22 +1084,18 @@ async fn reconciliation_not_found_refunds_balance() {
         verification: PayoutVerification::NotFound,
     };
 
-    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
-        &state.db,
-        &provider,
-    )
-    .await
-    .unwrap();
+    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(&state.db, &provider)
+        .await
+        .unwrap();
 
     assert!(report.failed_and_refunded >= 1);
 
-    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
-        "SELECT * FROM withdrawals WHERE id = $1",
-    )
-    .bind(withdrawal_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap();
+    let row =
+        sqlx::query_as::<_, aframp::models::Withdrawal>("SELECT * FROM withdrawals WHERE id = $1")
+            .bind(withdrawal_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
 
     assert_eq!(row.status.as_str(), "failed");
     assert!(row.failure_reason.unwrap().contains("not found"));
@@ -1069,23 +1139,24 @@ async fn reconciliation_skips_recent_pending_withdrawals() {
         },
     };
 
-    let report = aframp::services::withdrawals::reconcile_pending_withdrawals(
-        &state.db,
-        &provider,
-    )
-    .await
-    .unwrap();
+    let _report =
+        aframp::services::withdrawals::reconcile_pending_withdrawals(&state.db, &provider)
+            .await
+            .unwrap();
 
     // Check that recent withdrawal was not reconciled
-    let row = sqlx::query_as::<_, aframp::models::Withdrawal>(
-        "SELECT * FROM withdrawals WHERE id = $1",
-    )
-    .bind(withdrawal_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap();
+    let row =
+        sqlx::query_as::<_, aframp::models::Withdrawal>("SELECT * FROM withdrawals WHERE id = $1")
+            .bind(withdrawal_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
 
-    assert_eq!(row.status.as_str(), "pending", "recent pending withdrawal must stay pending");
+    assert_eq!(
+        row.status.as_str(),
+        "pending",
+        "recent pending withdrawal must stay pending"
+    );
     assert_eq!(row.provider_reference, None);
 }
 
@@ -1129,7 +1200,11 @@ async fn withdrawal_daily_limit_exceeded_rejected() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected daily limit rejection: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected daily limit rejection: {json}"
+    );
     assert_eq!(json["error"], "daily withdrawal limit exceeded");
 
     // Balance should remain unchanged
@@ -1183,7 +1258,11 @@ async fn withdrawal_daily_limit_within_limit_allowed() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "expected withdrawal success: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "expected withdrawal success: {json}"
+    );
 
     let balance = sqlx::query_scalar::<_, i64>(
         "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
@@ -1248,7 +1327,11 @@ async fn withdrawal_daily_limit_ignores_past_days_and_failed_withdrawals() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "expected withdrawal success: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "expected withdrawal success: {json}"
+    );
 
     let balance = sqlx::query_scalar::<_, i64>(
         "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
@@ -1300,7 +1383,11 @@ async fn withdrawal_daily_limit_counts_pending_withdrawals() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "pending withdrawal must count: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "pending withdrawal must count: {json}"
+    );
     assert_eq!(json["code"], "DAILY_LIMIT_EXCEEDED");
 }
 
@@ -1309,7 +1396,14 @@ async fn withdrawal_daily_limit_counts_pending_withdrawals() {
 async fn withdrawal_fee_endpoint_reports_fee_and_net() {
     let state = state().await;
     let app = aframp::router(state);
-    let (status, json) = send(app.clone(), "GET", "/withdrawal-fee?amount_stroops=5000000000", None, None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        "/withdrawal-fee?amount_stroops=5000000000",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{json}");
     assert_eq!(json["fee_stroops"], 1_000_000_000);
     assert_eq!(json["net_amount_stroops"], 4_000_000_000i64);
@@ -1350,12 +1444,26 @@ async fn get_withdrawal_by_id_is_scoped_to_the_merchant() {
     assert_eq!(status, StatusCode::OK, "{created}");
     let id = created["id"].as_str().unwrap();
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/withdrawals/{id}"), Some(&token), None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/withdrawals/{id}"),
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{fetched}");
     assert_eq!(fetched["id"], id);
     assert_eq!(fetched["account_number"], "****6789");
 
-    let (status, json) = send(app.clone(), "GET", &format!("/withdrawals/{id}"), Some(&other_token), None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("/withdrawals/{id}"),
+        Some(&other_token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{json}");
     assert_eq!(json["code"], "WITHDRAWAL_NOT_FOUND");
 }
@@ -1426,5 +1534,8 @@ async fn balance_cannot_be_written_negative() {
     .bind(&merchant_id)
     .execute(&state.db)
     .await;
-    assert!(result.is_err(), "a negative available balance must be rejected");
+    assert!(
+        result.is_err(),
+        "a negative available balance must be rejected"
+    );
 }

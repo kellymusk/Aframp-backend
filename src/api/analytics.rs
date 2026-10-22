@@ -28,7 +28,10 @@ pub struct PaymentAnalytics {
 
 fn parse_date(name: &str, value: &str) -> ApiResult<NaiveDate> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
-        bad_request(ErrorCode::InvalidParameters, &format!("{name} must be a YYYY-MM-DD date"))
+        bad_request(
+            ErrorCode::InvalidParameters,
+            &format!("{name} must be a YYYY-MM-DD date"),
+        )
     })
 }
 
@@ -39,9 +42,12 @@ pub async fn payments(
     auth: AuthUser,
     Query(params): Query<AnalyticsParams>,
 ) -> ApiResult<Json<PaymentAnalytics>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
 
     let to = match params.to.as_deref() {
         Some(raw) => parse_date("to", raw)?,
@@ -52,7 +58,10 @@ pub async fn payments(
         None => to - Duration::days(DEFAULT_WINDOW_DAYS - 1),
     };
     if from > to {
-        return Err(bad_request(ErrorCode::InvalidParameters, "from must not be after to"));
+        return Err(bad_request(
+            ErrorCode::InvalidParameters,
+            "from must not be after to",
+        ));
     }
     if (to - from).num_days() + 1 > MAX_WINDOW_DAYS {
         return Err(bad_request(
@@ -61,8 +70,14 @@ pub async fn payments(
         ));
     }
 
-    let start = from.and_hms_opt(0, 0, 0).expect("midnight is valid").and_utc();
-    let end = (to + Duration::days(1)).and_hms_opt(0, 0, 0).expect("midnight is valid").and_utc();
+    let start = from
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
+    let end = (to + Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight is valid")
+        .and_utc();
     let data = payments::daily_confirmed_totals(&state.db, merchant_id, start, end)
         .await
         .map_err(internal)?;

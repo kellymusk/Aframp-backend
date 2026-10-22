@@ -286,10 +286,7 @@ pub async fn set_deposit_email_enabled(
 /// from the email link. Returns `true` when a matching opt-in was disabled.
 /// This is the GDPR-compliant one-click unsubscribe path and requires no
 /// authentication.
-pub async fn unsubscribe_deposit_email(
-    db: &PgPool,
-    token: Uuid,
-) -> Result<bool, sqlx::Error> {
+pub async fn unsubscribe_deposit_email(db: &PgPool, token: Uuid) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
         "UPDATE merchant_notification_prefs
             SET deposit_email_enabled = false, updated_at = now()
@@ -329,7 +326,10 @@ pub async fn bump_confirmations(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error
 /// Promotes every verified deposit with at least `min_confirmations` to
 /// `confirmed`, moving its amount from `pending` to `available` in the same
 /// transaction. Returns the promoted payments.
-pub async fn promote_confirmed(db: &PgPool, min_confirmations: i32) -> Result<Vec<Payment>, sqlx::Error> {
+pub async fn promote_confirmed(
+    db: &PgPool,
+    min_confirmations: i32,
+) -> Result<Vec<Payment>, sqlx::Error> {
     let ready = sqlx::query_as::<_, Payment>(&format!(
         "SELECT {PAYMENT_COLUMNS}
            FROM payments
@@ -418,7 +418,11 @@ pub async fn flag_payment(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
 
 /// Total of a merchant's `asset` deposits recorded in the last hour, including
 /// the one just recorded.
-pub async fn deposits_in_last_hour(db: &PgPool, merchant_id: Uuid, asset: &str) -> Result<i64, sqlx::Error> {
+pub async fn deposits_in_last_hour(
+    db: &PgPool,
+    merchant_id: Uuid,
+    asset: &str,
+) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT COALESCE(SUM(amount_stroops), 0)::bigint FROM payments
           WHERE merchant_id = $1 AND asset = $2 AND created_at > now() - interval '1 hour'",

@@ -98,7 +98,8 @@ pub fn bad_request_field(field: &str, message: &str) -> (StatusCode, Json<ApiErr
         Json(ApiError {
             error: message.into(),
             code: ErrorCode::InvalidParameters,
-            field: Some(field.into()), retry_after_secs: None
+            field: Some(field.into()),
+            retry_after_secs: None,
         }),
     )
 }
@@ -127,15 +128,9 @@ pub fn bad_gateway(code: ErrorCode, message: &str) -> (StatusCode, Json<ApiError
     error(StatusCode::BAD_GATEWAY, code, message)
 }
 
+#[cfg(test)]
 pub fn too_many_requests(code: ErrorCode, message: &str) -> (StatusCode, Json<ApiError>) {
     error(StatusCode::TOO_MANY_REQUESTS, code, message)
-}
-
-/// Returned when a request body exceeds the configured `MAX_REQUEST_BODY_BYTES`
-/// limit. Uses the same JSON error shape as every other API error so clients can
-/// handle it uniformly.
-pub fn payload_too_large(message: &str) -> (StatusCode, Json<ApiError>) {
-    error(StatusCode::PAYLOAD_TOO_LARGE, ErrorCode::PayloadTooLarge, message)
 }
 
 /// `423 Locked`: the account is temporarily locked (too many failed logins).
@@ -168,7 +163,8 @@ fn error(status: StatusCode, code: ErrorCode, message: &str) -> (StatusCode, Jso
         Json(ApiError {
             error: message.into(),
             code,
-            field: None, retry_after_secs: None
+            field: None,
+            retry_after_secs: None,
         }),
     )
 }
@@ -186,9 +182,10 @@ impl From<crate::services::users::UserError> for (StatusCode, Json<ApiError>) {
                 unauthorized(ErrorCode::InvalidCredentials, "invalid email or password")
             }
             UserError::AccountLocked { until } => locked(until),
-            UserError::MerchantSuspended => {
-                forbidden(ErrorCode::Forbidden, "this merchant account has been suspended")
-            }
+            UserError::MerchantSuspended => forbidden(
+                ErrorCode::Forbidden,
+                "this merchant account has been suspended",
+            ),
             UserError::Database(_) => internal(err),
         }
     }
@@ -207,9 +204,10 @@ impl From<crate::services::otp::OtpError> for (StatusCode, Json<ApiError>) {
                     retry_after_secs: Some(retry_after_secs),
                 }),
             ),
-            OtpError::ChallengeNotFound => {
-                not_found(ErrorCode::OtpChallengeNotFound, "otp challenge not found or already used")
-            }
+            OtpError::ChallengeNotFound => not_found(
+                ErrorCode::OtpChallengeNotFound,
+                "otp challenge not found or already used",
+            ),
             OtpError::Expired => bad_request(ErrorCode::OtpExpired, "otp code has expired"),
             OtpError::Locked => bad_request(
                 ErrorCode::OtpLocked,
@@ -217,7 +215,9 @@ impl From<crate::services::otp::OtpError> for (StatusCode, Json<ApiError>) {
             ),
             OtpError::InvalidCode => bad_request(ErrorCode::OtpInvalid, "incorrect code"),
             OtpError::EmailTaken => conflict(ErrorCode::EmailTaken, "email already registered"),
-            OtpError::PhoneTaken => conflict(ErrorCode::PhoneTaken, "phone number already registered"),
+            OtpError::PhoneTaken => {
+                conflict(ErrorCode::PhoneTaken, "phone number already registered")
+            }
             OtpError::SendFailed(_) | OtpError::Database(_) => internal(err),
         }
     }
@@ -227,9 +227,10 @@ impl From<crate::services::withdrawals::WithdrawalError> for (StatusCode, Json<A
     fn from(err: crate::services::withdrawals::WithdrawalError) -> Self {
         use crate::services::withdrawals::WithdrawalError;
         match err {
-            WithdrawalError::InsufficientBalance => {
-                bad_request(ErrorCode::InsufficientBalance, "insufficient available balance")
-            }
+            WithdrawalError::InsufficientBalance => bad_request(
+                ErrorCode::InsufficientBalance,
+                "insufficient available balance",
+            ),
             WithdrawalError::UnsupportedAsset => bad_request(
                 ErrorCode::UnsupportedAsset,
                 "withdrawals are only supported for the cNGN asset",
@@ -242,9 +243,10 @@ impl From<crate::services::withdrawals::WithdrawalError> for (StatusCode, Json<A
                 ErrorCode::AccountVerificationFailed,
                 &format!("bank account could not be verified: {msg}"),
             ),
-            WithdrawalError::DailyLimitExceeded => {
-                bad_request(ErrorCode::DailyLimitExceeded, "daily withdrawal limit exceeded")
-            }
+            WithdrawalError::DailyLimitExceeded => bad_request(
+                ErrorCode::DailyLimitExceeded,
+                "daily withdrawal limit exceeded",
+            ),
             WithdrawalError::PayoutFailed(msg) => bad_gateway(ErrorCode::PayoutFailed, &msg),
             WithdrawalError::Database(e) => internal(e),
         }

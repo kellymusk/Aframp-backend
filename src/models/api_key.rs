@@ -14,6 +14,7 @@ pub struct ApiKey {
 }
 
 /// Environment a merchant-scoped API key is issued for.
+#[allow(dead_code)] // issuance types, not wired into a key-creation endpoint yet
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiKeyEnvironment {
@@ -21,6 +22,7 @@ pub enum ApiKeyEnvironment {
     Live,
 }
 
+#[allow(dead_code)] // issuance types, not wired into a key-creation endpoint yet
 impl ApiKeyEnvironment {
     /// Prefix used for keys issued in this environment (`sk_test_` / `sk_live_`).
     pub fn key_prefix(&self) -> &'static str {
@@ -52,6 +54,7 @@ impl std::str::FromStr for ApiKeyEnvironment {
 
 /// Response returned when a new API key is issued. The raw `key` is only ever
 /// surfaced here; only its hash is persisted in the `api_keys` table.
+#[allow(dead_code)] // issuance types, not wired into a key-creation endpoint yet
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiKeyIssued {
     pub id: Uuid,
@@ -62,6 +65,7 @@ pub struct ApiKeyIssued {
     pub created_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)] // issuance types, not wired into a key-creation endpoint yet
 impl ApiKeyIssued {
     pub fn new(
         id: Uuid,

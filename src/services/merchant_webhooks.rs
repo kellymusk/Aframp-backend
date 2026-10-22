@@ -94,7 +94,8 @@ pub async fn list(db: &PgPool, merchant_id: Uuid) -> Result<Vec<MerchantWebhook>
 /// Hex HMAC-SHA256 of `body` keyed with `secret` — what receivers recompute
 /// to verify [`SIGNATURE_HEADER`].
 pub fn sign(secret: &str, body: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(body);
     hex::encode(mac.finalize().into_bytes())
 }
@@ -149,7 +150,17 @@ pub async fn dispatch(
             body.clone(),
         );
         tokio::spawn(async move {
-            deliver(&db, &http, &secret, delivery_id, &webhook.url, &event_type, &body, policy).await;
+            deliver(
+                &db,
+                &http,
+                &secret,
+                delivery_id,
+                &webhook.url,
+                &event_type,
+                &body,
+                policy,
+            )
+            .await;
         });
     }
     Ok(ids)

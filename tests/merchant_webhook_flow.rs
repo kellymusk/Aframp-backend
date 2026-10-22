@@ -87,7 +87,11 @@ async fn register_and_list_webhooks() {
         Some(json!({ "url": "not a url" })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "invalid url should be rejected: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "invalid url should be rejected: {json}"
+    );
 
     let (status, created) = send(
         app.clone(),
@@ -108,7 +112,11 @@ async fn register_and_list_webhooks() {
         Some(json!({ "url": "https://merchant.example.com/aframp" })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "duplicate should conflict: {json}");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "duplicate should conflict: {json}"
+    );
 
     let (status, list) = send(app.clone(), "GET", "/webhooks", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "list failed: {list}");
@@ -125,7 +133,14 @@ async fn dispatch_delivers_signed_payment_confirmed_event() {
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "webhook_dispatch").await;
     let (url, received) = receiver(0).await;
-    let (status, json) = send(app.clone(), "POST", "/webhooks", Some(&token), Some(json!({ "url": url }))).await;
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/webhooks",
+        Some(&token),
+        Some(json!({ "url": url })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "register failed: {json}");
 
     let payload = json!({
@@ -145,12 +160,18 @@ async fn dispatch_delivers_signed_payment_confirmed_event() {
     .unwrap();
     assert_eq!(ids.len(), 1);
 
-    assert_eq!(wait_for_delivery(&state.db, ids[0]).await, ("delivered".to_string(), 1));
+    assert_eq!(
+        wait_for_delivery(&state.db, ids[0]).await,
+        ("delivered".to_string(), 1)
+    );
 
     let received = received.lock().unwrap();
     let (signature, event, body) = &received[0];
     assert_eq!(event, "payment.confirmed");
-    assert_eq!(serde_json::from_str::<serde_json::Value>(body).unwrap(), payload);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        payload
+    );
     assert_eq!(
         signature,
         &merchant_webhooks::sign(state.webhook_secret.as_str(), body.as_bytes()),
@@ -164,7 +185,14 @@ async fn dispatch_retries_until_the_receiver_succeeds() {
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "webhook_retry").await;
     let (url, received) = receiver(2).await;
-    send(app.clone(), "POST", "/webhooks", Some(&token), Some(json!({ "url": url }))).await;
+    send(
+        app.clone(),
+        "POST",
+        "/webhooks",
+        Some(&token),
+        Some(json!({ "url": url })),
+    )
+    .await;
 
     let ids = merchant_webhooks::dispatch(
         &state.db,
@@ -178,8 +206,15 @@ async fn dispatch_retries_until_the_receiver_succeeds() {
     .await
     .unwrap();
 
-    assert_eq!(wait_for_delivery(&state.db, ids[0]).await, ("delivered".to_string(), 3));
-    assert_eq!(received.lock().unwrap().len(), 3, "two failures, then success");
+    assert_eq!(
+        wait_for_delivery(&state.db, ids[0]).await,
+        ("delivered".to_string(), 3)
+    );
+    assert_eq!(
+        received.lock().unwrap().len(),
+        3,
+        "two failures, then success"
+    );
 }
 
 #[tokio::test]
@@ -188,7 +223,14 @@ async fn dispatch_marks_delivery_failed_after_max_attempts() {
     let app = aframp::router(state.clone());
     let (token, merchant_id) = ensure_merchant(&app, "webhook_exhausted").await;
     let (url, received) = receiver(usize::MAX).await;
-    send(app.clone(), "POST", "/webhooks", Some(&token), Some(json!({ "url": url }))).await;
+    send(
+        app.clone(),
+        "POST",
+        "/webhooks",
+        Some(&token),
+        Some(json!({ "url": url })),
+    )
+    .await;
 
     let ids = merchant_webhooks::dispatch(
         &state.db,
@@ -202,7 +244,10 @@ async fn dispatch_marks_delivery_failed_after_max_attempts() {
     .await
     .unwrap();
 
-    assert_eq!(wait_for_delivery(&state.db, ids[0]).await, ("failed".to_string(), 3));
+    assert_eq!(
+        wait_for_delivery(&state.db, ids[0]).await,
+        ("failed".to_string(), 3)
+    );
     assert_eq!(received.lock().unwrap().len(), 3);
     let last_error: Option<String> =
         sqlx::query_scalar("SELECT last_error FROM webhook_deliveries WHERE id = $1")
@@ -210,5 +255,8 @@ async fn dispatch_marks_delivery_failed_after_max_attempts() {
             .fetch_one(&state.db)
             .await
             .unwrap();
-    assert_eq!(last_error.as_deref(), Some("HTTP 500 Internal Server Error"));
+    assert_eq!(
+        last_error.as_deref(),
+        Some("HTTP 500 Internal Server Error")
+    );
 }

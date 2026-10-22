@@ -168,7 +168,16 @@ pub async fn create_payment_request_for_network(
         .await?
         .ok_or_else(|| PaymentRequestError::WalletNotFound(network.clone()))?;
 
-    create_payment_request(db, merchant_id, wallet_id, amount_stroops, asset, expires_in_secs, description).await
+    create_payment_request(
+        db,
+        merchant_id,
+        wallet_id,
+        amount_stroops,
+        asset,
+        expires_in_secs,
+        description,
+    )
+    .await
 }
 
 /// A payment request joined with its wallet's address, so listing many doesn't
@@ -255,7 +264,10 @@ pub async fn payment_requests_by_merchant_cursor(
 }
 
 #[tracing::instrument(skip_all, err, fields(payment_request_id = %id))]
-pub async fn payment_request_by_id(db: &PgPool, id: Uuid) -> Result<Option<PaymentRequest>, sqlx::Error> {
+pub async fn payment_request_by_id(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<PaymentRequest>, sqlx::Error> {
     sqlx::query_as::<_, PaymentRequest>(&format!(
         "SELECT {PR_COLS} FROM payment_requests WHERE id = $1"
     ))
@@ -279,7 +291,11 @@ pub enum ExpireError {
 /// Expiry stays a read-time state (see [`effective_status`]); this just moves
 /// `expires_at` to now, so the row reads `expired` from here on and can no
 /// longer be matched by a late deposit.
-pub async fn expire(db: &PgPool, id: Uuid, merchant_id: Uuid) -> Result<PaymentRequest, ExpireError> {
+pub async fn expire(
+    db: &PgPool,
+    id: Uuid,
+    merchant_id: Uuid,
+) -> Result<PaymentRequest, ExpireError> {
     let updated = sqlx::query_as::<_, PaymentRequest>(&format!(
         "UPDATE payment_requests
             SET expires_at = now(), updated_at = now()
@@ -399,7 +415,8 @@ mod tests {
 
     #[test]
     fn memos_do_not_repeat_across_a_large_batch() {
-        let memos: std::collections::HashSet<String> = (0..10_000).map(|_| generate_memo()).collect();
+        let memos: std::collections::HashSet<String> =
+            (0..10_000).map(|_| generate_memo()).collect();
         assert_eq!(memos.len(), 10_000);
     }
 }

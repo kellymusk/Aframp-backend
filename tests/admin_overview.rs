@@ -17,8 +17,14 @@ async fn admin_overview_ignores_uncommitted_writes() {
         "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
          VALUES ($1, 'x', 'Half Written', $2, true)",
     )
-    .bind(format!("half-written-{}@example.com", uuid::Uuid::new_v4().simple()))
-    .bind(format!("+2347{:010}", (uuid::Uuid::new_v4().as_u128() as u64) % 10_000_000_000))
+    .bind(format!(
+        "half-written-{}@example.com",
+        uuid::Uuid::new_v4().simple()
+    ))
+    .bind(format!(
+        "+2347{:010}",
+        (uuid::Uuid::new_v4().as_u128() as u64) % 10_000_000_000
+    ))
     .execute(&mut *tx)
     .await
     .expect("insert uncommitted user");
@@ -63,18 +69,22 @@ async fn admin_merchants_lists_multi_wallet_merchant_once() {
         Some(serde_json::json!({})),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::OK, "wallet create failed: {json}");
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "wallet create failed: {json}"
+    );
 
     let merchant_id: uuid::Uuid = merchant_id.parse().unwrap();
     sqlx::query(
         "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
          VALUES ($1, $2, 'bitcoin', 'unused')",
     )
-        .bind(merchant_id)
-        .bind(format!("bc1q{}", uuid::Uuid::new_v4().simple()))
-        .execute(&state.db)
-        .await
-        .expect("insert second wallet");
+    .bind(merchant_id)
+    .bind(format!("bc1q{}", uuid::Uuid::new_v4().simple()))
+    .execute(&state.db)
+    .await
+    .expect("insert second wallet");
 
     let rows = aframp::services::admin::merchants(&state.db, 200, None)
         .await
@@ -101,15 +111,24 @@ async fn admin_merchants_pages_without_overlap() {
             .expect("admin merchants page");
         assert!(page.data.len() <= 2);
         for row in &page.data {
-            assert!(seen.insert(row.id), "merchant {} appeared on two pages", row.id);
+            assert!(
+                seen.insert(row.id),
+                "merchant {} appeared on two pages",
+                row.id
+            );
         }
         pages += 1;
         match page.next_cursor {
-            Some(raw) => cursor = Some(aframp::pagination::Cursor::decode(&raw).expect("valid cursor")),
+            Some(raw) => {
+                cursor = Some(aframp::pagination::Cursor::decode(&raw).expect("valid cursor"))
+            }
             None => break,
         }
     }
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM merchants").fetch_one(&state.db).await.unwrap();
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM merchants")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
     assert_eq!(seen.len() as i64, total, "paging must visit every merchant");
     assert!(pages >= 2);
 }

@@ -5,7 +5,12 @@ use serde_json::{json, Value};
 
 use common::{ensure_merchant, send, state};
 
-async fn page(app: &axum::Router, token: &str, path: &str, cursor: Option<&str>) -> (Vec<String>, Option<String>) {
+async fn page(
+    app: &axum::Router,
+    token: &str,
+    path: &str,
+    cursor: Option<&str>,
+) -> (Vec<String>, Option<String>) {
     let uri = match cursor {
         Some(c) => format!("{path}?limit=2&cursor={c}"),
         None => format!("{path}?limit=2"),
@@ -39,7 +44,14 @@ async fn payment_request_pages_are_stable_under_concurrent_inserts() {
     let state = state().await;
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "page_pr").await;
-    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    let (status, wallet) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet}");
 
     let mut original = Vec::new();
@@ -59,7 +71,10 @@ async fn payment_request_pages_are_stable_under_concurrent_inserts() {
         cursor = next;
     }
 
-    assert_eq!(seen, original, "pages must return each original row exactly once, newest first");
+    assert_eq!(
+        seen, original,
+        "pages must return each original row exactly once, newest first"
+    );
 }
 
 #[tokio::test]
@@ -102,8 +117,14 @@ async fn an_invalid_cursor_is_rejected() {
     let (token, _) = ensure_merchant(&app, "page_bad").await;
 
     for path in ["/transactions", "/payment-requests", "/withdrawals"] {
-        let (status, body): (StatusCode, Value) =
-            send(app.clone(), "GET", &format!("{path}?cursor=not-a-cursor"), Some(&token), None).await;
+        let (status, body): (StatusCode, Value) = send(
+            app.clone(),
+            "GET",
+            &format!("{path}?cursor=not-a-cursor"),
+            Some(&token),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
     }
 }

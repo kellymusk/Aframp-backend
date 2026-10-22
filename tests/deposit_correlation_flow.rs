@@ -153,8 +153,14 @@ async fn deposit_with_matching_memo_and_exact_amount_marks_request_paid() {
     .await;
 
     // The payment request should now be "paid".
-    let (status, fetched) =
-        send(app.clone(), "GET", &format!("/payment-requests/{pr_id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{pr_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         fetched["status"], "paid",
@@ -210,8 +216,14 @@ async fn deposit_with_matching_memo_but_smaller_amount_marks_request_partial() {
     )
     .await;
 
-    let (status, fetched) =
-        send(app.clone(), "GET", &format!("/payment-requests/{pr_id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{pr_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         fetched["status"], "partial",
@@ -266,8 +278,14 @@ async fn deposit_with_non_matching_memo_does_not_affect_payment_request() {
     )
     .await;
 
-    let (status, fetched) =
-        send(app.clone(), "GET", &format!("/payment-requests/{pr_id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{pr_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         fetched["status"], "pending",
@@ -322,8 +340,14 @@ async fn deposit_with_no_memo_does_not_affect_payment_request() {
     )
     .await;
 
-    let (status, fetched) =
-        send(app.clone(), "GET", &format!("/payment-requests/{pr_id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{pr_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         fetched["status"], "pending",

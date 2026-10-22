@@ -33,9 +33,7 @@ async fn raw_send(
     if !body.is_empty() {
         builder = builder.header(header::CONTENT_LENGTH, body.len().to_string());
     }
-    let request = builder
-        .body(Body::from(body.to_string()))
-        .unwrap();
+    let request = builder.body(Body::from(body.to_string())).unwrap();
 
     let response = app.oneshot(request).await.unwrap();
     response.status()
@@ -158,7 +156,8 @@ async fn payment_requests_post_with_no_content_type_but_body_returns_415() {
 #[tokio::test]
 async fn withdraw_post_with_text_plain_returns_415() {
     let app = app().await;
-    let body_str = r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
+    let body_str =
+        r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
     let status = raw_send(app, "POST", "/withdraw", Some("text/plain"), body_str).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
@@ -166,7 +165,8 @@ async fn withdraw_post_with_text_plain_returns_415() {
 #[tokio::test]
 async fn withdraw_post_with_application_xml_returns_415() {
     let app = app().await;
-    let body_str = r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
+    let body_str =
+        r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
     let status = raw_send(app, "POST", "/withdraw", Some("application/xml"), body_str).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
@@ -174,7 +174,8 @@ async fn withdraw_post_with_application_xml_returns_415() {
 #[tokio::test]
 async fn withdraw_post_with_no_content_type_but_body_returns_415() {
     let app = app().await;
-    let body_str = r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
+    let body_str =
+        r#"{"amount_stroops":500000000,"bank_code":"058","account_number":"0123456789"}"#;
     let status = raw_send(app, "POST", "/withdraw", None, body_str).await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
@@ -187,14 +188,7 @@ async fn login_with_json_content_type_is_not_rejected_by_middleware() {
     // This request has a valid Content-Type. The middleware must pass it through.
     // The handler will likely return 401 (bad credentials) but NOT 415.
     let body_str = r#"{"email":"nobody@example.com","password":"Password123!"}"#;
-    let status = raw_send(
-        app,
-        "POST",
-        "/login",
-        Some("application/json"),
-        body_str,
-    )
-    .await;
+    let status = raw_send(app, "POST", "/login", Some("application/json"), body_str).await;
     assert_ne!(
         status,
         StatusCode::UNSUPPORTED_MEDIA_TYPE,

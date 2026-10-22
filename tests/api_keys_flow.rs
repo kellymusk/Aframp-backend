@@ -30,7 +30,14 @@ async fn api_key_lifecycle() {
     assert_eq!(me["merchant_id"], merchant_id);
 
     // A key can't mint another key.
-    let (status, _) = send(app.clone(), "POST", "/api-keys", Some(&key), Some(json!({}))).await;
+    let (status, _) = send(
+        app.clone(),
+        "POST",
+        "/api-keys",
+        Some(&key),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // Listed without the secret.
@@ -41,7 +48,14 @@ async fn api_key_lifecycle() {
     assert!(keys[0].get("secret").is_none() && keys[0].get("secret_hash").is_none());
 
     // Revoked keys stop working.
-    let (status, _) = send(app.clone(), "DELETE", &format!("/api-keys/{key_id}"), Some(&token), None).await;
+    let (status, _) = send(
+        app.clone(),
+        "DELETE",
+        &format!("/api-keys/{key_id}"),
+        Some(&token),
+        None,
+    )
+    .await;
     assert!(status.is_success(), "revoke failed: {status}");
     let (status, _) = send(app.clone(), "GET", "/me", Some(&key), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

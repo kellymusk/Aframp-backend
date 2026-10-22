@@ -10,24 +10,16 @@ async fn record_deposit_returns_existing_payment_for_duplicate_tx_hash() {
     let app = aframp::router(state.clone());
     let (token, merchant_id) = common::ensure_merchant(&app, "deposit_idempotency").await;
 
-    let (status, wallet) = common::send(
-        app,
-        "POST",
-        "/wallet/create",
-        Some(&token),
-        Some(json!({})),
-    )
-    .await;
+    let (status, wallet) =
+        common::send(app, "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
     assert_eq!(status, StatusCode::OK, "wallet creation failed: {wallet}");
 
     let merchant_id: uuid::Uuid = merchant_id.parse().unwrap();
-    let wallet_id: uuid::Uuid = sqlx::query_scalar(
-        "SELECT id FROM wallets WHERE merchant_id = $1",
-    )
-    .bind(merchant_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap();
+    let wallet_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM wallets WHERE merchant_id = $1")
+        .bind(merchant_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
     let payment = NewPayment {
         merchant_id,
         wallet_id,

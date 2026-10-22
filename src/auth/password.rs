@@ -1,6 +1,6 @@
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2, Params, Algorithm, Version,
+    Algorithm, Argon2, Params, Version,
 };
 
 /// Argon2id parameters chosen to meet OWASP's minimum recommendations
@@ -38,6 +38,15 @@ pub fn verify(password: &str, hash: &str) -> bool {
     argon2()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()
+}
+
+/// A real hash of a throwaway password, made with the same parameters as
+/// [`hash`], so verifying against it costs exactly what a real check does.
+/// Login runs it when the email is unknown, so response time doesn't reveal
+/// which emails have accounts.
+pub fn dummy_hash() -> &'static str {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DUMMY.get_or_init(|| hash("timing-equalizer").expect("hashing a constant cannot fail"))
 }
 
 #[cfg(test)]
@@ -82,13 +91,4 @@ mod tests {
         assert!(verify("correct-horse-battery-staple", &h));
         assert!(!verify("wrong-password", &h));
     }
-}
-
-/// A real hash of a throwaway password, made with the same parameters as
-/// [`hash`], so verifying against it costs exactly what a real check does.
-/// Login runs it when the email is unknown, so response time doesn't reveal
-/// which emails have accounts.
-pub fn dummy_hash() -> &'static str {
-    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DUMMY.get_or_init(|| hash("timing-equalizer").expect("hashing a constant cannot fail"))
 }

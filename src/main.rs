@@ -11,8 +11,8 @@ use tower_http::trace::TraceLayer;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info".into());
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
 
     // LOG_FORMAT=json emits structured JSON logs for production log aggregators
     // (Datadog, CloudWatch, etc.); anything else keeps human-readable text for dev.
@@ -48,10 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Flipped to `true` on SIGTERM/Ctrl-C so the deposit worker stops between
     // polls instead of being killed mid-deposit.
-    aframp::blockchain::worker::set_anomaly_thresholds(aframp::blockchain::worker::DepositAnomalyThresholds {
-        max_single_stroops: config.max_single_deposit_stroops,
-        max_hourly_stroops: config.max_hourly_deposit_stroops,
-    });
+    aframp::blockchain::worker::set_anomaly_thresholds(
+        aframp::blockchain::worker::DepositAnomalyThresholds {
+            max_single_stroops: config.max_single_deposit_stroops,
+            max_hourly_stroops: config.max_hourly_deposit_stroops,
+        },
+    );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let worker = tokio::spawn(aframp::blockchain::worker::run(
         state.clone(),
@@ -73,7 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             {
                 Ok(n) if n > 0 => {
-                    tracing::info!(deleted = n, "hard-deleted expired cancelled payment requests")
+                    tracing::info!(
+                        deleted = n,
+                        "hard-deleted expired cancelled payment requests"
+                    )
                 }
                 Ok(_) => {}
                 Err(err) => {
@@ -131,20 +136,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             HeaderName::from_static("x-request-id"),
             aframp::middleware::SanitizingRequestId,
         ))
-        .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<axum::body::Body>| {
-            let request_id = req
-                .headers()
-                .get("x-request-id")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-            tracing::info_span!(
-                "request",
-                method = %req.method(),
-                uri = %req.uri(),
-                request_id = %request_id,
-            )
-        }))
-        .layer(PropagateRequestIdLayer::new(HeaderName::from_static("x-request-id")))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &Request<axum::body::Body>| {
+                let request_id = req
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                tracing::info_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %req.uri(),
+                    request_id = %request_id,
+                )
+            }),
+        )
+        .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
+            "x-request-id",
+        )))
         .layer(RequestBodyLimitLayer::new(max_request_body_bytes));
 
     let address: SocketAddr = config.bind_addr.parse()?;

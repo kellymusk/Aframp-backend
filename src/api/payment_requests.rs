@@ -4,17 +4,16 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::etag;
 use crate::error::{
     bad_request, bad_request_field, conflict, forbidden, internal, not_found, ApiResult, ErrorCode,
 };
-use crate::models::status::PaymentRequestStatus;
+use crate::etag;
 use crate::models::{CreatePaymentRequestRequest, PaymentRequest};
 use crate::pagination::{Cursor, Page};
 use crate::services::{payment_requests, wallets};
@@ -101,7 +100,12 @@ pub async fn create(
     )
     .await?;
 
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
+    Ok(Json(to_view(
+        &pr,
+        &wallet.address,
+        &wallet.network,
+        state.cngn_issuer.as_deref().map(String::as_str),
+    )))
 }
 
 pub async fn get(
@@ -127,7 +131,12 @@ pub async fn get(
     // after the request expired: always revalidate.
     Ok((
         [(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))],
-        Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))),
+        Json(to_view(
+            &pr,
+            &wallet.address,
+            &wallet.network,
+            state.cngn_issuer.as_deref().map(String::as_str),
+        )),
     ))
 }
 
@@ -146,7 +155,12 @@ pub async fn qr(
     let pr = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+        .ok_or_else(|| {
+            not_found(
+                ErrorCode::PaymentRequestNotFound,
+                "payment request not found",
+            )
+        })?;
 
     let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
         .await
@@ -161,12 +175,12 @@ pub async fn qr(
         state.cngn_issuer.as_deref().map(String::as_str),
         pr.description.as_deref(),
     )
-        .ok_or_else(|| {
-            bad_request(
-                ErrorCode::InvalidParameters,
-                "this payment request has no SEP-0007 URI to encode",
-            )
-        })?;
+    .ok_or_else(|| {
+        bad_request(
+            ErrorCode::InvalidParameters,
+            "this payment request has no SEP-0007 URI to encode",
+        )
+    })?;
 
     let png = qr_png_cached(id, size, &sep7_uri)?;
 
@@ -183,7 +197,12 @@ pub async fn status(
     let pr = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+        .ok_or_else(|| {
+            not_found(
+                ErrorCode::PaymentRequestNotFound,
+                "payment request not found",
+            )
+        })?;
 
     let status = payment_requests::effective_status(pr.status, pr.expires_at, pr.cancelled_at);
     let paid_at = if status == "paid" {
@@ -208,8 +227,11 @@ pub struct QrParams {
 }
 
 /// In-process cache of rendered QR PNGs keyed by `(payment request id, size)`.
-fn qr_cache() -> &'static Mutex<HashMap<(Uuid, u32), Vec<u8>>> {
-    static CACHE: OnceLock<Mutex<HashMap<(Uuid, u32), Vec<u8>>>> = OnceLock::new();
+/// Rendered PNGs keyed by `(payment request id, size)`.
+type QrCache = Mutex<HashMap<(Uuid, u32), Vec<u8>>>;
+
+fn qr_cache() -> &'static QrCache {
+    static CACHE: OnceLock<QrCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -264,7 +286,8 @@ pub async fn list(
         other => other,
     };
     // Asking for cancelled requests implies including them.
-    let include_cancelled = params.include_cancelled.unwrap_or(false) || status == Some("cancelled");
+    let include_cancelled =
+        params.include_cancelled.unwrap_or(false) || status == Some("cancelled");
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)
@@ -304,15 +327,19 @@ pub async fn expire(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<PaymentRequestView>> {
     let merchant_id = auth.merchant_id.ok_or_else(|| {
-        bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account")
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
     })?;
     let pr = payment_requests::expire(&state.db, id, merchant_id)
         .await
         .map_err(|err| match err {
             // Missing and "belongs to another merchant" look the same.
-            payment_requests::ExpireError::NotFound => {
-                not_found(ErrorCode::PaymentRequestNotFound, "payment request not found")
-            }
+            payment_requests::ExpireError::NotFound => not_found(
+                ErrorCode::PaymentRequestNotFound,
+                "payment request not found",
+            ),
             payment_requests::ExpireError::NotPending => bad_request(
                 ErrorCode::InvalidParameters,
                 "only a pending payment request can be expired",
@@ -323,7 +350,12 @@ pub async fn expire(
         .await
         .map_err(internal)?
         .ok_or_else(|| internal("payment request references a missing wallet"))?;
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
+    Ok(Json(to_view(
+        &pr,
+        &wallet.address,
+        &wallet.network,
+        state.cngn_issuer.as_deref().map(String::as_str),
+    )))
 }
 
 /// Soft-delete (archive) a payment request owned by the authenticated merchant.
@@ -334,15 +366,23 @@ pub async fn cancel(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<PaymentRequestView>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
 
     // Distinguish not-found / not-owned / already-cancelled for clearer errors.
     let existing = payment_requests::payment_request_by_id(&state.db, id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+        .ok_or_else(|| {
+            not_found(
+                ErrorCode::PaymentRequestNotFound,
+                "payment request not found",
+            )
+        })?;
 
     if existing.merchant_id != merchant_id {
         return Err(forbidden(
@@ -369,14 +409,24 @@ pub async fn cancel(
     let pr = payment_requests::cancel_payment_request(&state.db, id, merchant_id)
         .await
         .map_err(internal)?
-        .ok_or_else(|| not_found(ErrorCode::PaymentRequestNotFound, "payment request not found"))?;
+        .ok_or_else(|| {
+            not_found(
+                ErrorCode::PaymentRequestNotFound,
+                "payment request not found",
+            )
+        })?;
 
     let wallet = wallets::wallet_by_id(&state.db, pr.wallet_id)
         .await
         .map_err(internal)?
         .ok_or_else(|| internal("payment request references a missing wallet"))?;
 
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
+    Ok(Json(to_view(
+        &pr,
+        &wallet.address,
+        &wallet.network,
+        state.cngn_issuer.as_deref().map(String::as_str),
+    )))
 }
 
 #[derive(serde::Deserialize)]
@@ -412,7 +462,14 @@ fn to_view(
         cancelled_at: pr.cancelled_at,
         created_at: pr.created_at,
         description: pr.description.clone(),
-        sep7_uri: build_sep7_uri(address, pr.amount_stroops, &pr.asset, &pr.memo, cngn_issuer, pr.description.as_deref()),
+        sep7_uri: build_sep7_uri(
+            address,
+            pr.amount_stroops,
+            &pr.asset,
+            &pr.memo,
+            cngn_issuer,
+            pr.description.as_deref(),
+        ),
     }
 }
 
@@ -433,7 +490,14 @@ fn row_to_view(
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,
         description: row.description.clone(),
-        sep7_uri: build_sep7_uri(&row.address, row.amount_stroops, &row.asset, &row.memo, cngn_issuer, row.description.as_deref()),
+        sep7_uri: build_sep7_uri(
+            &row.address,
+            row.amount_stroops,
+            &row.asset,
+            &row.memo,
+            cngn_issuer,
+            row.description.as_deref(),
+        ),
     }
 }
 

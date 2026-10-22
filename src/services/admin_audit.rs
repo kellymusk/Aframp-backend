@@ -10,7 +10,11 @@ const MAX_ACTION_LEN: usize = 255;
 /// `("users", Some(id))` for `/admin/users/{id}/...`, `("overview", None)`
 /// for `/admin/overview`, `(None, None)` for `/admin` itself.
 fn resource_from_path(path: &str) -> (Option<String>, Option<Uuid>) {
-    let mut segments = path.trim_start_matches('/').split('/').skip(1).filter(|s| !s.is_empty());
+    let mut segments = path
+        .trim_start_matches('/')
+        .split('/')
+        .skip(1)
+        .filter(|s| !s.is_empty());
     let resource_type = segments.next().map(str::to_string);
     let resource_id = segments.next().and_then(|s| Uuid::parse_str(s).ok());
     (resource_type, resource_id)
@@ -54,8 +58,17 @@ mod tests {
     fn resource_is_derived_from_the_admin_path() {
         let id = Uuid::new_v4();
         assert_eq!(resource_from_path("/admin"), (None, None));
-        assert_eq!(resource_from_path("/admin/overview"), (Some("overview".into()), None));
-        assert_eq!(resource_from_path(&format!("/admin/users/{id}/unlock")), (Some("users".into()), Some(id)));
-        assert_eq!(resource_from_path("/admin/users/not-a-uuid"), (Some("users".into()), None));
+        assert_eq!(
+            resource_from_path("/admin/overview"),
+            (Some("overview".into()), None)
+        );
+        assert_eq!(
+            resource_from_path(&format!("/admin/users/{id}/unlock")),
+            (Some("users".into()), Some(id))
+        );
+        assert_eq!(
+            resource_from_path("/admin/users/not-a-uuid"),
+            (Some("users".into()), None)
+        );
     }
 }

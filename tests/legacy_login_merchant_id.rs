@@ -43,14 +43,13 @@ async fn seed_legacy_account(db: &sqlx::PgPool) -> (String, String, String) {
     .expect("seed user");
 
     // Insert the merchant linked to that user.
-    let merchant_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO merchants (user_id, name) VALUES ($1, $2) RETURNING id",
-    )
-    .bind(user_id)
-    .bind(&name)
-    .fetch_one(db)
-    .await
-    .expect("seed merchant");
+    let merchant_id: uuid::Uuid =
+        sqlx::query_scalar("INSERT INTO merchants (user_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(user_id)
+            .bind(&name)
+            .fetch_one(db)
+            .await
+            .expect("seed merchant");
 
     (email, password.to_string(), merchant_id.to_string())
 }

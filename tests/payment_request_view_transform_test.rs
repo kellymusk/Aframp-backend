@@ -40,11 +40,7 @@ async fn app_and_db() -> (axum::Router, PgPool) {
 }
 
 /// Create a payment request and return its full JSON view.
-async fn create_pr(
-    app: &axum::Router,
-    token: &str,
-    amount_stroops: i64,
-) -> serde_json::Value {
+async fn create_pr(app: &axum::Router, token: &str, amount_stroops: i64) -> serde_json::Value {
     let (status, body) = common::send(
         app.clone(),
         "POST",
@@ -53,7 +49,11 @@ async fn create_pr(
         Some(json!({ "amount_stroops": amount_stroops })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create payment request failed: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create payment request failed: {body}"
+    );
     body
 }
 
@@ -81,14 +81,8 @@ async fn fresh_payment_request_is_pending() {
 
     // Fetch via GET as well.
     let id = pr["id"].as_str().unwrap();
-    let (status, fetched) = common::send(
-        app,
-        "GET",
-        &format!("/payment-requests/{id}"),
-        None,
-        None,
-    )
-    .await;
+    let (status, fetched) =
+        common::send(app, "GET", &format!("/payment-requests/{id}"), None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["status"].as_str().unwrap(), "pending");
 
@@ -135,14 +129,7 @@ async fn expired_pending_request_status_is_expired() {
     );
 
     // The list endpoint must also report "expired".
-    let (status, list) = common::send(
-        app,
-        "GET",
-        "/payment-requests",
-        Some(&token),
-        None,
-    )
-    .await;
+    let (status, list) = common::send(app, "GET", "/payment-requests", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "list failed: {list}");
     let items = list["data"].as_array().expect("data must be array");
     let found = items.iter().find(|item| item["id"].as_str() == Some(pr_id));
@@ -218,10 +205,19 @@ async fn xlm_request_has_sep7_uri() {
         sep7.starts_with("web+stellar:pay?"),
         "sep7_uri must start with web+stellar:pay?: {sep7}"
     );
-    assert!(sep7.contains("destination="), "sep7_uri must have destination: {sep7}");
-    assert!(sep7.contains("amount="),      "sep7_uri must have amount: {sep7}");
-    assert!(sep7.contains("memo="),        "sep7_uri must have memo: {sep7}");
-    assert!(sep7.contains("memo_type=MEMO_TEXT"), "sep7_uri must have memo_type: {sep7}");
+    assert!(
+        sep7.contains("destination="),
+        "sep7_uri must have destination: {sep7}"
+    );
+    assert!(
+        sep7.contains("amount="),
+        "sep7_uri must have amount: {sep7}"
+    );
+    assert!(sep7.contains("memo="), "sep7_uri must have memo: {sep7}");
+    assert!(
+        sep7.contains("memo_type=MEMO_TEXT"),
+        "sep7_uri must have memo_type: {sep7}"
+    );
 }
 
 /// The sep7_uri amount encodes stroops correctly (2.5000000 for 25_000_000 stroops).
@@ -242,8 +238,7 @@ async fn sep7_uri_amount_is_correctly_encoded() {
         .find(|p| p.starts_with("amount="))
         .expect("amount param must be present in sep7_uri");
     assert_eq!(
-        amount_param,
-        "amount=2.5000000",
+        amount_param, "amount=2.5000000",
         "amount must be 2.5000000 for 25_000_000 stroops: {sep7}"
     );
 }
@@ -263,15 +258,13 @@ async fn sep7_uri_memo_is_percent_encoded() {
 
     // Force a memo with special characters into the DB.
     let tricky_memo = format!("{}&x=1#y", &memo[..4]); // e.g. "abc0&x=1#y"
-    sqlx::query(
-        "UPDATE payment_requests SET memo = $1 WHERE id = $2 AND merchant_id = $3::uuid",
-    )
-    .bind(&tricky_memo)
-    .bind(uuid::Uuid::parse_str(pr_id).unwrap())
-    .bind(&merchant_id)
-    .execute(&db)
-    .await
-    .expect("force memo with special chars");
+    sqlx::query("UPDATE payment_requests SET memo = $1 WHERE id = $2 AND merchant_id = $3::uuid")
+        .bind(&tricky_memo)
+        .bind(uuid::Uuid::parse_str(pr_id).unwrap())
+        .bind(&merchant_id)
+        .execute(&db)
+        .await
+        .expect("force memo with special chars");
 
     let (status, fetched) = common::send(
         app,
@@ -344,13 +337,19 @@ async fn list_and_single_item_have_same_shape() {
         .expect("payment request must appear in list");
 
     // These fields must match between the two endpoints.
-    for field in ["id", "merchant_id", "status", "amount_stroops", "asset", "memo", "sep7_uri"] {
+    for field in [
+        "id",
+        "merchant_id",
+        "status",
+        "amount_stroops",
+        "asset",
+        "memo",
+        "sep7_uri",
+    ] {
         assert_eq!(
-            by_id[field],
-            in_list[field],
+            by_id[field], in_list[field],
             "field `{field}` differs between GET-by-id and list: by_id={}, list={}",
-            by_id[field],
-            in_list[field],
+            by_id[field], in_list[field],
         );
     }
 }

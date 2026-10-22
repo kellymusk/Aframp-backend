@@ -8,7 +8,14 @@ use serde_json::json;
 use common::{ensure_merchant, send, send_with_response_headers, state, MockBlockchainListener};
 
 async fn create_wallet(app: &axum::Router, token: &str) {
-    let (status, json) = send(app.clone(), "POST", "/wallet/create", Some(token), Some(json!({}))).await;
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "wallet create failed: {json}");
 }
 
@@ -26,8 +33,15 @@ async fn payment_request_requires_wallet() {
         Some(json!({ "amount_stroops": 10_000_000 })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected rejection: {json}");
-    assert_eq!(json["error"], "create a wallet before generating payment requests");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected rejection: {json}"
+    );
+    assert_eq!(
+        json["error"],
+        "create a wallet before generating payment requests"
+    );
 }
 
 #[tokio::test]
@@ -47,17 +61,29 @@ async fn payment_request_create_and_fetch_publicly() {
     .await;
     assert_eq!(status, StatusCode::OK, "create failed: {created}");
     assert_eq!(created["status"], "pending");
-    assert_eq!(created["asset"], "XLM", "default asset should be XLM, not cNGN");
+    assert_eq!(
+        created["asset"], "XLM",
+        "default asset should be XLM, not cNGN"
+    );
     assert_eq!(created["merchant_id"], merchant_id);
     assert!(created["memo"].as_str().unwrap().len() >= 8);
-    let sep7 = created["sep7_uri"].as_str().expect("XLM requests should have a sep7_uri");
+    let sep7 = created["sep7_uri"]
+        .as_str()
+        .expect("XLM requests should have a sep7_uri");
     assert!(sep7.starts_with("web+stellar:pay?destination="));
     assert!(sep7.contains(&format!("memo={}", created["memo"].as_str().unwrap())));
 
     // Fetch with NO auth token — this must be publicly readable so a
     // customer's wallet app can look it up before paying.
     let id = created["id"].as_str().unwrap();
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "public fetch failed: {fetched}");
     assert_eq!(fetched["id"], created["id"]);
     assert_eq!(fetched["status"], "pending");
@@ -109,12 +135,25 @@ async fn payment_request_cngn_has_sep7_uri_with_configured_issuer() {
         .expect("cNGN requests should have a sep7_uri once the issuer is configured");
     assert!(sep7.starts_with("web+stellar:pay?destination=G"), "{sep7}");
     assert!(sep7.contains("&amount=2.5000000"), "{sep7}");
-    assert!(sep7.contains(&format!("&asset_code=cNGN&asset_issuer={issuer}")), "{sep7}");
-    assert!(sep7.contains(&format!("&memo={}", created["memo"].as_str().unwrap())), "{sep7}");
+    assert!(
+        sep7.contains(&format!("&asset_code=cNGN&asset_issuer={issuer}")),
+        "{sep7}"
+    );
+    assert!(
+        sep7.contains(&format!("&memo={}", created["memo"].as_str().unwrap())),
+        "{sep7}"
+    );
 
     // The public fetch path builds the same URI.
     let id = created["id"].as_str().unwrap();
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "public fetch failed: {fetched}");
     assert_eq!(fetched["sep7_uri"], created["sep7_uri"]);
 }
@@ -138,15 +177,27 @@ async fn payment_request_reports_expired_past_its_expiry() {
     let id = created["id"].as_str().unwrap();
 
     // Force it into the past directly — no need to actually wait.
-    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid")
-        .bind(id)
-        .execute(&state.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["status"], "expired", "past-expiry pending row should report as expired");
+    assert_eq!(
+        fetched["status"], "expired",
+        "past-expiry pending row should report as expired"
+    );
 }
 
 #[tokio::test]
@@ -180,10 +231,21 @@ async fn payment_request_list_is_scoped_to_the_authenticated_merchant() {
     .await;
     assert_eq!(status, StatusCode::OK, "create failed: {json}");
 
-    let (status, list_a) = send(app.clone(), "GET", "/payment-requests", Some(&token_a), None).await;
+    let (status, list_a) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests",
+        Some(&token_a),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "list failed: {list_a}");
     let rows = list_a["data"].as_array().unwrap();
-    assert_eq!(rows.len(), 2, "merchant A should see only their own two requests");
+    assert_eq!(
+        rows.len(),
+        2,
+        "merchant A should see only their own two requests"
+    );
     // Newest first.
     assert_eq!(rows[0]["amount_stroops"], 20_000_000);
     assert_eq!(rows[1]["amount_stroops"], 10_000_000);
@@ -192,10 +254,21 @@ async fn payment_request_list_is_scoped_to_the_authenticated_merchant() {
         "listed XLM requests should each carry a scannable URI"
     );
 
-    let (status, list_b) = send(app.clone(), "GET", "/payment-requests", Some(&token_b), None).await;
+    let (status, list_b) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests",
+        Some(&token_b),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let rows_b = list_b["data"].as_array().unwrap();
-    assert_eq!(rows_b.len(), 1, "merchant B must not see merchant A's requests");
+    assert_eq!(
+        rows_b.len(),
+        1,
+        "merchant B must not see merchant A's requests"
+    );
     assert_eq!(rows_b[0]["amount_stroops"], 99_000_000);
 }
 
@@ -236,10 +309,15 @@ async fn payment_request_marked_paid_on_memo_correlated_deposit() {
             .fetch_one(&state.db)
             .await
             .unwrap();
-    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(&state.db, wallet_id, memo)
-        .await
-        .unwrap();
-    assert!(pending.is_some(), "should find the pending request by wallet_id + memo");
+    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(
+        &state.db, wallet_id, memo,
+    )
+    .await
+    .unwrap();
+    assert!(
+        pending.is_some(),
+        "should find the pending request by wallet_id + memo"
+    );
 
     let fake_payment_id = uuid::Uuid::new_v4();
     // A real payments row is required by the FK — insert one directly, standing
@@ -261,7 +339,14 @@ async fn payment_request_marked_paid_on_memo_correlated_deposit() {
         .await
         .unwrap();
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["status"], "paid");
 }
@@ -285,11 +370,13 @@ async fn expired_payment_request_is_not_matched_by_deposit_memo() {
     let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
     let memo = created["memo"].as_str().unwrap();
 
-    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
 
     // This is the lookup blockchain::worker::process_deposit uses to decide
     // which request a memo-matched deposit pays — an expired one must not match.
@@ -299,20 +386,32 @@ async fn expired_payment_request_is_not_matched_by_deposit_memo() {
             .fetch_one(&state.db)
             .await
             .unwrap();
-    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(&state.db, wallet_id, memo)
-        .await
-        .unwrap();
-    assert!(pending.is_none(), "an expired request must not be matched to a deposit");
+    let pending = aframp::services::payment_requests::find_pending_by_wallet_and_memo(
+        &state.db, wallet_id, memo,
+    )
+    .await
+    .unwrap();
+    assert!(
+        pending.is_none(),
+        "an expired request must not be matched to a deposit"
+    );
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["status"], "expired");
 }
 
+#[tokio::test]
 async fn amount_stroops_rejects_float_string_and_negative() {
     let state = state().await;
     let app = aframp::router(state.clone());
-    let (token, _) = ensure_merchant(&app, "pr_expired_deposit").await;
     let (token, _) = ensure_merchant(&app, "pr_memo_batch").await;
     create_wallet(&app, &token).await;
 
@@ -342,7 +441,11 @@ async fn amount_stroops_rejects_float_string_and_negative() {
         Some(json!({ "amount_stroops": 2.5 })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "float should be 400: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "float should be 400: {json}"
+    );
     assert_eq!(json["code"], "INVALID_PARAMETERS");
     assert_eq!(json["field"], "amount_stroops");
     assert!(
@@ -358,7 +461,11 @@ async fn amount_stroops_rejects_float_string_and_negative() {
         Some(json!({ "amount_stroops": "10000000" })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "string should be 400: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "string should be 400: {json}"
+    );
     assert_eq!(json["code"], "INVALID_PARAMETERS");
     assert_eq!(json["field"], "amount_stroops");
 
@@ -370,7 +477,11 @@ async fn amount_stroops_rejects_float_string_and_negative() {
         Some(json!({ "amount_stroops": -1 })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "negative should be 400: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "negative should be 400: {json}"
+    );
     assert_eq!(json["code"], "INVALID_AMOUNT");
 }
 
@@ -412,11 +523,13 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
         "expected short Cache-Control TTL, got {cache:?}"
     );
 
-    sqlx::query("UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid")
-        .bind(id)
-        .execute(&state.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE payment_requests SET expires_at = now() - interval '1 minute' WHERE id = $1::uuid",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
 
     let (status, body) = send(
         app.clone(),
@@ -539,8 +652,13 @@ async fn payment_request_list_xlm_sep7_uri_is_non_null() {
 
     let (status, list) = send(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "list failed: {list}");
-    let rows = list["data"].as_array().expect("list response should carry a data array");
-    assert!(!rows.is_empty(), "should have at least one payment request in the list");
+    let rows = list["data"]
+        .as_array()
+        .expect("list response should carry a data array");
+    assert!(
+        !rows.is_empty(),
+        "should have at least one payment request in the list"
+    );
 
     for row in rows {
         assert_eq!(row["asset"], "XLM", "test only creates XLM requests");
@@ -577,7 +695,14 @@ async fn payment_request_list_sep7_uri_matches_get_by_id() {
     let id = created["id"].as_str().unwrap();
 
     // Fetch the single request publicly (as a customer wallet would).
-    let (status, by_id) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, by_id) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "GET by id failed: {by_id}");
     let sep7_by_id = by_id["sep7_uri"]
         .as_str()
@@ -586,7 +711,9 @@ async fn payment_request_list_sep7_uri_matches_get_by_id() {
     // Fetch via the authenticated list endpoint.
     let (status, list) = send(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "list failed: {list}");
-    let rows = list["data"].as_array().expect("list response should carry a data array");
+    let rows = list["data"]
+        .as_array()
+        .expect("list response should carry a data array");
 
     let list_row = rows
         .iter()
@@ -639,7 +766,14 @@ async fn payment_request_can_be_expired_by_its_merchant() {
 /// Creates a wallet for `token` and returns its Stellar address, so a test
 /// can build a [`DetectedDeposit`] that targets it.
 async fn create_wallet_with_address(app: &axum::Router, token: &str) -> String {
-    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(token), Some(json!({}))).await;
+    let (status, wallet) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet}");
     wallet["address"].as_str().unwrap().to_string()
 }
@@ -676,11 +810,23 @@ async fn full_qr_payment_flow_marks_request_paid_via_mock_horizon() {
             memo: Some(memo),
         }],
     };
-    poll_once(&state.db, &listener).await.expect("poll_once failed");
+    poll_once(&state.db, &listener)
+        .await
+        .expect("poll_once failed");
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["status"], "paid", "matching deposit should mark the request paid");
+    assert_eq!(
+        fetched["status"], "paid",
+        "matching deposit should mark the request paid"
+    );
 }
 
 /// A deposit that under-pays the requested amount should leave the request
@@ -714,13 +860,24 @@ async fn underpaid_deposit_marks_request_partial() {
             memo: Some(memo),
         }],
     };
-    poll_once(&state.db, &listener).await.expect("poll_once failed");
+    poll_once(&state.db, &listener)
+        .await
+        .expect("poll_once failed");
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["status"], "partial", "underpaid deposit should mark the request partial, not paid");
+    assert_eq!(
+        fetched["status"], "partial",
+        "underpaid deposit should mark the request partial, not paid"
+    );
 }
-
 
 #[tokio::test]
 async fn payment_request_zero_amount_is_rejected() {
@@ -737,8 +894,15 @@ async fn payment_request_zero_amount_is_rejected() {
         Some(serde_json::json!({ "amount_stroops": 0 })),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "zero amount should be rejected: {json}");
-    assert_eq!(json["code"], "INVALID_AMOUNT", "expected INVALID_AMOUNT code: {json}");
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "zero amount should be rejected: {json}"
+    );
+    assert_eq!(
+        json["code"], "INVALID_AMOUNT",
+        "expected INVALID_AMOUNT code: {json}"
+    );
 }
 
 #[tokio::test]
@@ -756,8 +920,15 @@ async fn payment_request_negative_amount_is_rejected() {
         Some(serde_json::json!({ "amount_stroops": -1 })),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "negative amount should be rejected: {json}");
-    assert_eq!(json["code"], "INVALID_AMOUNT", "expected INVALID_AMOUNT code: {json}");
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "negative amount should be rejected: {json}"
+    );
+    assert_eq!(
+        json["code"], "INVALID_AMOUNT",
+        "expected INVALID_AMOUNT code: {json}"
+    );
 }
 
 #[tokio::test]
@@ -876,19 +1047,34 @@ async fn payment_request_description_round_trips_into_sep7_msg() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "create failed: {created}");
-    assert_eq!(created["description"], "Table 5 & co", "description is trimmed");
+    assert_eq!(
+        created["description"], "Table 5 & co",
+        "description is trimmed"
+    );
     let uri = created["sep7_uri"].as_str().unwrap();
     assert!(uri.ends_with("&msg=Table%205%20%26%20co"), "{uri}");
 
     let id = created["id"].as_str().unwrap();
-    let (status, fetched, headers) =
-        common::send_with_response_headers(app.clone(), "GET", &format!("/payment-requests/{id}"), None, None).await;
+    let (status, fetched, headers) = common::send_with_response_headers(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fetched["description"], "Table 5 & co");
     assert_eq!(headers["cache-control"], "no-cache");
 
-    let (_, _, headers) =
-        common::send_with_response_headers(app.clone(), "GET", "/payment-requests", Some(&token), None).await;
+    let (_, _, headers) = common::send_with_response_headers(
+        app.clone(),
+        "GET",
+        "/payment-requests",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(headers["cache-control"], "private, no-cache");
 }
 

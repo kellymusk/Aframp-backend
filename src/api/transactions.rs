@@ -1,14 +1,13 @@
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap};
-use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::response::Response;
 use futures_util::stream;
 use serde::Deserialize;
 
 use crate::auth::extractor::AuthUser;
-use crate::etag;
 use crate::error::{bad_request, internal, ApiResult, ErrorCode};
+use crate::etag;
 use crate::models::{ListParams, Payment};
 use crate::pagination::{Cursor, Page};
 use crate::services::payments;
@@ -32,7 +31,12 @@ pub async fn list(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let asset = match query.asset.as_deref().map(str::trim) {
-        Some("") => return Err(bad_request(ErrorCode::InvalidParameters, "asset must not be empty")),
+        Some("") => {
+            return Err(bad_request(
+                ErrorCode::InvalidParameters,
+                "asset must not be empty",
+            ))
+        }
         other => other,
     };
     let status = match query.status.as_deref().map(str::trim) {
@@ -48,17 +52,24 @@ pub async fn list(
         limit: query.limit,
         cursor: query.cursor.clone(),
     };
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
     let limit = params.merchant_limit();
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
-    let payments = payments::payments_by_merchant_cursor(&state.db, merchant_id, limit, cursor, asset, status)
-        .await
-        .map_err(internal)?;
+    let payments =
+        payments::payments_by_merchant_cursor(&state.db, merchant_id, limit, cursor, asset, status)
+            .await
+            .map_err(internal)?;
     let page = Page::new(payments, limit, |p| Cursor {
         created_at: p.created_at,
         id: p.id,
@@ -78,13 +89,19 @@ pub async fn export(
     auth: AuthUser,
     Query(params): Query<ExportParams>,
 ) -> ApiResult<Response> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
 
     if let Some(format) = params.format.as_deref() {
         if !format.eq_ignore_ascii_case("csv") {
-            return Err(bad_request(ErrorCode::InvalidParameters, "unsupported export format"));
+            return Err(bad_request(
+                ErrorCode::InvalidParameters,
+                "unsupported export format",
+            ));
         }
     }
 
@@ -117,7 +134,11 @@ pub async fn export(
     );
 
     let filename = match (from, to) {
-        (Some(f), Some(t)) => format!("transactions_{}_{}.csv", f.format("%Y%m%d"), t.format("%Y%m%d")),
+        (Some(f), Some(t)) => format!(
+            "transactions_{}_{}.csv",
+            f.format("%Y%m%d"),
+            t.format("%Y%m%d")
+        ),
         _ => "transactions.csv".to_string(),
     };
 

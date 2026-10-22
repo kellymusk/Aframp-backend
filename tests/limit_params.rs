@@ -16,9 +16,7 @@ fn page_items(json: &Value) -> &[Value] {
     if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
         return data.as_slice();
     }
-    json.as_array()
-        .map(|a| a.as_slice())
-        .unwrap_or(&[])
+    json.as_array().map(|a| a.as_slice()).unwrap_or(&[])
 }
 
 fn assert_bad_limit(status: StatusCode, json: &Value) {
@@ -128,11 +126,7 @@ async fn seed_payment_requests(db: &sqlx::PgPool, merchant_id: &str, address: &s
     }
 }
 
-async fn assert_limit_matrix(
-    app: axum::Router,
-    token: &str,
-    path: &str,
-) {
+async fn assert_limit_matrix(app: axum::Router, token: &str, path: &str) {
     // Missing limit → default 50
     let (status, json) = send(app.clone(), "GET", path, Some(token), None).await;
     assert_eq!(status, StatusCode::OK, "default limit on {path}: {json}");
@@ -143,7 +137,14 @@ async fn assert_limit_matrix(
     );
 
     // limit=0 → clamped to 1
-    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=0"), Some(token), None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("{path}?limit=0"),
+        Some(token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=0: {json}");
     assert_eq!(
         page_items(&json).len(),
@@ -152,17 +153,38 @@ async fn assert_limit_matrix(
     );
 
     // limit=1
-    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=1"), Some(token), None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("{path}?limit=1"),
+        Some(token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=1: {json}");
     assert_eq!(page_items(&json).len(), 1);
 
     // limit=200
-    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=200"), Some(token), None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("{path}?limit=200"),
+        Some(token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=200: {json}");
     assert_eq!(page_items(&json).len(), 200);
 
     // limit=201 → clamped to 200
-    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=201"), Some(token), None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("{path}?limit=201"),
+        Some(token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{path}?limit=201: {json}");
     assert_eq!(
         page_items(&json).len(),
@@ -171,7 +193,14 @@ async fn assert_limit_matrix(
     );
 
     // limit=abc → 400, never 500
-    let (status, json) = send(app.clone(), "GET", &format!("{path}?limit=abc"), Some(token), None).await;
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("{path}?limit=abc"),
+        Some(token),
+        None,
+    )
+    .await;
     assert_bad_limit(status, &json);
 }
 

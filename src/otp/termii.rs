@@ -63,7 +63,12 @@ impl TermiiProvider {
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .expect("failed to build Termii HTTP client");
-        Self { api_key, sender_id, webhook_secret: None, http }
+        Self {
+            api_key,
+            sender_id,
+            webhook_secret: None,
+            http,
+        }
     }
 
     /// Verify webhook signatures with a dedicated secret instead of the API key.
@@ -133,9 +138,14 @@ impl OtpProvider for TermiiProvider {
                 OtpSendError::Permanent(msg)
             }
         };
-        let raw = response.text().await.map_err(|e| OtpSendError::Transient(e.to_string()))?;
+        let raw = response
+            .text()
+            .await
+            .map_err(|e| OtpSendError::Transient(e.to_string()))?;
         let body: SendResponse = serde_json::from_str(&raw).map_err(|e| {
-            failure(format!("Termii returned an unexpected response (HTTP {status}): {e} — body: {raw}"))
+            failure(format!(
+                "Termii returned an unexpected response (HTTP {status}): {e} — body: {raw}"
+            ))
         })?;
 
         if !status.is_success() || body.code.as_deref() != Some("ok") {

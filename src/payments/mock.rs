@@ -19,7 +19,11 @@ impl PaymentProvider for MockProvider {
         signature == "mock-signature"
     }
 
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Mock Account Holder".into())
     }
 

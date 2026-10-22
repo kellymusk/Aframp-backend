@@ -86,13 +86,21 @@ async fn second_signup_within_cooldown_returns_429() {
     assert_eq!(second["code"], "TOO_MANY_REQUESTS");
 
     // The rejected resend must not have sent a new SMS or rotated the code.
-    assert_eq!(last_code(&phone), first_code, "a rate-limited resend must not send an SMS");
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
-        .bind(&phone)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(count, 1, "a rate-limited resend must not create a challenge");
+    assert_eq!(
+        last_code(&phone),
+        first_code,
+        "a rate-limited resend must not send an SMS"
+    );
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
+            .bind(&phone)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 1,
+        "a rate-limited resend must not create a challenge"
+    );
 }
 
 #[tokio::test]
@@ -106,7 +114,11 @@ async fn sixth_signup_within_an_hour_returns_429() {
     // which is exactly what the hourly cap counts.
     for n in 1..=5 {
         let (status, json) = signup(&app, &body).await;
-        assert_eq!(status, StatusCode::OK, "signup #{n} should be allowed: {json}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "signup #{n} should be allowed: {json}"
+        );
         sqlx::query("UPDATE otp_challenges SET expires_at = now() - interval '1 second' WHERE id = $1::uuid")
             .bind(json["challenge_id"].as_str().unwrap())
             .execute(&db)
@@ -115,15 +127,23 @@ async fn sixth_signup_within_an_hour_returns_429() {
     }
 
     let (status, json) = signup(&app, &body).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "sixth signup in an hour must be capped: {json}");
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "sixth signup in an hour must be capped: {json}"
+    );
     assert_eq!(json["code"], "TOO_MANY_REQUESTS");
 
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
-        .bind(&phone)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(count, 5, "the capped request must not insert a sixth challenge");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
+            .bind(&phone)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 5,
+        "the capped request must not insert a sixth challenge"
+    );
 }
 
 #[tokio::test]
@@ -139,13 +159,19 @@ async fn sixth_wrong_otp_attempt_returns_otp_locked() {
     for n in 1..=5 {
         let (status, json) = verify(&app, challenge_id, wrong).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "attempt #{n}: {json}");
-        assert_eq!(json["code"], "OTP_INVALID", "attempt #{n} should be a plain wrong code");
+        assert_eq!(
+            json["code"], "OTP_INVALID",
+            "attempt #{n} should be a plain wrong code"
+        );
     }
     assert_eq!(attempts(&db, challenge_id).await, 5);
 
     let (status, json) = verify(&app, challenge_id, wrong).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
-    assert_eq!(json["code"], "OTP_LOCKED", "the sixth wrong attempt must hit the lock");
+    assert_eq!(
+        json["code"], "OTP_LOCKED",
+        "the sixth wrong attempt must hit the lock"
+    );
 
     // Locked means locked: the counter doesn't keep climbing, and the
     // correct code is refused too.
@@ -180,17 +206,29 @@ async fn resend_after_cooldown_succeeds_and_resets_attempt_counter() {
         .unwrap();
 
     let (status, second) = signup(&app, &body).await;
-    assert_eq!(status, StatusCode::OK, "resend after cooldown should succeed: {second}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "resend after cooldown should succeed: {second}"
+    );
     assert_eq!(
         second["challenge_id"].as_str().unwrap(),
         challenge_id,
         "a resend refreshes the existing challenge rather than creating another"
     );
-    assert_eq!(attempts(&db, &challenge_id).await, 0, "resend must reset the attempt counter");
+    assert_eq!(
+        attempts(&db, &challenge_id).await,
+        0,
+        "resend must reset the attempt counter"
+    );
 
     // The reset is real: the fresh code now verifies despite the earlier lock.
     let (status, json) = verify(&app, &challenge_id, &last_code(&phone)).await;
-    assert_eq!(status, StatusCode::OK, "fresh code should verify after resend: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "fresh code should verify after resend: {json}"
+    );
     assert!(json["token"].as_str().is_some());
 }
 
@@ -205,7 +243,11 @@ async fn consumed_challenge_cannot_be_reused() {
     let code = last_code(&phone);
 
     let (status, json) = verify(&app, challenge_id, &code).await;
-    assert_eq!(status, StatusCode::OK, "first verify should succeed: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "first verify should succeed: {json}"
+    );
 
     // Verification deletes the challenge (it may hold a pending password
     // hash), so nothing claimable may remain for this id.
@@ -216,11 +258,18 @@ async fn consumed_challenge_cannot_be_reused() {
     .fetch_one(&db)
     .await
     .unwrap();
-    assert_eq!(claimable, 0, "a verified challenge must not remain claimable");
+    assert_eq!(
+        claimable, 0,
+        "a verified challenge must not remain claimable"
+    );
 
     // Replaying the exact same, previously-valid code must not mint a second session.
     let (status, json) = verify(&app, challenge_id, &code).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "replay must be rejected: {json}");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "replay must be rejected: {json}"
+    );
     assert_eq!(json["code"], "OTP_CHALLENGE_NOT_FOUND");
     assert!(json.get("token").is_none(), "replay must not issue a token");
 }
@@ -234,7 +283,11 @@ async fn consumed_challenges_do_not_count_toward_hourly_cap() {
 
     for n in 1..=5 {
         let (status, json) = signup(&app, &body).await;
-        assert_eq!(status, StatusCode::OK, "signup #{n} should be allowed: {json}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "signup #{n} should be allowed: {json}"
+        );
         sqlx::query("UPDATE otp_challenges SET consumed_at = now() WHERE id = $1::uuid")
             .bind(json["challenge_id"].as_str().unwrap())
             .execute(&db)
@@ -243,7 +296,11 @@ async fn consumed_challenges_do_not_count_toward_hourly_cap() {
     }
 
     let (status, json) = signup(&app, &body).await;
-    assert_eq!(status, StatusCode::OK, "consumed challenges must not trip the cap: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "consumed challenges must not trip the cap: {json}"
+    );
 }
 
 /// The 429 for the hourly cap says when a slot frees up.
@@ -262,7 +319,10 @@ async fn hourly_cap_429_reports_retry_after() {
     let (status, json) = signup(&app, &body).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     let secs = json["retry_after_secs"].as_u64().expect("retry_after_secs");
-    assert!((3000..=3600).contains(&secs), "slot frees about an hour after the first send: {secs}");
+    assert!(
+        (3000..=3600).contains(&secs),
+        "slot frees about an hour after the first send: {secs}"
+    );
 }
 
 /// With TRUST_PROXY_HEADERS on, the challenge records the address our proxy
@@ -286,10 +346,11 @@ async fn otp_challenge_records_proxy_reported_client_ip() {
     .await;
     assert_eq!(status, StatusCode::OK, "{json}");
 
-    let ip: Option<String> = sqlx::query_scalar("SELECT host(client_ip) FROM otp_challenges WHERE id = $1::uuid")
-        .bind(json["challenge_id"].as_str().unwrap())
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let ip: Option<String> =
+        sqlx::query_scalar("SELECT host(client_ip) FROM otp_challenges WHERE id = $1::uuid")
+            .bind(json["challenge_id"].as_str().unwrap())
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(ip.as_deref(), Some("198.51.100.7"));
 }

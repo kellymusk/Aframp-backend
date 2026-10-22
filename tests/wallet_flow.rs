@@ -73,8 +73,22 @@ async fn wallet_address_is_stable_per_merchant() {
     let (token_a, _) = ensure_merchant(&app, "stable_a").await;
     let (token_b, _) = ensure_merchant(&app, "stable_b").await;
 
-    send(app.clone(), "POST", "/wallet/create", Some(&token_a), Some(json!({}))).await;
-    send(app.clone(), "POST", "/wallet/create", Some(&token_b), Some(json!({}))).await;
+    send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token_a),
+        Some(json!({})),
+    )
+    .await;
+    send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token_b),
+        Some(json!({})),
+    )
+    .await;
 
     let (_, json_a) = send(app.clone(), "GET", "/wallet", Some(&token_a), None).await;
     let (_, json_b) = send(app.clone(), "GET", "/wallet", Some(&token_b), None).await;
@@ -148,7 +162,11 @@ async fn second_wallet_create_returns_409() {
         Some(json!({})),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "first create should succeed: {first}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "first create should succeed: {first}"
+    );
     let first_address = first["address"].as_str().unwrap().to_string();
     assert!(!first_address.is_empty());
 
@@ -201,9 +219,15 @@ async fn transactions_list_supports_etag_revalidation() {
     let (token, _) = ensure_merchant(&app, "etag").await;
 
     let (status, _, headers) =
-        common::send_with_response_headers(app.clone(), "GET", "/transactions", Some(&token), None).await;
+        common::send_with_response_headers(app.clone(), "GET", "/transactions", Some(&token), None)
+            .await;
     assert_eq!(status, StatusCode::OK);
-    let etag = headers.get("etag").expect("etag header").to_str().unwrap().to_string();
+    let etag = headers
+        .get("etag")
+        .expect("etag header")
+        .to_str()
+        .unwrap()
+        .to_string();
 
     let request = axum::http::Request::builder()
         .method("GET")
@@ -222,7 +246,14 @@ async fn decrypting_a_wallet_secret_writes_an_audit_log_entry() {
     let app = aframp::router(state.clone());
     let (token, _) = ensure_merchant(&app, "secret_audit").await;
 
-    let (status, json) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    let (status, json) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "create wallet failed: {json}");
     let wallet_id: uuid::Uuid = json["id"].as_str().unwrap().parse().unwrap();
 

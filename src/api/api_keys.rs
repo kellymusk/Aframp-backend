@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::extractor::{AuthMethod, AuthUser};
-use crate::error::{bad_request, bad_request_field, forbidden, internal, not_found, ApiResult, ErrorCode};
+use crate::error::{
+    bad_request, bad_request_field, forbidden, internal, not_found, ApiResult, ErrorCode,
+};
 use crate::models::ApiKey;
 use crate::services::api_keys::{self, ApiKeyError};
 use crate::AppState;
@@ -89,8 +91,12 @@ pub async fn revoke(
 }
 
 fn merchant_of(auth: &AuthUser) -> Result<Uuid, (StatusCode, Json<crate::error::ApiError>)> {
-    auth.merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))
+    auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })
 }
 
 fn map_error(err: ApiKeyError) -> (StatusCode, Json<crate::error::ApiError>) {

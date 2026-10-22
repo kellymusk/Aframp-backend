@@ -4,7 +4,9 @@ use std::time::Duration;
 use sqlx::PgPool;
 use tracing::Instrument;
 
-use crate::blockchain::stellar::{AddressCursor, BlockchainListener, DetectedDeposit, StellarListener};
+use crate::blockchain::stellar::{
+    AddressCursor, BlockchainListener, DetectedDeposit, StellarListener,
+};
 use crate::models::{NewPayment, UpdateBalance, UpdatePaymentStatus};
 use crate::services::{balances, merchant_webhooks, payment_requests, payments, wallets};
 use crate::AppState;
@@ -34,9 +36,12 @@ pub async fn run(
             min_confirmations,
             Some(state.webhook_secret.as_str()),
         )
-            .instrument(span.clone())
-            .await;
-        span.record("poll_cycle_duration_ms", started.elapsed().as_millis() as u64);
+        .instrument(span.clone())
+        .await;
+        span.record(
+            "poll_cycle_duration_ms",
+            started.elapsed().as_millis() as u64,
+        );
         if let Err(err) = result {
             tracing::warn!(error = %err, "deposit poll failed");
         }
@@ -73,7 +78,9 @@ pub async fn poll_once_with_confirmations<L: BlockchainListener + ?Sized>(
 ) -> Result<(), String> {
     // Deposits already waiting gain a confirmation for this pass; new ones
     // recorded below start at one.
-    payments::age_verified_deposits(db).await.map_err(|e| e.to_string())?;
+    payments::age_verified_deposits(db)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let skip = listener.skipped_addresses();
     let wallet_list = wallets::pollable_wallets(db, &skip)
@@ -104,7 +111,9 @@ pub async fn poll_once_with_confirmations<L: BlockchainListener + ?Sized>(
         // Only advance the cursor once every deposit in the page was handled,
         // so a transient failure is retried on the next poll rather than
         // skipped forever. Re-processing is safe: deposits dedupe on tx hash.
-        let Some(next_cursor) = result.next_cursor else { continue };
+        let Some(next_cursor) = result.next_cursor else {
+            continue;
+        };
         let Some(wallet) = wallet_list.iter().find(|w| w.address == result.address) else {
             continue;
         };
@@ -140,9 +149,15 @@ async fn promote_and_notify(
         .await
         .map_err(|e| e.to_string())?;
     if !promoted.is_empty() {
-        tracing::info!(promoted = promoted.len(), min_confirmations, "deposits confirmed");
+        tracing::info!(
+            promoted = promoted.len(),
+            min_confirmations,
+            "deposits confirmed"
+        );
     }
-    let Some(secret) = webhook_secret else { return Ok(()) };
+    let Some(secret) = webhook_secret else {
+        return Ok(());
+    };
     for payment in &promoted {
         if let Err(err) = merchant_webhooks::dispatch(
             db,
@@ -182,13 +197,14 @@ pub struct DepositAnomalyThresholds {
 impl Default for DepositAnomalyThresholds {
     fn default() -> Self {
         Self {
-            max_single_stroops: 100_000_000_000,  // 10,000 units
-            max_hourly_stroops: 500_000_000_000,  // 50,000 units
+            max_single_stroops: 100_000_000_000, // 10,000 units
+            max_hourly_stroops: 500_000_000_000, // 50,000 units
         }
     }
 }
 
-static ANOMALY_THRESHOLDS: std::sync::OnceLock<DepositAnomalyThresholds> = std::sync::OnceLock::new();
+static ANOMALY_THRESHOLDS: std::sync::OnceLock<DepositAnomalyThresholds> =
+    std::sync::OnceLock::new();
 
 /// Sets the thresholds from config at startup; later calls are ignored.
 pub fn set_anomaly_thresholds(thresholds: DepositAnomalyThresholds) {
@@ -201,7 +217,12 @@ fn anomaly_thresholds() -> DepositAnomalyThresholds {
 
 /// Flags (and logs at warn) a freshly recorded deposit that is unusually
 /// large on its own or pushes the merchant's last-hour total over the limit.
-async fn flag_if_anomalous(db: &PgPool, payment_id: uuid::Uuid, merchant_id: uuid::Uuid, d: &DetectedDeposit) -> Result<(), String> {
+async fn flag_if_anomalous(
+    db: &PgPool,
+    payment_id: uuid::Uuid,
+    merchant_id: uuid::Uuid,
+    d: &DetectedDeposit,
+) -> Result<(), String> {
     let limits = anomaly_thresholds();
     let hourly = payments::deposits_in_last_hour(db, merchant_id, &d.asset)
         .await
@@ -218,14 +239,18 @@ async fn flag_if_anomalous(db: &PgPool, payment_id: uuid::Uuid, merchant_id: uui
             burst,
             "SECURITY: anomalous deposit flagged for review"
         );
-        payments::flag_payment(db, payment_id).await.map_err(|e| e.to_string())?;
+        payments::flag_payment(db, payment_id)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tracing::instrument(skip_all, err, fields(tx_hash = %d.tx_hash, destination = %d.destination, amount_stroops = d.amount_stroops, asset = %d.asset))]
 pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), String> {
-    let Some(wallet) = wallets::wallet_by_address(db, &d.destination).await.map_err(|e| e.to_string())?
+    let Some(wallet) = wallets::wallet_by_address(db, &d.destination)
+        .await
+        .map_err(|e| e.to_string())?
     else {
         return Ok(());
     };
@@ -371,9 +396,7 @@ mod load_tests {
         poll_once(&db, &listener).await.expect("poll_once cycle");
         let elapsed = start.elapsed();
 
-        println!(
-            "poll_once with {MERCHANT_COUNT} merchants took {elapsed:?} (budget {budget:?})"
-        );
+        println!("poll_once with {MERCHANT_COUNT} merchants took {elapsed:?} (budget {budget:?})");
         assert!(
             elapsed <= budget,
             "poll_once took {elapsed:?}, exceeding the {budget:?} budget for {MERCHANT_COUNT} merchants"

@@ -39,7 +39,7 @@
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aframp::blockchain::stellar::{BlockchainListener, DetectedDeposit};
 use aframp::AppState;
@@ -65,7 +65,7 @@ impl BlockchainListener for MockBlockchainListener {
     }
 }
 
-static MIGRATION_LOCK: Mutex<()> = Mutex::new(());
+static MIGRATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static MIGRATED: AtomicBool = AtomicBool::new(false);
 
 /// Why the integration-test database couldn't be set up. Returned instead of
@@ -88,7 +88,10 @@ impl std::fmt::Display for TestDbError {
                  database (see CONTRIBUTING.md, \"Running tests\")"
             ),
             TestDbError::Unreachable(err) => {
-                write!(f, "TEST_DATABASE_URL is set but could not be reached: {err}")
+                write!(
+                    f,
+                    "TEST_DATABASE_URL is set but could not be reached: {err}"
+                )
             }
         }
     }
@@ -105,12 +108,9 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
         .await
         .map_err(TestDbError::Unreachable)?;
 
-    let _guard = MIGRATION_LOCK.lock().unwrap();
+    let _guard = MIGRATION_LOCK.lock().await;
     if !MIGRATED.swap(true, Ordering::SeqCst) {
-        sqlx::migrate!()
-            .run(&db)
-            .await
-            .expect("migrations failed");
+        sqlx::migrate!().run(&db).await.expect("migrations failed");
     }
     drop(_guard);
 
@@ -378,7 +378,10 @@ pub fn assert_no_sensitive_fields_json(value: &serde_json::Value, context: &str)
 /// first so `GET /wallet` has something to return.
 pub async fn assert_authenticated_endpoints_clean(app: &Router, token: &str) {
     let (status, json) = send(app.clone(), "POST", "/wallet/create", Some(token), None).await;
-    assert!(status.is_success(), "wallet create returned {status}: {json}");
+    assert!(
+        status.is_success(),
+        "wallet create returned {status}: {json}"
+    );
     for uri in AUTHENTICATED_GET_ENDPOINTS {
         let (status, json) = send(app.clone(), "GET", uri, Some(token), None).await;
         assert!(status.is_success(), "GET {uri} returned {status}: {json}");

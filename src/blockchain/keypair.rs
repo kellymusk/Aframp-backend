@@ -26,7 +26,11 @@ pub fn generate_keypair() -> Result<StellarKeypair, KeypairError> {
 
     Ok(StellarKeypair {
         public_address: PublicKey(public_bytes).to_string().as_str().to_owned(),
-        secret_seed: PrivateKey(seed).as_unredacted().to_string().as_str().to_owned(),
+        secret_seed: PrivateKey(seed)
+            .as_unredacted()
+            .to_string()
+            .as_str()
+            .to_owned(),
     })
 }
 

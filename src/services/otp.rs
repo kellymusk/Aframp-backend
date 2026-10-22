@@ -65,17 +65,19 @@ pub async fn start_signup_challenge(
     name: &str,
     phone_number: &str,
 ) -> Result<OtpChallengeResponse, OtpError> {
-    let email_taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
-        .bind(email)
-        .fetch_one(db)
-        .await?;
+    let email_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+            .bind(email)
+            .fetch_one(db)
+            .await?;
     if email_taken {
         return Err(OtpError::EmailTaken);
     }
-    let phone_taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1)")
-        .bind(phone_number)
-        .fetch_one(db)
-        .await?;
+    let phone_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1)")
+            .bind(phone_number)
+            .fetch_one(db)
+            .await?;
     if phone_taken {
         return Err(OtpError::PhoneTaken);
     }
@@ -95,7 +97,10 @@ pub async fn start_signup_challenge(
     .await?;
 
     send_code(otp, phone_number, &code).await?;
-    Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
+    Ok(OtpChallengeResponse {
+        challenge_id,
+        expires_in_secs: CODE_TTL_SECS,
+    })
 }
 
 /// Sends a code to `new_phone` to prove the user controls it before
@@ -108,12 +113,13 @@ pub async fn start_phone_change_challenge(
     user_id: Uuid,
     new_phone: &str,
 ) -> Result<OtpChallengeResponse, OtpError> {
-    let phone_taken: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1 AND id <> $2)")
-            .bind(new_phone)
-            .bind(user_id)
-            .fetch_one(db)
-            .await?;
+    let phone_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1 AND id <> $2)",
+    )
+    .bind(new_phone)
+    .bind(user_id)
+    .fetch_one(db)
+    .await?;
     if phone_taken {
         return Err(OtpError::PhoneTaken);
     }
@@ -133,7 +139,10 @@ pub async fn start_phone_change_challenge(
     .await?;
 
     send_code(otp, new_phone, &code).await?;
-    Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
+    Ok(OtpChallengeResponse {
+        challenge_id,
+        expires_in_secs: CODE_TTL_SECS,
+    })
 }
 
 pub async fn start_login_challenge(
@@ -162,7 +171,10 @@ pub async fn start_login_challenge(
     .await?;
 
     send_code(otp, phone_number, &code).await?;
-    Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
+    Ok(OtpChallengeResponse {
+        challenge_id,
+        expires_in_secs: CODE_TTL_SECS,
+    })
 }
 
 pub async fn verify(
@@ -212,9 +224,9 @@ pub async fn verify(
     }
 
     if challenge.purpose == "login" {
-        let user_id = challenge
-            .user_id
-            .expect("login challenge always carries user_id — enforced by the migration's CHECK constraint");
+        let user_id = challenge.user_id.expect(
+            "login challenge always carries user_id — enforced by the migration's CHECK constraint",
+        );
         let user = users::user_by_id(db, user_id)
             .await?
             .ok_or(OtpError::ChallengeNotFound)?;
@@ -259,13 +271,14 @@ pub async fn verify(
         .as_deref()
         .expect("signup challenge always carries pending_name");
 
-    let (user, merchant) = users::create_verified(db, email, password_hash, name, &challenge.phone_number)
-        .await
-        .map_err(|err| match users::unique_violation_field(&err) {
-            Some("users_email_key") => OtpError::EmailTaken,
-            Some("users_phone_number_key") => OtpError::PhoneTaken,
-            _ => OtpError::Database(err),
-        })?;
+    let (user, merchant) =
+        users::create_verified(db, email, password_hash, name, &challenge.phone_number)
+            .await
+            .map_err(|err| match users::unique_violation_field(&err) {
+                Some("users_email_key") => OtpError::EmailTaken,
+                Some("users_phone_number_key") => OtpError::PhoneTaken,
+                _ => OtpError::Database(err),
+            })?;
 
     // Account is materialized; now kick off email verification. A delivery
     // failure must not fail signup (the merchant can resend), so errors are

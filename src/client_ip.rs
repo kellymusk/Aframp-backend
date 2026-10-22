@@ -10,8 +10,14 @@ use axum::http::{Extensions, HeaderMap};
 /// proxy (`TRUST_PROXY_HEADERS=true`) the peer is the proxy, so the address
 /// comes from `X-Forwarded-For` instead, and only from its *rightmost* entry,
 /// the one our proxy appended. Earlier entries are whatever the client sent.
-pub fn client_ip(headers: &HeaderMap, extensions: &Extensions, trust_proxy_headers: bool) -> Option<IpAddr> {
-    let peer = extensions.get::<ConnectInfo<SocketAddr>>().map(|ConnectInfo(addr)| addr.ip());
+pub fn client_ip(
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    trust_proxy_headers: bool,
+) -> Option<IpAddr> {
+    let peer = extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
     if !trust_proxy_headers {
         return peer;
     }
@@ -21,7 +27,7 @@ pub fn client_ip(headers: &HeaderMap, extensions: &Extensions, trust_proxy_heade
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .filter_map(|entry| entry.trim().parse::<IpAddr>().ok())
-        .last()
+        .next_back()
         .or(peer)
 }
 
@@ -50,7 +56,11 @@ mod tests {
     #[test]
     fn trusted_proxy_uses_the_rightmost_entry_not_the_client_supplied_one() {
         // The client sent "1.2.3.4"; our proxy appended the real peer.
-        let ip = client_ip(&forwarded("1.2.3.4, 198.51.100.7"), &with_peer("10.0.0.2"), true);
+        let ip = client_ip(
+            &forwarded("1.2.3.4, 198.51.100.7"),
+            &with_peer("10.0.0.2"),
+            true,
+        );
         assert_eq!(ip, Some("198.51.100.7".parse().unwrap()));
     }
 

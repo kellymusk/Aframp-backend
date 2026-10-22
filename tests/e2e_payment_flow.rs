@@ -32,17 +32,40 @@ async fn signup_wallet_payment_request_deposit_balance_end_to_end() {
     // 1. Signup → OTP verify → token (mock OTP provider delivers the code).
     let (token, merchant_id_str) = ensure_merchant(&app, "e2e_flow").await;
     assert!(!token.is_empty(), "verify-otp must issue a session token");
-    let merchant_id: Uuid = merchant_id_str.parse().expect("merchant_id should be a uuid");
+    let merchant_id: Uuid = merchant_id_str
+        .parse()
+        .expect("merchant_id should be a uuid");
 
     let (status, me) = send(app.clone(), "GET", "/me", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "token should authenticate /me: {me}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "token should authenticate /me: {me}"
+    );
     assert_eq!(me["merchant_id"], merchant_id_str);
 
     // 2. Create wallet → G-address.
-    let (status, wallet_json) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
-    assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet_json}");
-    let address = wallet_json["address"].as_str().expect("wallet should have an address").to_string();
-    assert!(address.starts_with('G') && address.len() == 56, "expected a Stellar G-address, got {address}");
+    let (status, wallet_json) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "wallet create failed: {wallet_json}"
+    );
+    let address = wallet_json["address"]
+        .as_str()
+        .expect("wallet should have an address")
+        .to_string();
+    assert!(
+        address.starts_with('G') && address.len() == 56,
+        "expected a Stellar G-address, got {address}"
+    );
     let wallet = wallets::wallet_by_merchant(&state.db, merchant_id, "stellar")
         .await
         .unwrap()
@@ -58,14 +81,26 @@ async fn signup_wallet_payment_request_deposit_balance_end_to_end() {
         Some(json!({ "amount_stroops": AMOUNT_STROOPS })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "payment request create failed: {pr}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "payment request create failed: {pr}"
+    );
     assert_eq!(pr["status"], "pending");
     let pr_id = pr["id"].as_str().unwrap().to_string();
     let memo = pr["memo"].as_str().unwrap().to_string();
-    let sep7 = pr["sep7_uri"].as_str().expect("XLM request should carry a sep7_uri");
+    let sep7 = pr["sep7_uri"]
+        .as_str()
+        .expect("XLM request should carry a sep7_uri");
     assert!(sep7.starts_with("web+stellar:pay?destination="), "{sep7}");
-    assert!(sep7.contains(&address), "SEP-7 URI should pay the merchant wallet: {sep7}");
-    assert!(sep7.contains(&format!("memo={memo}")), "SEP-7 URI should carry the memo: {sep7}");
+    assert!(
+        sep7.contains(&address),
+        "SEP-7 URI should pay the merchant wallet: {sep7}"
+    );
+    assert!(
+        sep7.contains(&format!("memo={memo}")),
+        "SEP-7 URI should carry the memo: {sep7}"
+    );
 
     // 4. Simulate deposit detection exactly as the deposit worker does.
     let payment = payments::record_deposit(
@@ -105,15 +140,31 @@ async fn signup_wallet_payment_request_deposit_balance_end_to_end() {
         .await
         .expect("mark_paid should succeed");
 
-    let (status, fetched) = send(app.clone(), "GET", &format!("/payment-requests/{pr_id}"), None, None).await;
+    let (status, fetched) = send(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{pr_id}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "public fetch failed: {fetched}");
-    assert_eq!(fetched["status"], "paid", "request should be paid after the deposit: {fetched}");
+    assert_eq!(
+        fetched["status"], "paid",
+        "request should be paid after the deposit: {fetched}"
+    );
 
     // 5. Balance reflects the deposit.
     let (status, balance) = send(app.clone(), "GET", "/balance", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "balance failed: {balance}");
-    let rows = balance.as_array().expect("GET /balance returns a JSON array");
-    assert_eq!(rows.len(), 1, "one deposit asset → one balance row: {balance}");
+    let rows = balance
+        .as_array()
+        .expect("GET /balance returns a JSON array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "one deposit asset → one balance row: {balance}"
+    );
     assert_eq!(rows[0]["asset"], "XLM");
     assert_eq!(rows[0]["available"], AMOUNT_STROOPS);
 }

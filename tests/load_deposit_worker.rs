@@ -86,7 +86,8 @@ fn mock_horizon() -> MockServer {
 
     // Empty payments page for any account.
     server.mock(|when, then| {
-        when.method(GET).path_matches(Regex::new(r"^/accounts/.*/payments$").unwrap());
+        when.method(GET)
+            .path_matches(Regex::new(r"^/accounts/.*/payments$").unwrap());
         then.status(200)
             .header("content-type", "application/json")
             .body(r#"{"_embedded":{"records":[]},"_links":{}}"#);
@@ -94,7 +95,8 @@ fn mock_horizon() -> MockServer {
 
     // Empty account detail response.
     server.mock(|when, then| {
-        when.method(GET).path_matches(Regex::new(r"^/accounts/.*$").unwrap());
+        when.method(GET)
+            .path_matches(Regex::new(r"^/accounts/.*$").unwrap());
         then.status(200)
             .header("content-type", "application/json")
             .body(r#"{"id":"","balances":[],"_links":{}}"#);

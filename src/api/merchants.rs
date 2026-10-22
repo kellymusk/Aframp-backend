@@ -7,7 +7,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, bad_request_field, conflict, internal, not_found, ApiResult, ErrorCode};
+use crate::error::{
+    bad_request, bad_request_field, conflict, internal, not_found, ApiResult, ErrorCode,
+};
 use crate::models::Merchant;
 use crate::services::users;
 use crate::validation::{is_valid_email, validate_name};
@@ -53,8 +55,12 @@ struct ProfileRow {
 }
 
 fn merchant_id(auth: &AuthUser) -> ApiResult<Uuid> {
-    auth.merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))
+    auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })
 }
 
 fn hash_token(token: &str) -> String {
@@ -71,7 +77,10 @@ pub async fn update(
 ) -> ApiResult<Json<UpdateMerchantResponse>> {
     let merchant_id = merchant_id(&auth)?;
     if req.name.is_none() && req.email.is_none() {
-        return Err(bad_request(ErrorCode::InvalidParameters, "provide name and/or email"));
+        return Err(bad_request(
+            ErrorCode::InvalidParameters,
+            "provide name and/or email",
+        ));
     }
     let name = req
         .name
@@ -80,7 +89,9 @@ pub async fn update(
         .transpose()
         .map_err(|msg| bad_request_field("name", msg))?;
     let email = match req.email.as_deref().map(str::trim) {
-        Some(e) if !is_valid_email(e) => return Err(bad_request_field("email", "must be a valid email address")),
+        Some(e) if !is_valid_email(e) => {
+            return Err(bad_request_field("email", "must be a valid email address"))
+        }
         other => other.map(str::to_lowercase),
     };
 
@@ -141,12 +152,17 @@ pub async fn confirm_email(
     .bind(hash_token(req.token.trim()))
     .execute(&state.db)
     .await
-    .map_err(|err| match err.as_database_error().map(|e| e.is_unique_violation()) {
-        Some(true) => conflict(ErrorCode::EmailTaken, "email already registered"),
-        _ => internal(err),
-    })?;
+    .map_err(
+        |err| match err.as_database_error().map(|e| e.is_unique_violation()) {
+            Some(true) => conflict(ErrorCode::EmailTaken, "email already registered"),
+            _ => internal(err),
+        },
+    )?;
     if updated.rows_affected() == 0 {
-        return Err(bad_request(ErrorCode::InvalidParameters, "confirmation token is invalid or expired"));
+        return Err(bad_request(
+            ErrorCode::InvalidParameters,
+            "confirmation token is invalid or expired",
+        ));
     }
 
     profile(&state, merchant_id).await.map(Json)
@@ -175,5 +191,8 @@ async fn profile(state: &AppState, merchant_id: Uuid) -> ApiResult<UpdateMerchan
 /// transactional email provider is wired in yet, so this only records that a
 /// token was issued; the token itself is a credential and is never logged.
 fn send_email_confirmation(email: &str, _token: &str) {
-    tracing::info!(email, "email change confirmation issued (no email provider configured)");
+    tracing::info!(
+        email,
+        "email change confirmation issued (no email provider configured)"
+    );
 }

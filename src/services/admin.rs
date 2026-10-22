@@ -1,6 +1,6 @@
+use crate::pagination::{Cursor, Page};
 use sqlx::PgPool;
 use uuid::Uuid;
-use crate::pagination::{Cursor, Page};
 
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
@@ -124,7 +124,11 @@ pub async fn overview_in_transaction(db: &PgPool) -> Result<AdminOverview, sqlx:
     })
 }
 
-pub async fn users(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Page<AdminUserRow>, sqlx::Error> {
+pub async fn users(
+    db: &PgPool,
+    limit: i64,
+    cursor: Option<Cursor>,
+) -> Result<Page<AdminUserRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AdminUserRow>(
         "SELECT u.id, u.email, u.name, u.is_admin, u.created_at,
                 m.id AS merchant_id, m.name AS merchant_name
@@ -139,10 +143,17 @@ pub async fn users(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Pa
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
-    Ok(Page::new(rows, limit, |r| Cursor { created_at: r.created_at, id: r.id }))
+    Ok(Page::new(rows, limit, |r| Cursor {
+        created_at: r.created_at,
+        id: r.id,
+    }))
 }
 
-pub async fn merchants(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Page<AdminMerchantRow>, sqlx::Error> {
+pub async fn merchants(
+    db: &PgPool,
+    limit: i64,
+    cursor: Option<Cursor>,
+) -> Result<Page<AdminMerchantRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AdminMerchantRow>(
         "SELECT m.id, m.name, m.user_id AS owner_user_id, u.email AS owner_email, m.created_at,
                 (SELECT w.address FROM wallets w
@@ -160,10 +171,17 @@ pub async fn merchants(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Resul
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
-    Ok(Page::new(rows, limit, |r| Cursor { created_at: r.created_at, id: r.id }))
+    Ok(Page::new(rows, limit, |r| Cursor {
+        created_at: r.created_at,
+        id: r.id,
+    }))
 }
 
-pub async fn wallets(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Page<AdminWalletRow>, sqlx::Error> {
+pub async fn wallets(
+    db: &PgPool,
+    limit: i64,
+    cursor: Option<Cursor>,
+) -> Result<Page<AdminWalletRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AdminWalletRow>(
         "SELECT w.id, w.merchant_id, m.name AS merchant_name, w.address, w.network, w.created_at
          FROM wallets w
@@ -177,10 +195,17 @@ pub async fn wallets(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
-    Ok(Page::new(rows, limit, |r| Cursor { created_at: r.created_at, id: r.id }))
+    Ok(Page::new(rows, limit, |r| Cursor {
+        created_at: r.created_at,
+        id: r.id,
+    }))
 }
 
-pub async fn transactions(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Page<AdminTransactionRow>, sqlx::Error> {
+pub async fn transactions(
+    db: &PgPool,
+    limit: i64,
+    cursor: Option<Cursor>,
+) -> Result<Page<AdminTransactionRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AdminTransactionRow>(
         "SELECT p.id, p.merchant_id, m.name AS merchant_name, p.wallet_address, p.tx_hash,
                 p.amount_stroops, p.asset, p.network, p.status, p.confirmations,
@@ -196,10 +221,17 @@ pub async fn transactions(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Re
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
-    Ok(Page::new(rows, limit, |r| Cursor { created_at: r.created_at, id: r.id }))
+    Ok(Page::new(rows, limit, |r| Cursor {
+        created_at: r.created_at,
+        id: r.id,
+    }))
 }
 
-pub async fn withdrawals(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Page<AdminWithdrawalRow>, sqlx::Error> {
+pub async fn withdrawals(
+    db: &PgPool,
+    limit: i64,
+    cursor: Option<Cursor>,
+) -> Result<Page<AdminWithdrawalRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AdminWithdrawalRow>(
         "SELECT wd.id, wd.merchant_id, m.name AS merchant_name, wd.amount_stroops, wd.asset,
                 wd.status, wd.provider, wd.provider_reference, wd.bank_code, wd.account_number,
@@ -215,10 +247,17 @@ pub async fn withdrawals(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Res
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
-    Ok(Page::new(rows, limit, |r| Cursor { created_at: r.created_at, id: r.id }))
+    Ok(Page::new(rows, limit, |r| Cursor {
+        created_at: r.created_at,
+        id: r.id,
+    }))
 }
 
-pub async fn payment_requests(db: &PgPool, limit: i64, cursor: Option<Cursor>) -> Result<Page<AdminPaymentRequestRow>, sqlx::Error> {
+pub async fn payment_requests(
+    db: &PgPool,
+    limit: i64,
+    cursor: Option<Cursor>,
+) -> Result<Page<AdminPaymentRequestRow>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AdminPaymentRequestRow>(
         "SELECT pr.id, pr.merchant_id, m.name AS merchant_name, pr.amount_stroops, pr.asset,
                 pr.memo,
@@ -235,12 +274,18 @@ pub async fn payment_requests(db: &PgPool, limit: i64, cursor: Option<Cursor>) -
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
-    Ok(Page::new(rows, limit, |r| Cursor { created_at: r.created_at, id: r.id }))
+    Ok(Page::new(rows, limit, |r| Cursor {
+        created_at: r.created_at,
+        id: r.id,
+    }))
 }
 
 /// Suspend a merchant account. Returns the updated [`Merchant`] row, or
 /// `None` if no merchant with `merchant_id` exists.
-pub async fn suspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+pub async fn suspend_merchant(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "UPDATE merchants
             SET suspended_at = now()
@@ -254,7 +299,10 @@ pub async fn suspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<M
 
 /// Unsuspend (reinstate) a merchant account. Returns the updated [`Merchant`]
 /// row, or `None` if no merchant with `merchant_id` exists.
-pub async fn unsuspend_merchant(db: &PgPool, merchant_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+pub async fn unsuspend_merchant(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
         "UPDATE merchants
             SET suspended_at = NULL

@@ -41,7 +41,10 @@ mod tests {
     use super::*;
 
     fn params(limit: Option<i64>) -> ListParams {
-        ListParams { limit, cursor: None }
+        ListParams {
+            limit,
+            cursor: None,
+        }
     }
 
     // --- merchant_limit ---

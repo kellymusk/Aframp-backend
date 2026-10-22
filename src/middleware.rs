@@ -96,6 +96,35 @@ fn is_json_content_type(value: Option<&HeaderValue>) -> bool {
     media_type.subtype() == mime::JSON || media_type.suffix() == Some(mime::JSON)
 }
 
+/// Adds a `Retry-After` header to 423/429 responses whose JSON body carries
+/// `retry_after_secs`, so every rate-limit and lockout path advertises it
+/// (RFC 9110 §10.2.3) without each handler building headers by hand.
+pub async fn retry_after_header(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    let status = response.status();
+    if (status != StatusCode::TOO_MANY_REQUESTS && status != StatusCode::LOCKED)
+        || response.headers().contains_key(header::RETRY_AFTER)
+    {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return Response::from_parts(parts, axum::body::Body::empty());
+    };
+    let secs = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("retry_after_secs")
+                .and_then(serde_json::Value::as_u64)
+        });
+    if let Some(secs) = secs {
+        parts
+            .headers
+            .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+    }
+    Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,11 +171,16 @@ mod tests {
     #[tokio::test]
     async fn wrong_content_type_with_a_body_is_415() {
         let app = app();
-        let (status, body) = send(&app, request("POST", "/post", Some("text/plain"), "hello")).await;
+        let (status, body) =
+            send(&app, request("POST", "/post", Some("text/plain"), "hello")).await;
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert_eq!(body["error"], "content-type must be application/json");
 
-        let (status, _) = send(&app, request("PUT", "/put", Some("application/xml"), "<x/>")).await;
+        let (status, _) = send(
+            &app,
+            request("PUT", "/put", Some("application/xml"), "<x/>"),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
@@ -184,28 +218,4 @@ mod tests {
         let (status, _) = send(&app, request("GET", "/get", Some("text/plain"), "hello")).await;
         assert_eq!(status, StatusCode::OK);
     }
-}
-
-/// Adds a `Retry-After` header to 423/429 responses whose JSON body carries
-/// `retry_after_secs`, so every rate-limit and lockout path advertises it
-/// (RFC 9110 §10.2.3) without each handler building headers by hand.
-pub async fn retry_after_header(request: Request, next: Next) -> Response {
-    let response = next.run(request).await;
-    let status = response.status();
-    if (status != StatusCode::TOO_MANY_REQUESTS && status != StatusCode::LOCKED)
-        || response.headers().contains_key(header::RETRY_AFTER)
-    {
-        return response;
-    }
-    let (mut parts, body) = response.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
-        return Response::from_parts(parts, axum::body::Body::empty());
-    };
-    let secs = serde_json::from_slice::<serde_json::Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("retry_after_secs").and_then(serde_json::Value::as_u64));
-    if let Some(secs) = secs {
-        parts.headers.insert(header::RETRY_AFTER, HeaderValue::from(secs));
-    }
-    Response::from_parts(parts, axum::body::Body::from(bytes))
 }

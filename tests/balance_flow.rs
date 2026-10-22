@@ -80,7 +80,10 @@ async fn pending_deposit_shows_pending_gt_zero_and_available_zero() {
     let rows = json.as_array().expect("GET /balance returns a JSON array");
     assert_eq!(rows.len(), 1, "{json}");
     assert_eq!(rows[0]["asset"], "XLM");
-    assert_eq!(rows[0]["available"], 0, "still unconfirmed → available must be 0");
+    assert_eq!(
+        rows[0]["available"], 0,
+        "still unconfirmed → available must be 0"
+    );
     assert!(
         rows[0]["pending"].as_i64().unwrap() > 0,
         "pending must be > 0 while confirmation is outstanding: {json}"

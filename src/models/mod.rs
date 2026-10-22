@@ -16,15 +16,17 @@ pub use admin::{
     AdminWalletRow, AdminWithdrawalRow, AssetTotal, StatusCount,
 };
 pub use api_key::ApiKey;
+pub use balance::{Balance, UpdateBalance};
 pub use list_params::{
     ListParams, ADMIN_DEFAULT_LIMIT, ADMIN_MAX_LIMIT, MERCHANT_DEFAULT_LIMIT, MERCHANT_MAX_LIMIT,
 };
-pub use balance::{Balance, UpdateBalance};
 pub use merchant::{Merchant, NewMerchant};
 pub use otp::{OtpChallenge, OtpChallengeResponse, VerifyOtpRequest};
 pub use payment::{NewPayment, Payment, UpdatePaymentStatus};
 pub use payment_request::{CreatePaymentRequestRequest, PaymentRequest};
-pub use user::{AuthResponse, ChangePasswordRequest, LoginRequest, NewUser, SignupRequest, User, UserProfile};
 pub use status::{PaymentRequestStatus, PaymentStatus, WithdrawalStatus};
+pub use user::{
+    AuthResponse, ChangePasswordRequest, LoginRequest, NewUser, SignupRequest, User, UserProfile,
+};
 pub use wallet::{CreateWalletRequest, NewWallet, Wallet, WalletSecretRow};
 pub use withdrawal::{CreateWithdrawalRequest, NewWithdrawal, Withdrawal};

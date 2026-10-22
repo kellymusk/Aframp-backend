@@ -566,8 +566,7 @@ async fn login_sets_an_http_only_session_cookie_that_authenticates() {
 #[tokio::test]
 async fn logout_clears_the_session_cookie() {
     let app = app().await;
-    let (status, _, cookies) =
-        send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
+    let (status, _, cookies) = send_with_cookie(app.clone(), "POST", "/logout", None, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     let cleared = cookies
@@ -599,7 +598,9 @@ async fn expired_jwt_is_rejected() {
     let app = app().await;
     let (_, _, verified) = signup_and_verify(&app, "expired").await;
     let user_id: Uuid = verified["user_id"].as_str().unwrap().parse().unwrap();
-    let merchant_id = verified["merchant_id"].as_str().map(|s| s.parse::<Uuid>().unwrap());
+    let merchant_id = verified["merchant_id"]
+        .as_str()
+        .map(|s| s.parse::<Uuid>().unwrap());
 
     // Already expired, and by more than jsonwebtoken's default 60s leeway.
     let token = aframp::auth::jwt::sign_with_ttl(
@@ -612,7 +613,11 @@ async fn expired_jwt_is_rejected() {
     .expect("signing the short-lived token must succeed");
 
     let (status, _) = send(app.clone(), "GET", "/me", Some(&token), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "an expired JWT must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an expired JWT must be rejected"
+    );
 }
 
 #[tokio::test]
@@ -642,7 +647,11 @@ async fn account_locks_after_repeated_failed_logins() {
         Some(json!({ "email": email, "password": "not-the-password" })),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "the locking attempt itself is a bad password: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the locking attempt itself is a bad password: {body}"
+    );
 
     // From here on even the correct password is refused until the lock lapses.
     let (status, body) = send(
@@ -797,7 +806,10 @@ async fn verified_signup_challenge_is_deleted() {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(remaining, 0, "the challenge (and its pending password hash) must be gone");
+    assert_eq!(
+        remaining, 0,
+        "the challenge (and its pending password hash) must be gone"
+    );
 
     // The same code can't be replayed once the row is gone.
     let (status, _) = send(
@@ -853,7 +865,10 @@ async fn stale_challenges_are_purged_when_a_new_one_is_issued() {
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(remaining, 0, "a challenge expired over 24h ago must be hard-deleted");
+    assert_eq!(
+        remaining, 0,
+        "a challenge expired over 24h ago must be hard-deleted"
+    );
 }
 
 #[tokio::test]
@@ -862,12 +877,14 @@ async fn revoking_admin_takes_effect_on_the_next_request() {
     // A legacy (no-phone) account logs in without OTP, which keeps this test
     // focused on the admin check.
     let email = format!("admin+{}@example.com", Uuid::new_v4().simple());
-    sqlx::query("INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin', true)")
-        .bind(&email)
-        .bind(aframp_password_hash_for_tests())
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (email, password_hash, name, is_admin) VALUES ($1, $2, 'Admin', true)",
+    )
+    .bind(&email)
+    .bind(aframp_password_hash_for_tests())
+    .execute(&db)
+    .await
+    .unwrap();
 
     let (status, body) = send(
         app.clone(),
@@ -933,12 +950,23 @@ async fn refresh_after_logout_has_no_session_to_refresh() {
     let (token, _) = common::ensure_merchant(&app, "refresh_logout").await;
     let cookie = format!("aframp_session={token}");
 
-    let (status, _, set_cookie) = send_with_cookie(app.clone(), "POST", "/logout", Some(&cookie), None).await;
+    let (status, _, set_cookie) =
+        send_with_cookie(app.clone(), "POST", "/logout", Some(&cookie), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(set_cookie.iter().any(|c| c.starts_with("aframp_session=;")), "logout clears the cookie");
+    assert!(
+        set_cookie.iter().any(|c| c.starts_with("aframp_session=;")),
+        "logout clears the cookie"
+    );
 
     // The browser now holds the cleared cookie, so there's nothing to refresh.
-    let (status, _, _) = send_with_cookie(app.clone(), "POST", "/auth/refresh", Some("aframp_session="), None).await;
+    let (status, _, _) = send_with_cookie(
+        app.clone(),
+        "POST",
+        "/auth/refresh",
+        Some("aframp_session="),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -946,7 +974,12 @@ async fn refresh_after_logout_has_no_session_to_refresh() {
 async fn refresh_rejects_an_expired_token() {
     let app = app().await;
     let now = chrono::Utc::now().timestamp();
-    let expired = forge_token(Uuid::new_v4(), now - 2 * 86_400, now - 86_400, now - 2 * 86_400);
+    let expired = forge_token(
+        Uuid::new_v4(),
+        now - 2 * 86_400,
+        now - 86_400,
+        now - 2 * 86_400,
+    );
 
     let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&expired), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -965,7 +998,10 @@ async fn refresh_stops_after_the_seven_day_session_window() {
 
     let (status, body) = send(app.clone(), "POST", "/auth/refresh", Some(&stale), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert!(body["error"].as_str().unwrap().contains("log in again"), "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("log in again"),
+        "{body}"
+    );
 }
 
 /// #987 — oversized passwords are rejected before they reach Argon2.
@@ -1005,7 +1041,9 @@ async fn login_from(
         ))
         .unwrap();
     if let Some(peer) = peer {
-        request.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
     }
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
@@ -1014,8 +1052,14 @@ async fn login_from(
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or_default(), retry_after)
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or_default(),
+        retry_after,
+    )
 }
 
 #[tokio::test]
@@ -1103,7 +1147,9 @@ async fn bearer_scheme_is_case_insensitive() {
             .header("authorization", format!("{scheme} {token}"))
             .body(axum::body::Body::empty())
             .unwrap();
-        let response = tower::ServiceExt::oneshot(app.clone(), request).await.unwrap();
+        let response = tower::ServiceExt::oneshot(app.clone(), request)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "scheme {scheme:?}");
     }
 }

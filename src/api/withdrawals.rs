@@ -95,9 +95,10 @@ pub async fn withdrawal_fee(
             "must be a positive number",
         ));
     }
-    
-    let (fee_stroops, net_amount_stroops) = withdrawals::calculate_withdrawal_fee(params.amount_stroops);
-    
+
+    let (fee_stroops, net_amount_stroops) =
+        withdrawals::calculate_withdrawal_fee(params.amount_stroops);
+
     Ok(Json(WithdrawalFeeResponse {
         amount_stroops: params.amount_stroops,
         fee_stroops,
@@ -153,7 +154,10 @@ pub async fn create(
         .map(str::trim)
         .filter(|k| !k.is_empty())
         .map(str::to_owned);
-    if idempotency_key.as_ref().is_some_and(|k| k.len() > MAX_IDEMPOTENCY_KEY_LEN) {
+    if idempotency_key
+        .as_ref()
+        .is_some_and(|k| k.len() > MAX_IDEMPOTENCY_KEY_LEN)
+    {
         return Err(bad_request_field(
             "Idempotency-Key",
             "must be at most 255 characters",

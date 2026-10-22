@@ -41,7 +41,11 @@ fn hmac_sha512_hex(key: &str, body: &[u8]) -> String {
 }
 
 /// POSTs raw bytes to the Termii webhook, with an optional signature header.
-async fn post_termii(app: &axum::Router, signature: Option<&str>, body: Vec<u8>) -> (StatusCode, Value) {
+async fn post_termii(
+    app: &axum::Router,
+    signature: Option<&str>,
+    body: Vec<u8>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method("POST")
         .uri("/webhooks/termii")
@@ -49,10 +53,19 @@ async fn post_termii(app: &axum::Router, signature: Option<&str>, body: Vec<u8>)
     if let Some(signature) = signature {
         builder = builder.header("x-termii-signature", signature);
     }
-    let response = app.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn assert_forbidden(status: StatusCode, body: &Value) {
@@ -63,14 +76,20 @@ fn assert_forbidden(status: StatusCode, body: &Value) {
 #[tokio::test]
 async fn missing_signature_header_is_forbidden() {
     let app = app().await;
-    let (status, body) = post_termii(&app, None, serde_json::to_vec(&delivery_report()).unwrap()).await;
+    let (status, body) =
+        post_termii(&app, None, serde_json::to_vec(&delivery_report()).unwrap()).await;
     assert_forbidden(status, &body);
 }
 
 #[tokio::test]
 async fn empty_signature_header_is_forbidden() {
     let app = app().await;
-    let (status, body) = post_termii(&app, Some(""), serde_json::to_vec(&delivery_report()).unwrap()).await;
+    let (status, body) = post_termii(
+        &app,
+        Some(""),
+        serde_json::to_vec(&delivery_report()).unwrap(),
+    )
+    .await;
     assert_forbidden(status, &body);
 }
 
@@ -79,7 +98,12 @@ async fn valid_payload_with_incorrect_hex_signature_is_forbidden() {
     let app = app().await;
     // Well-formed hex of the right length (SHA-512 = 64 bytes), but wrong.
     let bogus = "ab".repeat(64);
-    let (status, body) = post_termii(&app, Some(&bogus), serde_json::to_vec(&delivery_report()).unwrap()).await;
+    let (status, body) = post_termii(
+        &app,
+        Some(&bogus),
+        serde_json::to_vec(&delivery_report()).unwrap(),
+    )
+    .await;
     assert_forbidden(status, &body);
 }
 
@@ -100,7 +124,12 @@ async fn signature_for_a_different_body_is_forbidden() {
     let signature = hmac_sha512_hex("not-the-webhook-secret", &original);
     let mut tampered = delivery_report();
     tampered["status"] = json!("Failed");
-    let (status, resp) = post_termii(&app, Some(&signature), serde_json::to_vec(&tampered).unwrap()).await;
+    let (status, resp) = post_termii(
+        &app,
+        Some(&signature),
+        serde_json::to_vec(&tampered).unwrap(),
+    )
+    .await;
     assert_forbidden(status, &resp);
 }
 
@@ -108,18 +137,35 @@ async fn signature_for_a_different_body_is_forbidden() {
 async fn near_miss_of_the_mock_sentinel_is_forbidden() {
     // The mock must match the sentinel exactly, not by prefix or case.
     let app = app().await;
-    for signature in ["mock-signature ", "MOCK-SIGNATURE", "mock-signatur", "mock-signature-x"] {
-        let (status, body) =
-            post_termii(&app, Some(signature), serde_json::to_vec(&delivery_report()).unwrap()).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "signature {signature:?} must be rejected: {body}");
+    for signature in [
+        "mock-signature ",
+        "MOCK-SIGNATURE",
+        "mock-signatur",
+        "mock-signature-x",
+    ] {
+        let (status, body) = post_termii(
+            &app,
+            Some(signature),
+            serde_json::to_vec(&delivery_report()).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "signature {signature:?} must be rejected: {body}"
+        );
     }
 }
 
 #[tokio::test]
 async fn mock_sentinel_signature_is_acknowledged() {
     let app = app().await;
-    let (status, body) =
-        post_termii(&app, Some(MOCK_SIGNATURE), serde_json::to_vec(&delivery_report()).unwrap()).await;
+    let (status, body) = post_termii(
+        &app,
+        Some(MOCK_SIGNATURE),
+        serde_json::to_vec(&delivery_report()).unwrap(),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 }
 
@@ -128,8 +174,12 @@ async fn unrecognized_payload_shape_with_valid_signature_is_acknowledged() {
     // Leniency: once the signature checks out the handler always acks, so
     // Termii is never trained to retry a payload we can't parse.
     let app = app().await;
-    let (status, body) =
-        post_termii(&app, Some(MOCK_SIGNATURE), serde_json::to_vec(&json!({ "totally": "unexpected" })).unwrap()).await;
+    let (status, body) = post_termii(
+        &app,
+        Some(MOCK_SIGNATURE),
+        serde_json::to_vec(&json!({ "totally": "unexpected" })).unwrap(),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 }
 
@@ -147,7 +197,8 @@ async fn verified_termii_callbacks_are_recorded_once() {
     let state = state().await;
     let app = aframp::router(state.clone());
     let message_id = format!("msg-{}", uuid::Uuid::new_v4().simple());
-    let body = serde_json::to_vec(&json!({ "message_id": message_id, "status": "Delivered" })).unwrap();
+    let body =
+        serde_json::to_vec(&json!({ "message_id": message_id, "status": "Delivered" })).unwrap();
 
     for _ in 0..2 {
         let (status, _) = post_termii(&app, Some(MOCK_SIGNATURE), body.clone()).await;
@@ -163,7 +214,13 @@ async fn verified_termii_callbacks_are_recorded_once() {
     .fetch_all(&state.db)
     .await
     .unwrap();
-    assert_eq!(rows, vec![(format!("{message_id}:Delivered"), Some("Delivered".to_string()))]);
+    assert_eq!(
+        rows,
+        vec![(
+            format!("{message_id}:Delivered"),
+            Some("Delivered".to_string())
+        )]
+    );
 
     // A non-JSON body with a valid signature is still recorded (by hash).
     let (status, _) = post_termii(&app, Some(MOCK_SIGNATURE), b"not json".to_vec()).await;

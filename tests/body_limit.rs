@@ -7,8 +7,13 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 fn app() -> Router {
     Router::new()
-        .route("/echo", post(|body: Bytes| async move { body.len().to_string() }))
-        .layer(RequestBodyLimitLayer::new(aframp::DEFAULT_MAX_REQUEST_BODY_BYTES))
+        .route(
+            "/echo",
+            post(|body: Bytes| async move { body.len().to_string() }),
+        )
+        .layer(RequestBodyLimitLayer::new(
+            aframp::DEFAULT_MAX_REQUEST_BODY_BYTES,
+        ))
 }
 
 async fn post_bytes(len: usize) -> StatusCode {
@@ -28,7 +33,10 @@ fn default_limit_is_64_kilobytes() {
 
 #[tokio::test]
 async fn body_at_limit_is_accepted() {
-    assert_eq!(post_bytes(aframp::DEFAULT_MAX_REQUEST_BODY_BYTES).await, StatusCode::OK);
+    assert_eq!(
+        post_bytes(aframp::DEFAULT_MAX_REQUEST_BODY_BYTES).await,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

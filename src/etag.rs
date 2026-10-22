@@ -53,5 +53,7 @@ fn matches_etag(if_none_match: &str, etag: &str) -> bool {
     if if_none_match.trim() == "*" {
         return true;
     }
-    if_none_match.split(',').any(|candidate| candidate.trim() == etag)
+    if_none_match
+        .split(',')
+        .any(|candidate| candidate.trim() == etag)
 }

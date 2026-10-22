@@ -6,18 +6,17 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Html;
 use axum::Json;
 use futures_util::stream::Stream;
-use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::auth::extractor::AdminUser;
 use crate::error::{bad_request, internal, not_found, ApiResult, ErrorCode};
-use crate::pagination::{Cursor, Page};
 use crate::models::{
     AdminMerchantRow, AdminOverview, AdminPaymentRequestRow, AdminTransactionRow, AdminUserRow,
     AdminWalletRow, AdminWithdrawalRow, ListParams, Merchant,
 };
+use crate::pagination::{Cursor, Page};
 use crate::services::admin;
 use crate::AppState;
 
@@ -37,7 +36,10 @@ pub async fn users(
 ) -> ApiResult<Json<Page<AdminUserRow>>> {
     admin.require_pii()?;
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let page = admin::users(&state.db, params.admin_limit(), cursor)
@@ -53,7 +55,10 @@ pub async fn merchants(
 ) -> ApiResult<Json<Page<AdminMerchantRow>>> {
     admin.require_pii()?;
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let page = admin::merchants(&state.db, params.admin_limit(), cursor)
@@ -68,7 +73,10 @@ pub async fn wallets(
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminWalletRow>>> {
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let page = admin::wallets(&state.db, params.admin_limit(), cursor)
@@ -83,7 +91,10 @@ pub async fn transactions(
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminTransactionRow>>> {
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let page = admin::transactions(&state.db, params.admin_limit(), cursor)
@@ -99,7 +110,10 @@ pub async fn withdrawals(
 ) -> ApiResult<Json<Page<AdminWithdrawalRow>>> {
     admin.require_financials()?;
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let page = admin::withdrawals(&state.db, params.admin_limit(), cursor)
@@ -114,7 +128,10 @@ pub async fn payment_requests(
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminPaymentRequestRow>>> {
     let cursor = match params.cursor.as_deref() {
-        Some(raw) => Some(Cursor::decode(raw).ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?),
+        Some(raw) => Some(
+            Cursor::decode(raw)
+                .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
+        ),
         None => None,
     };
     let page = admin::payment_requests(&state.db, params.admin_limit(), cursor)
@@ -174,9 +191,7 @@ pub async fn unlock_user(
     _admin: AdminUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<axum::http::StatusCode> {
-    let found = admin::unlock_user(&state.db, id)
-        .await
-        .map_err(internal)?;
+    let found = admin::unlock_user(&state.db, id).await.map_err(internal)?;
     if found {
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
@@ -230,7 +245,10 @@ fn base64_std(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
         for i in 0..4 {
             if i <= chunk.len() {
                 out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
@@ -248,7 +266,13 @@ mod tests {
 
     #[test]
     fn base64_std_matches_rfc4648_vectors() {
-        for (plain, encoded) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy")] {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
             assert_eq!(base64_std(plain.as_bytes()), encoded);
         }
     }
@@ -257,7 +281,13 @@ mod tests {
     fn dashboard_csp_pins_the_inline_script_hash() {
         let csp = dashboard_csp();
         assert!(csp.contains("script-src 'sha256-"), "{csp}");
-        assert!(!csp.contains("'unsafe-inline'; img") || csp.contains("style-src 'self' 'unsafe-inline'"));
-        assert!(!csp.contains("script-src 'unsafe-inline'"), "inline scripts must not be allowed wholesale");
+        assert!(
+            !csp.contains("'unsafe-inline'; img")
+                || csp.contains("style-src 'self' 'unsafe-inline'")
+        );
+        assert!(
+            !csp.contains("script-src 'unsafe-inline'"),
+            "inline scripts must not be allowed wholesale"
+        );
     }
 }

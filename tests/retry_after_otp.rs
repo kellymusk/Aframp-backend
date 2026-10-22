@@ -83,9 +83,7 @@ async fn signup_429_includes_retry_after_header() {
     );
 
     // ── The feature under test ────────────────────────────────────────────────
-    let retry_after_value = retry_after.expect(
-        "429 response must include a Retry-After header ",
-    );
+    let retry_after_value = retry_after.expect("429 response must include a Retry-After header ");
     let secs: u64 = retry_after_value
         .trim()
         .parse()
@@ -104,7 +102,7 @@ async fn login_429_includes_retry_after_header() {
     let app = router(state);
 
     // Register a full account so /login has a real user to rate-limit against.
-    let unique = uuid::Uuid::new_v4();
+    let _unique = uuid::Uuid::new_v4();
     // A verified account; ensure_merchant signs up with Password123!.
     let (_token, merchant_id) = common::ensure_merchant(&app, "retry-after-login").await;
     let email: String = sqlx::query_scalar(
@@ -134,10 +132,11 @@ async fn login_429_includes_retry_after_header() {
         "rapid re-login should return 429"
     );
 
-    let retry_after_value = retry_after.expect(
-        "429 login response must include Retry-After ",
-    );
-    let secs: u64 = retry_after_value.trim().parse().expect("Retry-After must be a non-negative integer");
+    let retry_after_value = retry_after.expect("429 login response must include Retry-After ");
+    let secs: u64 = retry_after_value
+        .trim()
+        .parse()
+        .expect("Retry-After must be a non-negative integer");
     assert!(secs <= 60, "Retry-After ({secs}) must be ≤ 60");
 }
 

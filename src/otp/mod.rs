@@ -54,11 +54,7 @@ const SEND_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// Sends an OTP verification code via the given provider, retrying once on
 /// transient failures (HTTP 5xx, network timeouts) with a short delay.
 /// Permanent failures (e.g. invalid phone number) are returned immediately.
-pub async fn send_code(
-    otp: &dyn OtpProvider,
-    phone: &str,
-    code: &str,
-) -> Result<(), OtpSendError> {
+pub async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpSendError> {
     let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
 
     let mut attempt = 0;
@@ -131,9 +127,14 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_retry_a_permanent_failure() {
-        let provider = RejectingProvider { calls: AtomicUsize::new(0) };
+        let provider = RejectingProvider {
+            calls: AtomicUsize::new(0),
+        };
         let result = send_code(&provider, "+2348000000000", "123456").await;
-        assert_eq!(result, Err(OtpSendError::Permanent("invalid phone number".into())));
+        assert_eq!(
+            result,
+            Err(OtpSendError::Permanent("invalid phone number".into()))
+        );
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -47,7 +47,11 @@ pub trait PaymentProvider: Send + Sync {
 
     /// Resolve a bank account to its registered holder name. A failure means
     /// the account could not be verified and no payout may be attempted.
-    async fn resolve_account(&self, bank_code: &str, account_number: &str) -> Result<String, String>;
+    async fn resolve_account(
+        &self,
+        bank_code: &str,
+        account_number: &str,
+    ) -> Result<String, String>;
 
     /// Whether `signature` is the provider's valid signature over a webhook
     /// `body`. Lives on the provider so the signing key never leaves it.

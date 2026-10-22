@@ -24,7 +24,11 @@ struct FailingMockProvider;
 
 #[async_trait]
 impl PaymentProvider for FailingMockProvider {
-    async fn resolve_account(&self, _bank_code: &str, _account_number: &str) -> Result<String, String> {
+    async fn resolve_account(
+        &self,
+        _bank_code: &str,
+        _account_number: &str,
+    ) -> Result<String, String> {
         Ok("Test Account Holder".into())
     }
 
@@ -32,14 +36,19 @@ impl PaymentProvider for FailingMockProvider {
         Err(PROVIDER_ERROR.into())
     }
 
-    async fn verify_payout(&self, _reference: &str) -> Result<aframp::payments::PayoutVerification, String> {
+    async fn verify_payout(
+        &self,
+        _reference: &str,
+    ) -> Result<aframp::payments::PayoutVerification, String> {
         Ok(aframp::payments::PayoutVerification::NotFound)
     }
 }
 
 /// A router whose payment provider always fails, plus a merchant with a
 /// funded cNGN balance. Returns (app, db, token, merchant_id).
-async fn funded_merchant_with_failing_provider(seed: &str) -> (axum::Router, PgPool, String, String) {
+async fn funded_merchant_with_failing_provider(
+    seed: &str,
+) -> (axum::Router, PgPool, String, String) {
     let mut state = state().await;
     state.payment_provider = Arc::new(FailingMockProvider);
     let db = state.db.clone();
@@ -76,11 +85,13 @@ async fn withdraw(app: &axum::Router, token: &str) -> (StatusCode, serde_json::V
 }
 
 async fn available(db: &PgPool, merchant_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'")
-        .bind(merchant_id)
-        .fetch_one(db)
-        .await
-        .unwrap()
+    sqlx::query_scalar(
+        "SELECT available FROM balances WHERE merchant_id = $1::uuid AND asset = 'cNGN'",
+    )
+    .bind(merchant_id)
+    .fetch_one(db)
+    .await
+    .unwrap()
 }
 
 /// Every withdrawal row for the merchant as (status, failure_reason).
@@ -94,10 +105,15 @@ async fn withdrawal_rows(db: &PgPool, merchant_id: &str) -> Vec<(String, Option<
 
 #[tokio::test]
 async fn provider_error_restores_balance() {
-    let (app, db, token, merchant_id) = funded_merchant_with_failing_provider("refund_balance").await;
+    let (app, db, token, merchant_id) =
+        funded_merchant_with_failing_provider("refund_balance").await;
 
     let (status, json) = withdraw(&app, &token).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "expected payout failure: {json}"
+    );
     assert_eq!(json["code"], "PAYOUT_FAILED");
 
     assert_eq!(
@@ -109,13 +125,22 @@ async fn provider_error_restores_balance() {
 
 #[tokio::test]
 async fn provider_error_marks_withdrawal_failed_with_reason() {
-    let (app, db, token, merchant_id) = funded_merchant_with_failing_provider("refund_status").await;
+    let (app, db, token, merchant_id) =
+        funded_merchant_with_failing_provider("refund_status").await;
 
     let (status, json) = withdraw(&app, &token).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY, "expected payout failure: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "expected payout failure: {json}"
+    );
 
     let rows = withdrawal_rows(&db, &merchant_id).await;
-    assert_eq!(rows.len(), 1, "the failed attempt must leave exactly one audit row");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the failed attempt must leave exactly one audit row"
+    );
     let (status, failure_reason) = &rows[0];
     assert_eq!(status, "failed");
     assert_eq!(failure_reason.as_deref(), Some(PROVIDER_ERROR));
@@ -123,7 +148,8 @@ async fn provider_error_marks_withdrawal_failed_with_reason() {
 
 #[tokio::test]
 async fn refund_is_atomic_balance_and_status_commit_together() {
-    let (app, db, token, merchant_id) = funded_merchant_with_failing_provider("refund_atomic").await;
+    let (app, db, token, merchant_id) =
+        funded_merchant_with_failing_provider("refund_atomic").await;
 
     // Sabotage only the second half of the refund transaction: a trigger that
     // rejects marking *this merchant's* withdrawal as failed. The balance
@@ -173,12 +199,19 @@ async fn refund_is_atomic_balance_and_status_commit_together() {
         StatusCode::INTERNAL_SERVER_ERROR,
         "a failed refund transaction should surface as an internal error: {json}"
     );
-    assert_eq!(rows.len(), 1, "the committed debit's audit row must survive");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the committed debit's audit row must survive"
+    );
     assert_eq!(
         rows[0].0, "pending",
         "the status update was rejected, so the row must remain pending"
     );
-    assert_eq!(rows[0].1, None, "no failure_reason may be recorded when the refund rolled back");
+    assert_eq!(
+        rows[0].1, None,
+        "no failure_reason may be recorded when the refund rolled back"
+    );
     assert_eq!(
         balance,
         STARTING_BALANCE - WITHDRAW_AMOUNT,

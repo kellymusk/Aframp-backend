@@ -103,8 +103,7 @@ async fn preflight_from_unlisted_origin_has_no_acao_header() {
     let state = state().await;
     let app = cors_app(state, &[ALLOWED_ORIGIN]);
 
-    let (_status, headers) =
-        preflight(app, "/wallet/create", BLOCKED_ORIGIN, "POST").await;
+    let (_status, headers) = preflight(app, "/wallet/create", BLOCKED_ORIGIN, "POST").await;
 
     assert!(
         headers.get("access-control-allow-origin").is_none(),
@@ -126,8 +125,7 @@ async fn preflight_from_listed_origin_returns_correct_cors_headers() {
     let state = state().await;
     let app = cors_app(state, &[ALLOWED_ORIGIN]);
 
-    let (status, headers) =
-        preflight(app, "/wallet/create", ALLOWED_ORIGIN, "POST").await;
+    let (status, headers) = preflight(app, "/wallet/create", ALLOWED_ORIGIN, "POST").await;
 
     // tower_http::cors returns 200 for a successful preflight.
     assert!(
@@ -171,8 +169,7 @@ async fn get_me_from_listed_origin_with_token_succeeds() {
 
     // Now exercise the CORS-layered app.
     let app = cors_app(state, &[ALLOWED_ORIGIN]);
-    let (status, headers) =
-        cross_origin_get(app, "/me", ALLOWED_ORIGIN, Some(&token)).await;
+    let (status, headers) = cross_origin_get(app, "/me", ALLOWED_ORIGIN, Some(&token)).await;
 
     assert_eq!(
         status,
@@ -205,8 +202,7 @@ async fn get_me_from_unlisted_origin_has_no_acao_header() {
     let (token, _) = ensure_merchant(&bare_app, "cors_me_blocked").await;
 
     let app = cors_app(state, &[ALLOWED_ORIGIN]);
-    let (_status, headers) =
-        cross_origin_get(app, "/me", BLOCKED_ORIGIN, Some(&token)).await;
+    let (_status, headers) = cross_origin_get(app, "/me", BLOCKED_ORIGIN, Some(&token)).await;
 
     assert!(
         headers.get("access-control-allow-origin").is_none(),

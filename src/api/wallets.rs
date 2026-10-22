@@ -2,7 +2,9 @@ use axum::extract::State;
 use axum::Json;
 
 use crate::auth::extractor::AuthUser;
-use crate::error::{bad_request, bad_request_field, conflict, internal, not_found, ApiResult, ErrorCode};
+use crate::error::{
+    bad_request, bad_request_field, conflict, internal, not_found, ApiResult, ErrorCode,
+};
 use crate::models::{CreateWalletRequest, Wallet};
 use crate::services::wallets::{self, CreateWalletError};
 use crate::AppState;
@@ -16,7 +18,8 @@ pub async fn create(
     let req: CreateWalletRequest = if body.iter().all(u8::is_ascii_whitespace) {
         CreateWalletRequest { network: None }
     } else {
-        serde_json::from_slice(&body).map_err(|_| bad_request(ErrorCode::InvalidParameters, "invalid JSON body"))?
+        serde_json::from_slice(&body)
+            .map_err(|_| bad_request(ErrorCode::InvalidParameters, "invalid JSON body"))?
     };
     let merchant_id = auth.merchant_id.ok_or_else(|| {
         bad_request(
@@ -34,15 +37,20 @@ pub async fn create(
         ));
     }
 
-    let wallet = wallets::create_wallet(&state.db, merchant_id, &network, &state.wallet_encryption_key)
-        .await
-        .map_err(|err| match err {
-            CreateWalletError::AlreadyExists | CreateWalletError::DuplicateNetwork(_) => conflict(
-                ErrorCode::InvalidParameters,
-                "a wallet already exists for this merchant; use GET /wallet to retrieve it",
-            ),
-            other => internal(other),
-        })?;
+    let wallet = wallets::create_wallet(
+        &state.db,
+        merchant_id,
+        &network,
+        &state.wallet_encryption_key,
+    )
+    .await
+    .map_err(|err| match err {
+        CreateWalletError::AlreadyExists | CreateWalletError::DuplicateNetwork(_) => conflict(
+            ErrorCode::InvalidParameters,
+            "a wallet already exists for this merchant; use GET /wallet to retrieve it",
+        ),
+        other => internal(other),
+    })?;
     Ok(Json(wallet))
 }
 

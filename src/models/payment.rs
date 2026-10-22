@@ -85,15 +85,19 @@ pub enum UpdatePaymentStatus {
 /// Incoming merchant payments use [`PaymentKind::Payment`]. Funds swept from a
 /// merchant custodial wallet to the platform settlement wallet
 /// (`STELLAR_SYSTEM_WALLET_ADDRESS`) are recorded with [`PaymentKind::Sweep`].
+#[allow(dead_code)] // for the settlement sweep, not built yet
 pub const PAYMENT_KIND_PAYMENT: &str = "payment";
+#[allow(dead_code)] // for the settlement sweep, not built yet
 pub const PAYMENT_KIND_SWEEP: &str = "sweep";
 
+#[allow(dead_code)] // for the settlement sweep, not built yet
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaymentKind {
     Payment,
     Sweep,
 }
 
+#[allow(dead_code)] // for the settlement sweep, not built yet
 impl PaymentKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -113,6 +117,7 @@ impl std::fmt::Display for PaymentKind {
 ///
 /// The `tx_hash` is the Stellar transaction hash of the signed transfer and
 /// `destination_address` is the settlement wallet the funds were moved to.
+#[allow(dead_code)] // for the settlement sweep, not built yet
 #[derive(Debug, Clone)]
 pub struct NewSweepPayment {
     pub merchant_id: Uuid,
@@ -125,6 +130,7 @@ pub struct NewSweepPayment {
     pub network: String,
 }
 
+#[allow(dead_code)] // for the settlement sweep, not built yet
 impl NewSweepPayment {
     /// Builds the sweep record from a confirmed payment, preserving the source
     /// wallet and asset details while pointing at the settlement destination.

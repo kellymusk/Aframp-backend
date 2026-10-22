@@ -27,4 +27,3 @@ pub struct NewMerchant {
     pub name: String,
     pub email: Option<String>,
 }
-

@@ -1,21 +1,23 @@
 mod api;
 pub mod auth;
 pub mod blockchain;
+pub mod client_ip;
 mod config;
 mod error;
 mod etag;
 pub mod middleware;
 pub mod models;
-pub mod client_ip;
-pub mod pagination;
 pub mod otp;
+pub mod pagination;
 pub mod payments;
 pub mod rotate_key;
 pub mod services;
 pub mod validation;
 
 pub use auth::cookie::{CookieConfig, SameSite};
-pub use config::{AppConfig, OtpProviderKind, SecretBytes, SecretString, DEFAULT_MAX_REQUEST_BODY_BYTES};
+pub use config::{
+    AppConfig, OtpProviderKind, SecretBytes, SecretString, DEFAULT_MAX_REQUEST_BODY_BYTES,
+};
 
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use tokio::sync::broadcast;
@@ -87,26 +89,34 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
     let db = PgPoolOptions::new()
         .max_connections(config.database_max_connections)
         .min_connections(config.database_min_connections)
-        .acquire_timeout(std::time::Duration::from_secs(config.database_acquire_timeout_secs.into()))
+        .acquire_timeout(std::time::Duration::from_secs(
+            config.database_acquire_timeout_secs.into(),
+        ))
         .connect(&config.database_url)
         .await?;
-    let wallet_encryption_key = blockchain::wallet_crypto::parse_key(config.wallet_encryption_key.as_str())?;
+    let wallet_encryption_key =
+        blockchain::wallet_crypto::parse_key(config.wallet_encryption_key.as_str())?;
     let otp_provider: std::sync::Arc<dyn otp::OtpProvider> = match config.otp_provider {
-        OtpProviderKind::Termii => std::sync::Arc::new(otp::termii::TermiiProvider::new(
-            config
-                .termii_api_key
-                .as_ref()
-                .expect("TERMII_API_KEY is required when OTP_PROVIDER=termii")
-                .as_str()
-                .to_string(),
-            config
-                .termii_sender_id
-                .clone()
-                .expect("TERMII_SENDER_ID is required when OTP_PROVIDER=termii"),
-        )
-        .with_webhook_secret(
-            config.termii_webhook_secret.as_ref().map(|s| s.as_str().to_string()),
-        )),
+        OtpProviderKind::Termii => std::sync::Arc::new(
+            otp::termii::TermiiProvider::new(
+                config
+                    .termii_api_key
+                    .as_ref()
+                    .expect("TERMII_API_KEY is required when OTP_PROVIDER=termii")
+                    .as_str()
+                    .to_string(),
+                config
+                    .termii_sender_id
+                    .clone()
+                    .expect("TERMII_SENDER_ID is required when OTP_PROVIDER=termii"),
+            )
+            .with_webhook_secret(
+                config
+                    .termii_webhook_secret
+                    .as_ref()
+                    .map(|s| s.as_str().to_string()),
+            ),
+        ),
         OtpProviderKind::Mock => std::sync::Arc::new(otp::mock::MockOtpProvider),
     };
     let (admin_events, _) = broadcast::channel(256);
@@ -153,12 +163,18 @@ pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/", axum::routing::get(|| async { "aframp" }))
         .route("/health", axum::routing::get(api::health::health))
-        .route("/health/detailed", axum::routing::get(api::health::detailed))
+        .route(
+            "/health/detailed",
+            axum::routing::get(api::health::detailed),
+        )
         .route("/signup", axum::routing::post(api::auth::signup))
         .route("/login", axum::routing::post(api::auth::login))
         .route("/verify-otp", axum::routing::post(api::auth::verify_otp))
         .route("/logout", axum::routing::post(api::auth::logout))
-        .route("/auth/change-password", axum::routing::post(api::auth::change_password))
+        .route(
+            "/auth/change-password",
+            axum::routing::post(api::auth::change_password),
+        )
         .route("/verify-email", axum::routing::get(api::auth::verify_email))
         .route(
             "/verify-email/resend",
@@ -169,8 +185,14 @@ pub fn router(state: AppState) -> axum::Router {
             "/webhooks",
             axum::routing::post(api::merchant_webhooks::create).get(api::merchant_webhooks::list),
         )
-        .route("/webhooks/termii", axum::routing::post(api::webhooks::termii))
-        .route("/webhooks/paystack", axum::routing::post(api::webhooks::paystack))
+        .route(
+            "/webhooks/termii",
+            axum::routing::post(api::webhooks::termii),
+        )
+        .route(
+            "/webhooks/paystack",
+            axum::routing::post(api::webhooks::paystack),
+        )
         .route(
             "/me",
             axum::routing::get(api::me::get)
@@ -189,7 +211,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/wallet/create", axum::routing::post(api::wallets::create))
         .route("/wallet", axum::routing::get(api::wallets::get))
         .route("/balance", axum::routing::get(api::balances::get))
-        .route("/analytics/payments", axum::routing::get(api::analytics::payments))
+        .route(
+            "/analytics/payments",
+            axum::routing::get(api::analytics::payments),
+        )
         .route("/transactions", axum::routing::get(api::transactions::list))
         .route(
             "/transactions/export",
@@ -199,19 +224,27 @@ pub fn router(state: AppState) -> axum::Router {
             "/api-keys",
             axum::routing::post(api::api_keys::create).get(api::api_keys::list),
         )
-        .route("/api-keys/{id}", axum::routing::delete(api::api_keys::revoke))
+        .route(
+            "/api-keys/{id}",
+            axum::routing::delete(api::api_keys::revoke),
+        )
         .route("/withdraw", axum::routing::post(api::withdrawals::create))
-        .route("/withdrawal-fee", axum::routing::get(api::withdrawals::withdrawal_fee))
+        .route(
+            "/withdrawal-fee",
+            axum::routing::get(api::withdrawals::withdrawal_fee),
+        )
         .route("/withdrawals", axum::routing::get(api::withdrawals::list))
-        .route("/withdrawals/{id}", axum::routing::get(api::withdrawals::get))
+        .route(
+            "/withdrawals/{id}",
+            axum::routing::get(api::withdrawals::get),
+        )
         .route(
             "/withdrawals/verify-bank",
             axum::routing::get(api::withdrawals::verify_bank),
         )
         .route(
             "/payment-requests",
-            axum::routing::post(api::payment_requests::create)
-                .get(api::payment_requests::list),
+            axum::routing::post(api::payment_requests::create).get(api::payment_requests::list),
         )
         .route(
             "/payment-requests/{id}/expire",
@@ -227,8 +260,7 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route(
             "/payment-requests/{id}",
-            axum::routing::get(api::payment_requests::get)
-                .delete(api::payment_requests::cancel),
+            axum::routing::get(api::payment_requests::get).delete(api::payment_requests::cancel),
         )
         .route(
             "/payment-requests/{id}/cancel",
@@ -236,11 +268,20 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/admin", axum::routing::get(api::admin::dashboard))
         .route("/admin/overview", axum::routing::get(api::admin::overview))
-        .route("/admin/merchants", axum::routing::get(api::admin::merchants))
+        .route(
+            "/admin/merchants",
+            axum::routing::get(api::admin::merchants),
+        )
         .route("/admin/users", axum::routing::get(api::admin::users))
         .route("/admin/wallets", axum::routing::get(api::admin::wallets))
-        .route("/admin/transactions", axum::routing::get(api::admin::transactions))
-        .route("/admin/withdrawals", axum::routing::get(api::admin::withdrawals))
+        .route(
+            "/admin/transactions",
+            axum::routing::get(api::admin::transactions),
+        )
+        .route(
+            "/admin/withdrawals",
+            axum::routing::get(api::admin::withdrawals),
+        )
         .route(
             "/admin/payment-requests",
             axum::routing::get(api::admin::payment_requests),
@@ -259,7 +300,9 @@ pub fn router(state: AppState) -> axum::Router {
             axum::routing::post(api::admin::unlock_user),
         )
         .with_state(state)
-        .layer(axum::middleware::from_fn(middleware::require_json_content_type))
+        .layer(axum::middleware::from_fn(
+            middleware::require_json_content_type,
+        ))
         .layer(axum::middleware::from_fn(middleware::retry_after_header))
 }
 
@@ -284,7 +327,10 @@ mod cors_tests {
             )),
             otp_provider: std::sync::Arc::new(otp::mock::MockOtpProvider),
             otp_hmac_secret: SecretString::new("test-otp-hmac-secret".to_string()),
-            cookie: CookieConfig { secure: true, same_site: SameSite::Lax },
+            cookie: CookieConfig {
+                secure: true,
+                same_site: SameSite::Lax,
+            },
             admin_events: broadcast::channel(16).0,
             daily_withdrawal_limit_stroops: None,
             cngn_issuer: None,
@@ -294,9 +340,10 @@ mod cors_tests {
     }
 
     async fn preflight(method: Method) -> StatusCode {
-        let app = router(test_state()).layer(cors_layer(vec![
-            axum::http::HeaderValue::from_static("https://app.aframp.com"),
-        ]));
+        let app =
+            router(test_state()).layer(cors_layer(vec![axum::http::HeaderValue::from_static(
+                "https://app.aframp.com",
+            )]));
         let request = Request::builder()
             .method(Method::OPTIONS)
             .uri("/me")

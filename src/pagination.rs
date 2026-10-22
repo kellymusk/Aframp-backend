@@ -54,7 +54,10 @@ const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 fn base64url_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
         for i in 0..=chunk.len() {
             out.push(BASE64URL[((n >> (18 - 6 * i)) & 0x3f) as usize] as char);
         }
@@ -72,7 +75,10 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(values.len() * 3 / 4);
     for chunk in values.chunks(4) {
-        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, v)| acc | (v << (18 - 6 * i)));
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, v)| acc | (v << (18 - 6 * i)));
         for i in 0..chunk.len() - 1 {
             out.push((n >> (16 - 8 * i)) as u8);
         }
@@ -109,16 +115,22 @@ mod tests {
         }
     }
 
-
     #[test]
     fn cursor_round_trips_and_is_opaque() {
         let cursor = Cursor {
-            created_at: DateTime::parse_from_rfc3339("2026-09-26T12:34:56.789Z").unwrap().with_timezone(&Utc),
+            created_at: DateTime::parse_from_rfc3339("2026-09-26T12:34:56.789Z")
+                .unwrap()
+                .with_timezone(&Utc),
             id: Uuid::parse_str("5f0c7c1e-2d4b-4a8e-9a55-0c1f1b2a3d4e").unwrap(),
         };
         let encoded = cursor.encode();
-        assert!(encoded.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
-        assert!(!encoded.contains("2026"), "cursor must not expose the raw timestamp");
+        assert!(encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(
+            !encoded.contains("2026"),
+            "cursor must not expose the raw timestamp"
+        );
 
         let decoded = Cursor::decode(&encoded).expect("round trip");
         assert_eq!(decoded.created_at, cursor.created_at);
@@ -133,8 +145,13 @@ mod tests {
             "2024-06-30T23:59:59.000000001+14:00",
             "2024-12-31T23:59:59Z",
         ] {
-            let created_at = DateTime::parse_from_rfc3339(ts).unwrap().with_timezone(&Utc);
-            let cursor = Cursor { created_at, id: Uuid::new_v4() };
+            let created_at = DateTime::parse_from_rfc3339(ts)
+                .unwrap()
+                .with_timezone(&Utc);
+            let cursor = Cursor {
+                created_at,
+                id: Uuid::new_v4(),
+            };
             let decoded = Cursor::decode(&cursor.encode()).expect("round trip");
             assert_eq!(decoded.created_at, cursor.created_at);
             assert_eq!(decoded.id, cursor.id);
@@ -143,7 +160,15 @@ mod tests {
 
     #[test]
     fn base64url_matches_rfc4648_vectors() {
-        for (plain, encoded) in [("", ""), ("f", "Zg"), ("fo", "Zm8"), ("foo", "Zm9v"), ("foob", "Zm9vYg"), ("fooba", "Zm9vYmE"), ("foobar", "Zm9vYmFy")] {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg"),
+            ("fo", "Zm8"),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg"),
+            ("fooba", "Zm9vYmE"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
             assert_eq!(base64url_encode(plain.as_bytes()), encoded);
             assert_eq!(base64url_decode(encoded).unwrap(), plain.as_bytes());
         }

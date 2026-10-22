@@ -9,7 +9,6 @@
 //! - The admin endpoint itself still returns the correct status code
 //!   (the audit insert must not break the response).
 
-
 mod common;
 
 use axum::http::StatusCode;
@@ -24,13 +23,12 @@ async fn app_and_db() -> (axum::Router, PgPool) {
 
 /// Counts rows in `admin_audit_log` for a given `admin_user_id`.
 async fn audit_rows_for_admin(db: &PgPool, admin_user_id: &str) -> i64 {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM admin_audit_log WHERE admin_user_id = $1::uuid",
-    )
-    .bind(admin_user_id)
-    .fetch_one(db)
-    .await
-    .expect("count audit rows");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM admin_audit_log WHERE admin_user_id = $1::uuid")
+            .bind(admin_user_id)
+            .fetch_one(db)
+            .await
+            .expect("count audit rows");
     count
 }
 
@@ -55,11 +53,7 @@ async fn latest_audit_row(
 
 /// Promotes an existing merchant's user to admin in the DB, then re-logs-in
 /// through the OTP flow to obtain a token that has `is_admin = true`.
-async fn promote_to_admin(
-    app: &axum::Router,
-    db: &PgPool,
-    seed: &str,
-) -> (String, String) {
+async fn promote_to_admin(app: &axum::Router, db: &PgPool, seed: &str) -> (String, String) {
     let (_, merchant_id) = common::ensure_merchant(app, seed).await;
 
     let (email, phone): (String, String) = sqlx::query_as(
@@ -84,8 +78,8 @@ async fn promote_to_admin(
     assert_eq!(status, StatusCode::OK, "login failed: {challenge}");
     let challenge_id = challenge["challenge_id"].as_str().unwrap().to_string();
 
-    let message = aframp::otp::mock::last_message_for(&phone)
-        .expect("mock otp should have a message");
+    let message =
+        aframp::otp::mock::last_message_for(&phone).expect("mock otp should have a message");
     let code = common::extract_otp_code(&message);
 
     let (status, body) = common::send(
@@ -99,13 +93,11 @@ async fn promote_to_admin(
     assert_eq!(status, StatusCode::OK, "verify-otp failed: {body}");
 
     let token = body["token"].as_str().unwrap().to_string();
-    let user_id: String = sqlx::query_scalar(
-        "SELECT id::text FROM users WHERE email = $1",
-    )
-    .bind(&email)
-    .fetch_one(db)
-    .await
-    .unwrap();
+    let user_id: String = sqlx::query_scalar("SELECT id::text FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_one(db)
+        .await
+        .unwrap();
 
     (token, user_id)
 }
@@ -118,8 +110,7 @@ async fn promote_to_admin(
 #[tokio::test]
 async fn admin_overview_inserts_audit_row() {
     let (app, db) = app_and_db().await;
-    let (admin_token, admin_user_id) =
-        promote_to_admin(&app, &db, "audit_overview").await;
+    let (admin_token, admin_user_id) = promote_to_admin(&app, &db, "audit_overview").await;
 
     let before = audit_rows_for_admin(&db, &admin_user_id).await;
 
@@ -139,32 +130,31 @@ async fn admin_overview_inserts_audit_row() {
 #[tokio::test]
 async fn admin_users_inserts_audit_row_with_action() {
     let (app, db) = app_and_db().await;
-    let (admin_token, admin_user_id) =
-        promote_to_admin(&app, &db, "audit_users").await;
+    let (admin_token, admin_user_id) = promote_to_admin(&app, &db, "audit_users").await;
 
-    let (status, body) =
-        common::send(app, "GET", "/admin/users", Some(&admin_token), None).await;
+    let (status, body) = common::send(app, "GET", "/admin/users", Some(&admin_token), None).await;
     assert_eq!(status, StatusCode::OK, "users list failed: {body}");
 
-    let (action, resource_type, _ip) = latest_audit_row(&db, &admin_user_id).await.expect("an audit row");
+    let (action, resource_type, _ip) = latest_audit_row(&db, &admin_user_id)
+        .await
+        .expect("an audit row");
     assert_eq!(action, "GET /admin/users", "unexpected action: {action}");
-    assert_eq!(resource_type.as_deref(), Some("users"), "resource_type should be 'users': {resource_type:?}");
+    assert_eq!(
+        resource_type.as_deref(),
+        Some("users"),
+        "resource_type should be 'users': {resource_type:?}"
+    );
 }
 
 /// An admin calling multiple endpoints inserts one row per call.
 #[tokio::test]
 async fn admin_multiple_calls_insert_multiple_rows() {
     let (app, db) = app_and_db().await;
-    let (admin_token, admin_user_id) =
-        promote_to_admin(&app, &db, "audit_multi").await;
+    let (admin_token, admin_user_id) = promote_to_admin(&app, &db, "audit_multi").await;
 
     let before = audit_rows_for_admin(&db, &admin_user_id).await;
 
-    let endpoints = [
-        "/admin/overview",
-        "/admin/merchants",
-        "/admin/wallets",
-    ];
+    let endpoints = ["/admin/overview", "/admin/merchants", "/admin/wallets"];
     for path in &endpoints {
         let (status, _) = common::send(app.clone(), "GET", path, Some(&admin_token), None).await;
         assert_eq!(status, StatusCode::OK, "call to {path} failed");
@@ -187,8 +177,7 @@ async fn non_admin_call_does_not_insert_audit_row() {
     let (app, db) = app_and_db().await;
 
     // Create a regular (non-admin) merchant.
-    let (user_token, merchant_id) =
-        common::ensure_merchant(&app, "audit_nonadmin").await;
+    let (user_token, merchant_id) = common::ensure_merchant(&app, "audit_nonadmin").await;
 
     // Resolve the user_id behind this merchant.
     let user_id: String =
@@ -200,20 +189,12 @@ async fn non_admin_call_does_not_insert_audit_row() {
 
     let before = audit_rows_for_admin(&db, &user_id).await;
 
-    let (status, _) = common::send(
-        app,
-        "GET",
-        "/admin/overview",
-        Some(&user_token),
-        None,
-    )
-    .await;
+    let (status, _) = common::send(app, "GET", "/admin/overview", Some(&user_token), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "expected 403 for non-admin");
 
     let after = audit_rows_for_admin(&db, &user_id).await;
     assert_eq!(
-        after,
-        before,
+        after, before,
         "no audit row should be inserted for a rejected non-admin request"
     );
 }
@@ -224,5 +205,9 @@ async fn non_admin_call_does_not_insert_audit_row() {
 async fn unauthenticated_call_is_rejected_before_auditing() {
     let (app, _db) = app_and_db().await;
     let (status, _) = common::send(app, "GET", "/admin/overview", None, None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "expected 401 for no token");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "expected 401 for no token"
+    );
 }

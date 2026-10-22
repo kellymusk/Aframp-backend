@@ -162,7 +162,11 @@ impl AppConfig {
         {
             "lax" => SameSite::Lax,
             "none" => SameSite::None,
-            other => return Err(format!("COOKIE_SAME_SITE must be `lax` or `none`, got `{other}`")),
+            other => {
+                return Err(format!(
+                    "COOKIE_SAME_SITE must be `lax` or `none`, got `{other}`"
+                ))
+            }
         };
         if cookie_same_site == SameSite::None && !cookie_secure {
             return Err("COOKIE_SAME_SITE=none requires COOKIE_SECURE=true; browsers reject a SameSite=None cookie that is not Secure".into());
@@ -176,7 +180,11 @@ impl AppConfig {
         {
             "termii" => OtpProviderKind::Termii,
             "mock" => OtpProviderKind::Mock,
-            other => return Err(format!("OTP_PROVIDER must be `termii` or `mock`, got `{other}`")),
+            other => {
+                return Err(format!(
+                    "OTP_PROVIDER must be `termii` or `mock`, got `{other}`"
+                ))
+            }
         };
         let cngn_issuer_address = match std::env::var("CNGNX_ISSUER_ADDRESS") {
             Ok(value) if !value.trim().is_empty() => {
@@ -207,10 +215,9 @@ impl AppConfig {
             .unwrap_or(50);
         let max_request_body_bytes = match std::env::var("MAX_REQUEST_BODY_BYTES") {
             Err(_) => DEFAULT_MAX_REQUEST_BODY_BYTES,
-            Ok(value) => value
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| format!("MAX_REQUEST_BODY_BYTES must be a positive integer, got `{value}`"))?,
+            Ok(value) => value.trim().parse::<usize>().map_err(|_| {
+                format!("MAX_REQUEST_BODY_BYTES must be a positive integer, got `{value}`")
+            })?,
         };
         if max_request_body_bytes == 0 {
             return Err("MAX_REQUEST_BODY_BYTES must be greater than 0".into());
@@ -219,7 +226,11 @@ impl AppConfig {
         let daily_withdrawal_limit_stroops = match std::env::var("DAILY_WITHDRAWAL_LIMIT_STROOPS") {
             Ok(val) => match val.trim().parse::<i64>() {
                 Ok(limit) => Some(limit),
-                Err(e) => return Err(format!("DAILY_WITHDRAWAL_LIMIT_STROOPS must be an integer: {e}")),
+                Err(e) => {
+                    return Err(format!(
+                        "DAILY_WITHDRAWAL_LIMIT_STROOPS must be an integer: {e}"
+                    ))
+                }
             },
             Err(_) => None,
         };
@@ -272,8 +283,14 @@ impl AppConfig {
             stellar_horizon_url: std::env::var("STELLAR_HORIZON_URL")
                 .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".into()),
             stellar_poll_interval_secs,
-            max_single_deposit_stroops: positive_stroops("MAX_SINGLE_DEPOSIT_STROOPS", 100_000_000_000)?,
-            max_hourly_deposit_stroops: positive_stroops("MAX_HOURLY_DEPOSIT_STROOPS", 500_000_000_000)?,
+            max_single_deposit_stroops: positive_stroops(
+                "MAX_SINGLE_DEPOSIT_STROOPS",
+                100_000_000_000,
+            )?,
+            max_hourly_deposit_stroops: positive_stroops(
+                "MAX_HOURLY_DEPOSIT_STROOPS",
+                500_000_000_000,
+            )?,
             stellar_poll_concurrency,
             stellar_min_confirmations: std::env::var("STELLAR_MIN_CONFIRMATIONS")
                 .ok()
@@ -375,7 +392,9 @@ fn validate_origin(origin: &str) -> Result<(), String> {
         ));
     }
     if uri.host().is_none() {
-        return Err(format!("CORS_ALLOWED_ORIGINS: `{origin}` must include a host"));
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` must include a host"
+        ));
     }
     if !matches!(uri.path(), "" | "/") {
         return Err(format!(
@@ -397,7 +416,9 @@ fn positive_stroops(name: &str, default: i64) -> Result<i64, String> {
         Err(_) => Ok(default),
         Ok(value) => match value.trim().parse::<i64>() {
             Ok(v) if v > 0 => Ok(v),
-            _ => Err(format!("{name} must be a positive number of stroops, got `{value}`")),
+            _ => Err(format!(
+                "{name} must be a positive number of stroops, got `{value}`"
+            )),
         },
     }
 }
@@ -482,7 +503,6 @@ mod tests {
 
     /// Takes the env lock and populates every required var. Hold the returned
     /// guard for the rest of the test.
-    #[must_use]
     fn set_valid_env() -> std::sync::MutexGuard<'static, ()> {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // A 64-char hex string — well above the 32-char minimum.
@@ -493,7 +513,10 @@ mod tests {
             std::env::set_var("DATABASE_URL", "postgres://localhost/test");
         }
         std::env::set_var("WALLET_ENCRYPTION_KEY", &long_secret);
-        std::env::set_var("STELLAR_SYSTEM_WALLET_ADDRESS", "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN");
+        std::env::set_var(
+            "STELLAR_SYSTEM_WALLET_ADDRESS",
+            "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        );
         std::env::set_var("PAYSTACK_SECRET_KEY", "sk_test_placeholder");
         std::env::set_var("OTP_HMAC_SECRET", &long_secret);
         std::env::set_var("OTP_PROVIDER", "mock");
@@ -528,7 +551,10 @@ mod tests {
         let zero = AppConfig::from_env();
         std::env::remove_var("MAX_SINGLE_DEPOSIT_STROOPS");
         assert!(zero.unwrap_err().contains("MAX_SINGLE_DEPOSIT_STROOPS"));
-        assert_eq!(AppConfig::from_env().unwrap().max_single_deposit_stroops, 100_000_000_000);
+        assert_eq!(
+            AppConfig::from_env().unwrap().max_single_deposit_stroops,
+            100_000_000_000
+        );
     }
 
     #[test]
@@ -540,7 +566,10 @@ mod tests {
         std::env::remove_var("APP_ENV");
         std::env::remove_var("COOKIE_SECURE");
         let err = result.unwrap_err();
-        assert!(err.contains("COOKIE_SECURE=true"), "unexpected error: {err}");
+        assert!(
+            err.contains("COOKIE_SECURE=true"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -605,8 +634,14 @@ mod tests {
         std::env::set_var("JWT_SECRET", "a".repeat(31));
 
         let err = AppConfig::from_env().unwrap_err();
-        assert!(err.contains("JWT_SECRET"), "error must identify the variable: {err}");
-        assert!(err.contains("31"), "error should report the actual length: {err}");
+        assert!(
+            err.contains("JWT_SECRET"),
+            "error must identify the variable: {err}"
+        );
+        assert!(
+            err.contains("31"),
+            "error should report the actual length: {err}"
+        );
     }
 
     #[test]
@@ -682,7 +717,10 @@ mod tests {
         std::env::set_var(name, &value);
         let result = super::secret(name);
         std::env::remove_var(name);
-        assert!(result.is_ok(), "expected Ok for a {MIN_SECRET_LEN}-char secret");
+        assert!(
+            result.is_ok(),
+            "expected Ok for a {MIN_SECRET_LEN}-char secret"
+        );
     }
 
     /// A 64-character secret (typical `openssl rand -hex 32` output) must be accepted.
@@ -721,7 +759,10 @@ mod tests {
         std::env::set_var(name, "weak");
         let result = super::secret(name);
         std::env::remove_var(name);
-        assert!(result.is_err(), "expected Err for JWT_SECRET shorter than {MIN_SECRET_LEN} chars");
+        assert!(
+            result.is_err(),
+            "expected Err for JWT_SECRET shorter than {MIN_SECRET_LEN} chars"
+        );
     }
 
     /// webhook_secret shorter than 32 chars must be rejected.
@@ -731,7 +772,10 @@ mod tests {
         std::env::set_var(name, "test");
         let result = super::secret(name);
         std::env::remove_var(name);
-        assert!(result.is_err(), "expected Err for WEBHOOK_SECRET shorter than {MIN_SECRET_LEN} chars");
+        assert!(
+            result.is_err(),
+            "expected Err for WEBHOOK_SECRET shorter than {MIN_SECRET_LEN} chars"
+        );
     }
 
     /// A missing secret must still return a "required" error, not a length error.

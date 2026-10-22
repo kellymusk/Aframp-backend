@@ -45,7 +45,13 @@ pub fn sign(
     merchant_id: Option<Uuid>,
     is_admin: bool,
 ) -> Result<String, jsonwebtoken::errors::Error> {
-    sign_with_ttl(secret, user_id, merchant_id, is_admin, Duration::hours(TOKEN_TTL_HOURS))
+    sign_with_ttl(
+        secret,
+        user_id,
+        merchant_id,
+        is_admin,
+        Duration::hours(TOKEN_TTL_HOURS),
+    )
 }
 
 /// Like [`sign`] but with an explicit token lifetime. Primarily used by tests
@@ -94,7 +100,11 @@ pub fn refresh(secret: &str, claims: &Claims) -> Result<String, RefreshError> {
 
 fn refresh_at(secret: &str, claims: &Claims, now: i64) -> Result<String, RefreshError> {
     let iat = claims.iat as i64;
-    let orig_iat = if claims.orig_iat == 0 { iat } else { claims.orig_iat as i64 };
+    let orig_iat = if claims.orig_iat == 0 {
+        iat
+    } else {
+        claims.orig_iat as i64
+    };
     // A token issued in the future, or before its own session began, wasn't
     // produced by this server's sign/refresh.
     if iat > now || iat < orig_iat {
@@ -114,8 +124,12 @@ fn refresh_at(secret: &str, claims: &Claims, now: i64) -> Result<String, Refresh
         orig_iat: orig_iat as usize,
         jti: Some(Uuid::new_v4()),
     };
-    encode(&Header::default(), &refreshed, &EncodingKey::from_secret(secret.as_bytes()))
-        .map_err(|_| RefreshError::Signing)
+    encode(
+        &Header::default(),
+        &refreshed,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|_| RefreshError::Signing)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,9 +201,13 @@ mod tests {
     fn decode_unchecked(token: &str) -> Claims {
         let mut validation = Validation::default();
         validation.validate_exp = false;
-        decode::<Claims>(token, &DecodingKey::from_secret(SECRET.as_bytes()), &validation)
-            .unwrap()
-            .claims
+        decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(SECRET.as_bytes()),
+            &validation,
+        )
+        .unwrap()
+        .claims
     }
 
     #[test]
@@ -207,7 +225,8 @@ mod tests {
     fn refreshed_expiry_never_passes_the_session_window() {
         let now = 1_800_000_000;
         let login = now - 6 * DAY - 3_600; // one hour of window left
-        let refreshed = decode_unchecked(&refresh_at(SECRET, &claims(now - 60, login), now).unwrap());
+        let refreshed =
+            decode_unchecked(&refresh_at(SECRET, &claims(now - 60, login), now).unwrap());
         assert_eq!(refreshed.exp as i64, login + MAX_SESSION_DAYS * DAY);
     }
 
@@ -215,14 +234,23 @@ mod tests {
     fn refresh_is_refused_once_the_window_has_passed() {
         let now = 1_800_000_000;
         let login = now - MAX_SESSION_DAYS * DAY;
-        assert_eq!(refresh_at(SECRET, &claims(now - 60, login), now), Err(RefreshError::WindowExpired));
+        assert_eq!(
+            refresh_at(SECRET, &claims(now - 60, login), now),
+            Err(RefreshError::WindowExpired)
+        );
     }
 
     #[test]
     fn refresh_rejects_inconsistent_issue_times() {
         let now = 1_800_000_000;
-        assert_eq!(refresh_at(SECRET, &claims(now + 60, now - DAY), now), Err(RefreshError::InvalidIssuedAt));
-        assert_eq!(refresh_at(SECRET, &claims(now - DAY, now - 60), now), Err(RefreshError::InvalidIssuedAt));
+        assert_eq!(
+            refresh_at(SECRET, &claims(now + 60, now - DAY), now),
+            Err(RefreshError::InvalidIssuedAt)
+        );
+        assert_eq!(
+            refresh_at(SECRET, &claims(now - DAY, now - 60), now),
+            Err(RefreshError::InvalidIssuedAt)
+        );
     }
 
     #[test]

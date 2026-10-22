@@ -144,7 +144,10 @@ pub async fn update(
     Json(req): Json<UpdateMeRequest>,
 ) -> ApiResult<Json<UpdateMeResponse>> {
     if req.name.is_none() && req.phone_number.is_none() {
-        return Err(bad_request(ErrorCode::InvalidParameters, "provide name and/or phone_number"));
+        return Err(bad_request(
+            ErrorCode::InvalidParameters,
+            "provide name and/or phone_number",
+        ));
     }
     let name = req
         .name
@@ -185,7 +188,9 @@ pub async fn update(
             )
             .await
             .map_err(|err| match err {
-                OtpError::PhoneTaken => conflict(ErrorCode::PhoneTaken, "phone number already registered"),
+                OtpError::PhoneTaken => {
+                    conflict(ErrorCode::PhoneTaken, "phone number already registered")
+                }
                 err @ OtpError::RateLimited { .. } => err.into(),
                 other => internal(other),
             })?,
@@ -206,7 +211,10 @@ pub async fn update(
 /// notes in API.md. Every token for the account stops working immediately
 /// and the session cookie is cleared.
 pub async fn delete(State(state): State<AppState>, auth: AuthUser) -> ApiResult<impl IntoResponse> {
-    if !users::anonymize_and_delete(&state.db, auth.user_id).await.map_err(internal)? {
+    if !users::anonymize_and_delete(&state.db, auth.user_id)
+        .await
+        .map_err(internal)?
+    {
         return Err(not_found(ErrorCode::UserNotFound, "user not found"));
     }
     tracing::info!(user_id = %auth.user_id, "account deleted (personal data anonymized)");

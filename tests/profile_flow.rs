@@ -18,7 +18,14 @@ async fn patch_me_updates_the_name() {
     let app = aframp::router(state);
     let (token, _) = ensure_merchant(&app, "profile_name").await;
 
-    let (status, body) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({ "name": "  Ada Obi  " }))).await;
+    let (status, body) = send(
+        app.clone(),
+        "PATCH",
+        "/me",
+        Some(&token),
+        Some(json!({ "name": "  Ada Obi  " })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "patch failed: {body}");
     assert_eq!(body["name"], "Ada Obi");
     assert!(body["phone_verification"].is_null());
@@ -35,12 +42,27 @@ async fn patch_me_changes_the_phone_only_after_otp_verification() {
     let (token, _) = ensure_merchant(&app, "profile_phone").await;
     let (local, e164) = fresh_phone();
 
-    let (status, body) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({ "phone_number": local }))).await;
+    let (status, body) = send(
+        app.clone(),
+        "PATCH",
+        "/me",
+        Some(&token),
+        Some(json!({ "phone_number": local })),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "patch failed: {body}");
-    let challenge_id = body["phone_verification"]["challenge_id"].as_str().expect("a challenge is issued").to_string();
-    assert_ne!(body["phone_number"], e164, "the number must not change before verification");
+    let challenge_id = body["phone_verification"]["challenge_id"]
+        .as_str()
+        .expect("a challenge is issued")
+        .to_string();
+    assert_ne!(
+        body["phone_number"], e164,
+        "the number must not change before verification"
+    );
 
-    let code = extract_otp_code(&aframp::otp::mock::last_message_for(&e164).expect("code sent to the new number"));
+    let code = extract_otp_code(
+        &aframp::otp::mock::last_message_for(&e164).expect("code sent to the new number"),
+    );
     let (status, verified) = send(
         app.clone(),
         "POST",
@@ -67,17 +89,42 @@ async fn patch_me_rejects_invalid_input() {
     let (token, _) = ensure_merchant(&app, "profile_invalid").await;
 
     let (status, _) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({}))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "an empty update is rejected");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an empty update is rejected"
+    );
 
-    let (status, body) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({ "name": "   " }))).await;
+    let (status, body) = send(
+        app.clone(),
+        "PATCH",
+        "/me",
+        Some(&token),
+        Some(json!({ "name": "   " })),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["field"], "name");
 
-    let (status, body) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({ "phone_number": "12345" }))).await;
+    let (status, body) = send(
+        app.clone(),
+        "PATCH",
+        "/me",
+        Some(&token),
+        Some(json!({ "phone_number": "12345" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["field"], "phone_number");
 
-    let (status, _) = send(app.clone(), "PATCH", "/me", None, Some(json!({ "name": "Nobody" }))).await;
+    let (status, _) = send(
+        app.clone(),
+        "PATCH",
+        "/me",
+        None,
+        Some(json!({ "name": "Nobody" })),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -96,7 +143,14 @@ async fn patch_me_refuses_a_phone_owned_by_another_account() {
         .await
         .unwrap();
 
-    let (status, _) = send(app.clone(), "PATCH", "/me", Some(&token), Some(json!({ "phone_number": taken }))).await;
+    let (status, _) = send(
+        app.clone(),
+        "PATCH",
+        "/me",
+        Some(&token),
+        Some(json!({ "phone_number": taken })),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
@@ -111,7 +165,14 @@ async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
     let email = me["email"].as_str().unwrap().to_string();
 
     // Financial records must survive the deletion.
-    let (status, wallet) = send(app.clone(), "POST", "/wallet/create", Some(&token), Some(json!({}))).await;
+    let (status, wallet) = send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(json!({})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "wallet create failed: {wallet}");
     let (status, request) = send(
         app.clone(),
@@ -133,13 +194,14 @@ async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // PII is anonymized in place.
-    let (stored_email, name, phone, deleted): (String, String, Option<String>, bool) = sqlx::query_as(
-        "SELECT email, name, phone_number, deleted_at IS NOT NULL FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let (stored_email, name, phone, deleted): (String, String, Option<String>, bool) =
+        sqlx::query_as(
+            "SELECT email, name, phone_number, deleted_at IS NOT NULL FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_ne!(stored_email, email);
     assert!(stored_email.ends_with("@deleted.invalid"));
     assert_eq!(name, "Deleted user");
@@ -158,11 +220,12 @@ async fn delete_me_anonymizes_the_account_and_revokes_its_tokens() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // The payment request (financial audit trail) is still there.
-    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM payment_requests WHERE merchant_id = $1::uuid")
-        .bind(&merchant_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM payment_requests WHERE merchant_id = $1::uuid")
+            .bind(&merchant_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(remaining, 1);
 }
 

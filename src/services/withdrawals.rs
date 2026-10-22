@@ -329,7 +329,8 @@ pub async fn create_withdrawal_idempotent(
                     Ok(()) => break,
                     Err(e) if attempt < REFUND_ATTEMPTS => {
                         tracing::warn!(withdrawal_id = %w.id, attempt, error = %e, "retrying refund after failed payout");
-                        tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt - 1))).await;
+                        tokio::time::sleep(Duration::from_millis(100 * 2u64.pow(attempt - 1)))
+                            .await;
                     }
                     Err(e) => {
                         tracing::error!(
@@ -351,7 +352,11 @@ pub async fn create_withdrawal_idempotent(
 /// Idempotent, so it is safe to retry after an ambiguous commit failure:
 /// the balance is only credited when this call moves the row out of a
 /// non-failed state.
-async fn refund_failed_payout(db: &PgPool, w: &Withdrawal, reason: &str) -> Result<(), sqlx::Error> {
+async fn refund_failed_payout(
+    db: &PgPool,
+    w: &Withdrawal,
+    reason: &str,
+) -> Result<(), sqlx::Error> {
     let mut tx = db.begin().await?;
     let flipped = sqlx::query(
         "UPDATE withdrawals
@@ -400,10 +405,7 @@ async fn record_payout(
 
 /// Total of a merchant's withdrawals today (UTC) that count toward the daily
 /// limit: everything except failed (refunded) attempts.
-pub async fn withdrawals_today_stroops(
-    db: &PgPool,
-    merchant_id: Uuid,
-) -> Result<i64, sqlx::Error> {
+pub async fn withdrawals_today_stroops(db: &PgPool, merchant_id: Uuid) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(SUM(amount_stroops), 0)
            FROM withdrawals
@@ -747,7 +749,8 @@ pub async fn reconcile_single_withdrawal(
             Ok(ReconciledStatus::FailedAndRefunded)
         }
         PayoutVerification::NotFound => {
-            let reason = "withdrawal not found on payment provider during reconciliation".to_string();
+            let reason =
+                "withdrawal not found on payment provider during reconciliation".to_string();
             let mut tx = db.begin().await?;
 
             let updated = sqlx::query(
@@ -800,7 +803,10 @@ pub async fn reconcile_pending_withdrawals_with_age(
     };
 
     if pending_list.is_empty() {
-        tracing::debug!("no pending withdrawals older than {:?} to reconcile", older_than);
+        tracing::debug!(
+            "no pending withdrawals older than {:?} to reconcile",
+            older_than
+        );
         return Ok(report);
     }
 

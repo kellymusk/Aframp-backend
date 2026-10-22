@@ -63,7 +63,11 @@ async fn seed_payment(
 }
 
 /// Convenience: create a merchant with wallet and return (token, merchant_id, wallet_id).
-async fn merchant_with_wallet(app: &axum::Router, _db: &PgPool, seed: &str) -> (String, String, String) {
+async fn merchant_with_wallet(
+    app: &axum::Router,
+    _db: &PgPool,
+    seed: &str,
+) -> (String, String, String) {
     let (token, merchant_id) = common::ensure_merchant(app, seed).await;
 
     // Create the wallet for this merchant.
@@ -114,7 +118,11 @@ async fn analytics_payments_from_after_to_is_400() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for from>to, got {status}: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected 400 for from>to, got {status}: {body}"
+    );
     assert_eq!(body["code"], "INVALID_PARAMETERS");
 }
 
@@ -134,7 +142,11 @@ async fn analytics_payments_window_over_366_days_is_400() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for >366-day window, got {status}: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected 400 for >366-day window, got {status}: {body}"
+    );
     assert_eq!(body["code"], "INVALID_PARAMETERS");
 }
 
@@ -153,7 +165,11 @@ async fn analytics_payments_malformed_date_is_400() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for malformed date, got {status}: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "expected 400 for malformed date, got {status}: {body}"
+    );
     assert_eq!(body["code"], "INVALID_PARAMETERS");
 }
 
@@ -165,12 +181,29 @@ async fn analytics_payments_malformed_date_is_400() {
 #[tokio::test]
 async fn analytics_payments_empty_when_no_confirmed_payments() {
     let (app, db) = app().await;
-    let (token, merchant_id, wallet_id) =
-        merchant_with_wallet(&app, &db, "analytics_empty").await;
+    let (token, merchant_id, wallet_id) = merchant_with_wallet(&app, &db, "analytics_empty").await;
 
     // Seed only non-confirmed payments.
-    seed_payment(&db, &merchant_id, &wallet_id, "detected", 10_000_000, "XLM", 1).await;
-    seed_payment(&db, &merchant_id, &wallet_id, "verified", 10_000_000, "XLM", 2).await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "detected",
+        10_000_000,
+        "XLM",
+        1,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "verified",
+        10_000_000,
+        "XLM",
+        2,
+    )
+    .await;
 
     let (status, body) = common::send(
         app,
@@ -199,19 +232,48 @@ async fn analytics_payments_aggregates_confirmed_only() {
 
     // Seed: 2 confirmed payments from 5 days ago, 1 confirmed from 3 days ago,
     // 1 verified (excluded) from 4 days ago.
-    seed_payment(&db, &merchant_id, &wallet_id, "confirmed", 10_000_000, "XLM", 5).await;
-    seed_payment(&db, &merchant_id, &wallet_id, "confirmed", 5_000_000, "XLM", 5).await;
-    seed_payment(&db, &merchant_id, &wallet_id, "confirmed", 20_000_000, "XLM", 3).await;
-    seed_payment(&db, &merchant_id, &wallet_id, "verified",  8_000_000, "XLM", 4).await;
-
-    let (status, body) = common::send(
-        app,
-        "GET",
-        "/analytics/payments",
-        Some(&token),
-        None,
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        10_000_000,
+        "XLM",
+        5,
     )
     .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        5_000_000,
+        "XLM",
+        5,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        20_000_000,
+        "XLM",
+        3,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "verified",
+        8_000_000,
+        "XLM",
+        4,
+    )
+    .await;
+
+    let (status, body) = common::send(app, "GET", "/analytics/payments", Some(&token), None).await;
 
     assert_eq!(status, StatusCode::OK, "unexpected error: {body}");
 
@@ -254,13 +316,19 @@ async fn analytics_payments_response_shape() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "unexpected error: {body}");
-    assert!(body.get("from").is_some(), "response must have `from`: {body}");
-    assert!(body.get("to").is_some(),   "response must have `to`: {body}");
-    assert!(body.get("data").is_some(), "response must have `data`: {body}");
+    assert!(
+        body.get("from").is_some(),
+        "response must have `from`: {body}"
+    );
+    assert!(body.get("to").is_some(), "response must have `to`: {body}");
+    assert!(
+        body.get("data").is_some(),
+        "response must have `data`: {body}"
+    );
 
     // Confirm `from` and `to` echo the requested range.
     assert_eq!(body["from"].as_str().unwrap(), "2026-10-01");
-    assert_eq!(body["to"].as_str().unwrap(),   "2026-10-19");
+    assert_eq!(body["to"].as_str().unwrap(), "2026-10-19");
 }
 
 /// Payments from a different merchant must NOT appear in the response.
@@ -274,7 +342,16 @@ async fn analytics_payments_scoped_to_authenticated_merchant() {
         merchant_with_wallet(&app, &db, "analytics_scope_b").await;
 
     // Seed a confirmed payment for merchant B only.
-    seed_payment(&db, &merchant_b, &wallet_b, "confirmed", 99_000_000, "XLM", 1).await;
+    seed_payment(
+        &db,
+        &merchant_b,
+        &wallet_b,
+        "confirmed",
+        99_000_000,
+        "XLM",
+        1,
+    )
+    .await;
 
     let (status, body) = common::send(
         app,

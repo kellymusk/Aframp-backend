@@ -53,7 +53,10 @@ pub async fn create_wallet(
     network: &str,
     encryption_key: &[u8; 32],
 ) -> Result<Wallet, CreateWalletError> {
-    if wallet_by_merchant(db, merchant_id, network).await?.is_some() {
+    if wallet_by_merchant(db, merchant_id, network)
+        .await?
+        .is_some()
+    {
         return Err(CreateWalletError::DuplicateNetwork(network.to_string()));
     }
 
@@ -152,53 +155,6 @@ pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wall
     .await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::blockchain::wallet_crypto;
-
-    /// Verifies that a secret encrypted with `wallet_crypto::encrypt` can be
-    /// recovered by `wallet_crypto::decrypt` using the same key — the exact
-    /// round-trip that `decrypt_wallet_secret` performs once the DB row is
-    /// fetched.
-    #[test]
-    fn encrypt_decrypt_round_trips() {
-        let key = [42u8; 32];
-        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ"; // fake Stellar seed
-
-        let encrypted = wallet_crypto::encrypt(&key, plaintext)
-            .expect("encryption should succeed");
-        let decrypted = wallet_crypto::decrypt(&key, &encrypted)
-            .expect("decryption should succeed");
-
-        assert_eq!(decrypted, plaintext);
-    }
-
-    /// Nonces are random, so two encryptions of the same plaintext must
-    /// produce different ciphertext blobs.
-    #[test]
-    fn encrypt_is_nonce_randomised() {
-        let key = [7u8; 32];
-        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
-
-        let a = wallet_crypto::encrypt(&key, plaintext).unwrap();
-        let b = wallet_crypto::encrypt(&key, plaintext).unwrap();
-        assert_ne!(a, b, "each encryption should use a fresh random nonce");
-    }
-
-    /// Decryption must fail if the key is wrong.
-    #[test]
-    fn decrypt_rejects_wrong_key() {
-        let key_a = [1u8; 32];
-        let key_b = [2u8; 32];
-        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
-
-        let encrypted = wallet_crypto::encrypt(&key_a, plaintext).unwrap();
-        let result = wallet_crypto::decrypt(&key_b, &encrypted);
-        assert!(result.is_err(), "wrong key should fail to decrypt");
-    }
-}
-
 pub async fn update_last_polled_cursor(
     db: &PgPool,
     wallet_id: Uuid,
@@ -248,7 +204,11 @@ pub async fn decrypt_secret(
     wallet_crypto::decrypt(encryption_key, &encrypted).map_err(WalletSecretError::Decryption)
 }
 
-async fn log_secret_access<'e, E>(executor: E, wallet_id: Uuid, purpose: &str) -> Result<(), sqlx::Error>
+async fn log_secret_access<'e, E>(
+    executor: E,
+    wallet_id: Uuid,
+    purpose: &str,
+) -> Result<(), sqlx::Error>
 where
     E: sqlx::PgExecutor<'e>,
 {
@@ -288,4 +248,50 @@ pub async fn rotate_encryption_key(
 
     tx.commit().await?;
     Ok(rows.len())
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::blockchain::wallet_crypto;
+
+    /// Verifies that a secret encrypted with `wallet_crypto::encrypt` can be
+    /// recovered by `wallet_crypto::decrypt` using the same key — the exact
+    /// round-trip that `decrypt_wallet_secret` performs once the DB row is
+    /// fetched.
+    #[test]
+    fn encrypt_decrypt_round_trips() {
+        let key = [42u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ"; // fake Stellar seed
+
+        let encrypted = wallet_crypto::encrypt(&key, plaintext).expect("encryption should succeed");
+        let decrypted =
+            wallet_crypto::decrypt(&key, &encrypted).expect("decryption should succeed");
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Nonces are random, so two encryptions of the same plaintext must
+    /// produce different ciphertext blobs.
+    #[test]
+    fn encrypt_is_nonce_randomised() {
+        let key = [7u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
+
+        let a = wallet_crypto::encrypt(&key, plaintext).unwrap();
+        let b = wallet_crypto::encrypt(&key, plaintext).unwrap();
+        assert_ne!(a, b, "each encryption should use a fresh random nonce");
+    }
+
+    /// Decryption must fail if the key is wrong.
+    #[test]
+    fn decrypt_rejects_wrong_key() {
+        let key_a = [1u8; 32];
+        let key_b = [2u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
+
+        let encrypted = wallet_crypto::encrypt(&key_a, plaintext).unwrap();
+        let result = wallet_crypto::decrypt(&key_b, &encrypted);
+        assert!(result.is_err(), "wrong key should fail to decrypt");
+    }
 }

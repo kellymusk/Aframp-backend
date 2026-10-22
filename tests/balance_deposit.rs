@@ -28,7 +28,10 @@ async fn seed_confirmed_deposit(
          RETURNING id, address",
     )
     .bind(merchant_id)
-    .bind(format!("G{}", uuid::Uuid::new_v4().simple().to_string().to_uppercase()))
+    .bind(format!(
+        "G{}",
+        uuid::Uuid::new_v4().simple().to_string().to_uppercase()
+    ))
     .fetch_one(&state.db)
     .await
     .expect("seed wallet");

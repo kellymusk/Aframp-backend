@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use aframp::blockchain::stellar::{BlockchainListener, DetectedDeposit};
+use async_trait::async_trait;
 
 // ── mock helpers ──────────────────────────────────────────────────────────────
 
@@ -41,7 +41,12 @@ struct AllSucceedListener {
 impl AllSucceedListener {
     fn new() -> (Self, Arc<AtomicUsize>) {
         let counter = Arc::new(AtomicUsize::new(0));
-        (Self { call_count: Arc::clone(&counter) }, counter)
+        (
+            Self {
+                call_count: Arc::clone(&counter),
+            },
+            counter,
+        )
     }
 
     fn make_deposit(address: &str) -> DetectedDeposit {
@@ -73,7 +78,12 @@ struct HalfErrorListener {
 impl HalfErrorListener {
     fn new() -> (Self, Arc<AtomicUsize>) {
         let counter = Arc::new(AtomicUsize::new(0));
-        (Self { call_count: Arc::clone(&counter) }, counter)
+        (
+            Self {
+                call_count: Arc::clone(&counter),
+            },
+            counter,
+        )
     }
 }
 
@@ -112,7 +122,13 @@ struct SlowListener {
 impl SlowListener {
     fn new(delay: Duration) -> (Self, Arc<AtomicUsize>) {
         let counter = Arc::new(AtomicUsize::new(0));
-        (Self { delay, call_count: Arc::clone(&counter) }, counter)
+        (
+            Self {
+                delay,
+                call_count: Arc::clone(&counter),
+            },
+            counter,
+        )
     }
 }
 
@@ -121,7 +137,10 @@ impl BlockchainListener for SlowListener {
     async fn fetch_deposits(&self, addresses: &[String]) -> Result<Vec<DetectedDeposit>, String> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(self.delay).await;
-        Ok(addresses.iter().map(|a| AllSucceedListener::make_deposit(a)).collect())
+        Ok(addresses
+            .iter()
+            .map(|a| AllSucceedListener::make_deposit(a))
+            .collect())
     }
 }
 
@@ -138,9 +157,7 @@ impl BlockchainListener for EmptyListener {
 // ── helper: generate mock wallet addresses ────────────────────────────────────
 
 fn mock_addresses(n: usize) -> Vec<String> {
-    (0..n)
-        .map(|i| format!("GMOCK{i:055}"))
-        .collect()
+    (0..n).map(|i| format!("GMOCK{i:055}")).collect()
 }
 
 // ── in-memory listener tests (no database needed) ────────────────────────────
@@ -227,7 +244,11 @@ async fn poll_100_addresses_all_deposits_returned() {
         100,
         "all 100 mock deposits must be returned"
     );
-    assert_eq!(call_count.load(Ordering::Relaxed), 1, "listener called once");
+    assert_eq!(
+        call_count.load(Ordering::Relaxed),
+        1,
+        "listener called once"
+    );
 
     // Every deposit destination must correspond to an address we submitted.
     let address_set: std::collections::HashSet<&str> =
@@ -299,16 +320,20 @@ async fn seed_wallets(db: &sqlx::PgPool, n: usize) -> Vec<String> {
              VALUES ($1, 'x', 'Load Test', $2, true) RETURNING id",
         )
         .bind(format!("load-{unique}@example.com"))
-        .bind(format!("+2347{:010}", u64::from_str_radix(&unique[..15], 16).unwrap() % 10_000_000_000))
+        .bind(format!(
+            "+2347{:010}",
+            u64::from_str_radix(&unique[..15], 16).unwrap() % 10_000_000_000
+        ))
         .fetch_one(db)
         .await
         .expect("seed user");
-        let merchant_id: uuid::Uuid =
-            sqlx::query_scalar("INSERT INTO merchants (user_id, name) VALUES ($1, 'Load Test') RETURNING id")
-                .bind(user_id)
-                .fetch_one(db)
-                .await
-                .expect("seed merchant");
+        let merchant_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO merchants (user_id, name) VALUES ($1, 'Load Test') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .expect("seed merchant");
         let address = format!("GLOAD{}", unique.to_uppercase());
         sqlx::query(
             "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)

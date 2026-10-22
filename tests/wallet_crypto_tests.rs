@@ -63,10 +63,7 @@ fn parse_key_rejects_non_hex_input() {
 
 #[test]
 fn parse_key_rejects_empty_string() {
-    assert!(
-        parse_key("").is_err(),
-        "expected Err for empty key string"
-    );
+    assert!(parse_key("").is_err(), "expected Err for empty key string");
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +89,10 @@ fn encrypt_empty_string_round_trips() {
     let key = test_key();
     let ciphertext = encrypt(&key, "").expect("encrypt of empty string must succeed");
     let recovered = decrypt(&key, &ciphertext).expect("decrypt must succeed");
-    assert_eq!(recovered, "", "empty string must round-trip through encrypt/decrypt");
+    assert_eq!(
+        recovered, "",
+        "empty string must round-trip through encrypt/decrypt"
+    );
 }
 
 #[test]

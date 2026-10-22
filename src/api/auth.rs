@@ -1,4 +1,3 @@
-
 use axum::extract::State;
 use axum::http::{header, Extensions, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -7,13 +6,18 @@ use axum::Json;
 use crate::auth::extractor::Session;
 use crate::auth::jwt;
 use crate::auth::password;
+use crate::client_ip::client_ip;
 use crate::error::{bad_request_field, internal, unauthorized, ApiError, ApiResult, ErrorCode};
-use crate::models::{AuthResponse, ChangePasswordRequest, LoginRequest, OtpChallengeResponse, SignupRequest, VerifyOtpRequest};
+use crate::models::{
+    AuthResponse, ChangePasswordRequest, LoginRequest, OtpChallengeResponse, SignupRequest,
+    VerifyOtpRequest,
+};
 use crate::services::login_rate_limit;
 use crate::services::otp::{self, VerifiedOutcome};
 use crate::services::users;
-use crate::validation::{is_valid_email, normalize_ng_phone_number, validate_name, validate_password, MAX_PASSWORD_LEN};
-use crate::client_ip::client_ip;
+use crate::validation::{
+    is_valid_email, normalize_ng_phone_number, validate_name, validate_password, MAX_PASSWORD_LEN,
+};
 use crate::AppState;
 
 /// Validates and hashes the credentials, then hands off to an OTP challenge
@@ -32,7 +36,10 @@ pub async fn signup(
     // Argon2's cost scales with input size, so cap the password before it
     // reaches the hasher (defence in depth behind the request body limit).
     if req.password.len() > MAX_PASSWORD_LEN {
-        return Err(bad_request_field("password", "must be at most 1024 characters"));
+        return Err(bad_request_field(
+            "password",
+            "must be at most 1024 characters",
+        ));
     }
     if let Err(errors) = validate_password(&req.password) {
         let message = format!("password {}", errors.join(", "));
@@ -76,9 +83,10 @@ pub async fn login(
     let ip = client_ip(&headers, &extensions, state.trust_proxy_headers);
     if let Some(ip) = ip {
         let key = login_rate_limit::ip_key(ip);
-        if let Some(retry_after) = login_rate_limit::hit(&state.db, &key, login_rate_limit::IP_LIMIT)
-            .await
-            .map_err(internal)?
+        if let Some(retry_after) =
+            login_rate_limit::hit(&state.db, &key, login_rate_limit::IP_LIMIT)
+                .await
+                .map_err(internal)?
         {
             tracing::info!(event = "login_rate_limited", client_ip = %ip, "login rate limit exceeded");
             return Ok(login_rate_limited(retry_after));
@@ -91,7 +99,10 @@ pub async fn login(
     // Argon2's cost scales with input size, so cap the password before it
     // reaches the hasher (defence in depth behind the request body limit).
     if req.password.len() > MAX_PASSWORD_LEN {
-        return Err(bad_request_field("password", "must be at most 1024 characters"));
+        return Err(bad_request_field(
+            "password",
+            "must be at most 1024 characters",
+        ));
     }
     let (user, merchant) = match users::login(&state.db, &req.email, &req.password).await {
         Ok(found) => found,
@@ -142,7 +153,14 @@ pub async fn verify_otp(
     Json(req): Json<VerifyOtpRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let ip = client_ip(&headers, &extensions, state.trust_proxy_headers);
-    let outcome = match otp::verify(&state.db, state.otp_hmac_secret.as_str(), req.challenge_id, &req.code).await {
+    let outcome = match otp::verify(
+        &state.db,
+        state.otp_hmac_secret.as_str(),
+        req.challenge_id,
+        &req.code,
+    )
+    .await
+    {
         Ok(outcome) => outcome,
         Err(err) => {
             tracing::info!(event = "otp_failed", client_ip = ?ip, challenge_id = %req.challenge_id, reason = %err, "OTP verification failed");
@@ -153,13 +171,16 @@ pub async fn verify_otp(
 
     let (user, merchant_id) = match outcome {
         VerifiedOutcome::Login(user) | VerifiedOutcome::PhoneChanged(user) => {
-            let merchant = users::merchant_by_user(&state.db, user.id).await.map_err(internal)?;
+            let merchant = users::merchant_by_user(&state.db, user.id)
+                .await
+                .map_err(internal)?;
             (user, merchant.map(|m| m.id))
         }
         VerifiedOutcome::Signup(user, merchant) => (user, Some(merchant.id)),
     };
 
-    let token = jwt::sign(&state.jwt_secret, user.id, merchant_id, user.is_admin).map_err(internal)?;
+    let token =
+        jwt::sign(&state.jwt_secret, user.id, merchant_id, user.is_admin).map_err(internal)?;
     authenticated(
         &state,
         AuthResponse {
@@ -189,7 +210,10 @@ pub async fn logout(
 /// Exchanges a valid, unexpired session token for a fresh one (also reset
 /// as the session cookie), up to `jwt::MAX_SESSION_DAYS` after the original
 /// login; after that the user has to log in again.
-pub async fn refresh(State(state): State<AppState>, Session(claims): Session) -> ApiResult<impl IntoResponse> {
+pub async fn refresh(
+    State(state): State<AppState>,
+    Session(claims): Session,
+) -> ApiResult<impl IntoResponse> {
     let token = jwt::refresh(&state.jwt_secret, &claims).map_err(|err| match err {
         jwt::RefreshError::Signing => internal(err),
         _ => unauthorized(ErrorCode::InvalidCredentials, &err.to_string()),
@@ -214,23 +238,37 @@ pub async fn change_password(
     Json(req): Json<ChangePasswordRequest>,
 ) -> ApiResult<impl IntoResponse> {
     if req.new_password.len() > MAX_PASSWORD_LEN {
-        return Err(bad_request_field("new_password", "must be at most 1024 characters"));
+        return Err(bad_request_field(
+            "new_password",
+            "must be at most 1024 characters",
+        ));
     }
     if let Err(errors) = validate_password(&req.new_password) {
         let message = format!("password {}", errors.join(", "));
         return Err(bad_request_field("new_password", &message));
     }
 
-    users::change_password(&state.db, claims.sub, &req.current_password, &req.new_password)
-        .await
-        .map_err(|err| match err {
-            users::ChangePasswordError::WrongCurrentPassword => {
-                bad_request_field("current_password", "current password is incorrect")
-            }
-            users::ChangePasswordError::Hash | users::ChangePasswordError::Database(_) => internal(err),
-        })?;
+    users::change_password(
+        &state.db,
+        claims.sub,
+        &req.current_password,
+        &req.new_password,
+    )
+    .await
+    .map_err(|err| match err {
+        users::ChangePasswordError::WrongCurrentPassword => {
+            bad_request_field("current_password", "current password is incorrect")
+        }
+        users::ChangePasswordError::Hash | users::ChangePasswordError::Database(_) => internal(err),
+    })?;
 
-    let token = jwt::sign(&state.jwt_secret, claims.sub, claims.merchant_id, claims.is_admin).map_err(internal)?;
+    let token = jwt::sign(
+        &state.jwt_secret,
+        claims.sub,
+        claims.merchant_id,
+        claims.is_admin,
+    )
+    .map_err(internal)?;
     authenticated(
         &state,
         AuthResponse {
@@ -309,7 +347,11 @@ pub async fn resend_email_verification(
 
 /// Stores the requesting address on an OTP challenge for audit. Best effort:
 /// failing to record it must not fail the signup or login.
-async fn record_challenge_ip(state: &AppState, challenge_id: uuid::Uuid, ip: Option<std::net::IpAddr>) {
+async fn record_challenge_ip(
+    state: &AppState,
+    challenge_id: uuid::Uuid,
+    ip: Option<std::net::IpAddr>,
+) {
     let Some(ip) = ip else { return };
     if let Err(err) = sqlx::query("UPDATE otp_challenges SET client_ip = $2::inet WHERE id = $1")
         .bind(challenge_id)

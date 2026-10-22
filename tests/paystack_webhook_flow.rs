@@ -8,7 +8,6 @@ use tower::ServiceExt;
 
 use common::{ensure_merchant, send, state};
 
-
 async fn pending_withdrawal(
     state: &AppState,
     app: &axum::Router,
@@ -49,7 +48,11 @@ async fn pending_withdrawal(
 /// `mock-signature` sentinel in place of Paystack's HMAC-SHA512.
 fn signed_request(payload: &Value, valid_signature: bool) -> Request<Body> {
     let body = serde_json::to_vec(payload).unwrap();
-    let signature = if valid_signature { "mock-signature" } else { "invalid-signature" };
+    let signature = if valid_signature {
+        "mock-signature"
+    } else {
+        "invalid-signature"
+    };
     Request::builder()
         .method("POST")
         .uri("/webhooks/paystack")
@@ -74,10 +77,7 @@ async fn valid_transfer_success_webhook_completes_withdrawal_and_is_audited() {
         }
     });
 
-    let response = app
-        .oneshot(signed_request(&payload, true))
-        .await
-        .unwrap();
+    let response = app.oneshot(signed_request(&payload, true)).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let status: String = sqlx::query_scalar("SELECT status FROM withdrawals WHERE id = $1")
@@ -170,10 +170,7 @@ async fn invalid_paystack_signature_is_rejected_without_reconciliation() {
         }
     });
 
-    let response = app
-        .oneshot(signed_request(&payload, false))
-        .await
-        .unwrap();
+    let response = app.oneshot(signed_request(&payload, false)).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let status: String = sqlx::query_scalar("SELECT status FROM withdrawals WHERE id = $1")

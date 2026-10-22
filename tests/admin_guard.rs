@@ -76,7 +76,11 @@ async fn admin_token(app: &axum::Router, db: &PgPool) -> String {
         Some(json!({ "challenge_id": challenge["challenge_id"], "code": code })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "admin verify-otp failed: {verified}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "admin verify-otp failed: {verified}"
+    );
     verified["token"].as_str().unwrap().to_string()
 }
 
@@ -87,9 +91,16 @@ async fn merchant_token_is_forbidden_on_every_admin_route() {
 
     for path in ADMIN_DATA_ROUTES {
         let (status, json) = send(app.clone(), "GET", path, Some(&token), None).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "merchant must get 403 on GET {path}: {json}");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "merchant must get 403 on GET {path}: {json}"
+        );
         assert_eq!(json["code"], "FORBIDDEN", "GET {path}");
-        assert!(!json.is_array(), "GET {path} must not leak rows to a merchant");
+        assert!(
+            !json.is_array(),
+            "GET {path} must not leak rows to a merchant"
+        );
     }
 }
 
@@ -99,7 +110,11 @@ async fn unauthenticated_request_is_unauthorized_on_every_admin_route() {
 
     for path in ADMIN_DATA_ROUTES {
         let (status, json) = send(app.clone(), "GET", path, None, None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "anonymous must get 401 on GET {path}: {json}");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "anonymous must get 401 on GET {path}: {json}"
+        );
         assert_eq!(json["code"], "INVALID_CREDENTIALS", "GET {path}");
     }
 }
@@ -110,7 +125,11 @@ async fn invalid_token_is_unauthorized_on_every_admin_route() {
 
     for path in ADMIN_DATA_ROUTES {
         let (status, json) = send(app.clone(), "GET", path, Some("not-a-real-jwt"), None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "garbage token must get 401 on GET {path}: {json}");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "garbage token must get 401 on GET {path}: {json}"
+        );
     }
 }
 
@@ -120,7 +139,11 @@ async fn admin_token_can_read_overview() {
     let token = admin_token(&app, &db).await;
 
     let (status, json) = send(app.clone(), "GET", "/admin/overview", Some(&token), None).await;
-    assert_eq!(status, StatusCode::OK, "admin should read /admin/overview: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "admin should read /admin/overview: {json}"
+    );
     assert!(json.is_object(), "overview should be a JSON object: {json}");
 }
 
@@ -131,9 +154,19 @@ async fn admin_token_can_read_every_admin_list_route() {
 
     for path in ADMIN_LIST_ROUTES {
         let (status, json) = send(app.clone(), "GET", path, Some(&token), None).await;
-        assert_eq!(status, StatusCode::OK, "admin should read GET {path}: {json}");
-        assert!(json["data"].is_array(), "GET {path} should return a page: {json}");
-        assert!(json.get("next_cursor").is_some(), "GET {path} should carry next_cursor: {json}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "admin should read GET {path}: {json}"
+        );
+        assert!(
+            json["data"].is_array(),
+            "GET {path} should return a page: {json}"
+        );
+        assert!(
+            json.get("next_cursor").is_some(),
+            "GET {path} should carry next_cursor: {json}"
+        );
     }
 }
 
@@ -152,7 +185,8 @@ async fn admin_routes_matrix_covers_every_list_route() {
 #[tokio::test]
 async fn admin_dashboard_sends_security_headers() {
     let app = aframp::router(common::state().await);
-    let (status, _, headers) = common::send_with_response_headers(app, "GET", "/admin", None, None).await;
+    let (status, _, headers) =
+        common::send_with_response_headers(app, "GET", "/admin", None, None).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let csp = headers["content-security-policy"].to_str().unwrap();
     assert!(csp.starts_with("default-src 'self'"), "{csp}");
@@ -182,22 +216,50 @@ async fn admin_roles_gate_financial_and_personal_data() {
 
     let support = admin_token(&app, &db).await;
     set_admin_role(&app, &db, &support, Some("support")).await;
-    assert_eq!(status_of(&app, &support, "/admin/users").await, StatusCode::OK);
-    assert_eq!(status_of(&app, &support, "/admin/merchants").await, StatusCode::OK);
-    assert_eq!(status_of(&app, &support, "/admin/withdrawals").await, StatusCode::FORBIDDEN);
-    assert_eq!(status_of(&app, &support, "/admin/overview").await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        status_of(&app, &support, "/admin/users").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(&app, &support, "/admin/merchants").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(&app, &support, "/admin/withdrawals").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_of(&app, &support, "/admin/overview").await,
+        StatusCode::FORBIDDEN
+    );
 
     let finance = admin_token(&app, &db).await;
     set_admin_role(&app, &db, &finance, Some("finance")).await;
-    assert_eq!(status_of(&app, &finance, "/admin/withdrawals").await, StatusCode::OK);
-    assert_eq!(status_of(&app, &finance, "/admin/overview").await, StatusCode::OK);
-    assert_eq!(status_of(&app, &finance, "/admin/users").await, StatusCode::FORBIDDEN);
-    assert_eq!(status_of(&app, &finance, "/admin/merchants").await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        status_of(&app, &finance, "/admin/withdrawals").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(&app, &finance, "/admin/overview").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(&app, &finance, "/admin/users").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status_of(&app, &finance, "/admin/merchants").await,
+        StatusCode::FORBIDDEN
+    );
 
     // No role recorded (an admin from before roles) keeps full access.
     let legacy = admin_token(&app, &db).await;
     set_admin_role(&app, &db, &legacy, None).await;
     for path in ["/admin/users", "/admin/withdrawals", "/admin/overview"] {
-        assert_eq!(status_of(&app, &legacy, path).await, StatusCode::OK, "{path}");
+        assert_eq!(
+            status_of(&app, &legacy, path).await,
+            StatusCode::OK,
+            "{path}"
+        );
     }
 }

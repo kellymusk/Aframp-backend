@@ -23,7 +23,14 @@ async fn verify_email_token_is_single_use() {
         .await
         .unwrap();
 
-    let (status, body) = send(app.clone(), "GET", &format!("/verify-email?token={token}"), None, None).await;
+    let (status, body) = send(
+        app.clone(),
+        "GET",
+        &format!("/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "verify failed: {body}");
     assert_eq!(body["email_verified"], true);
 
@@ -34,15 +41,33 @@ async fn verify_email_token_is_single_use() {
         .unwrap();
     assert!(verified);
 
-    let (status, _) = send(app.clone(), "GET", &format!("/verify-email?token={token}"), None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "a consumed token must not verify twice");
+    let (status, _) = send(
+        app.clone(),
+        "GET",
+        &format!("/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a consumed token must not verify twice"
+    );
 }
 
 #[tokio::test]
 async fn verify_email_rejects_unknown_token() {
     let state = state().await;
     let app = aframp::router(state);
-    let (status, _) = send(app, "GET", "/verify-email?token=not-a-real-token", None, None).await;
+    let (status, _) = send(
+        app,
+        "GET",
+        "/verify-email?token=not-a-real-token",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -59,9 +84,27 @@ async fn resend_email_verification_requires_auth_and_replaces_token() {
     let old = aframp::services::email_verification::issue_token(&state.db, user_id)
         .await
         .unwrap();
-    let (status, body) = send(app.clone(), "POST", "/verify-email/resend", Some(&token), None).await;
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/verify-email/resend",
+        Some(&token),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "resend failed: {body}");
 
-    let (status, _) = send(app.clone(), "GET", &format!("/verify-email?token={old}"), None, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "resend must invalidate the previous token");
+    let (status, _) = send(
+        app.clone(),
+        "GET",
+        &format!("/verify-email?token={old}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "resend must invalidate the previous token"
+    );
 }
