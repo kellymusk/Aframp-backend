@@ -9,6 +9,9 @@ use crate::models::status::WithdrawalStatus;
 use crate::models::{NewWithdrawal, Withdrawal};
 use crate::payments::{PaymentProvider, PayoutRequest, PayoutResult, PayoutVerification};
 
+/// Columns selected for a [`Withdrawal`] row.
+const WITHDRAWAL_COLUMNS: &str = "id, merchant_id, amount_stroops, asset, status, provider, provider_reference, bank_code, account_number, failure_reason, idempotency_key, created_at, updated_at";
+
 /// 1 unit of a Stellar asset = 10,000,000 stroops; 1 Naira = 100 kobo.
 /// cNGN is pegged 1:1 to NGN, so 1 kobo = 100,000 stroops.
 const STROOPS_PER_KOBO: i64 = 100_000;
@@ -234,7 +237,7 @@ pub async fn create_withdrawal_idempotent(
         }
     }
 
-    let w = sqlx::query_as::<_, Withdrawal>(
+    let w = sqlx::query_as::<_, Withdrawal>(&format!(
         "INSERT INTO withdrawals (
              merchant_id, amount_stroops, asset, status, bank_code, account_number,
              idempotency_key
@@ -242,10 +245,8 @@ pub async fn create_withdrawal_idempotent(
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (merchant_id, idempotency_key) WHERE idempotency_key IS NOT NULL
          DO NOTHING
-         RETURNING id, merchant_id, amount_stroops, asset, status, provider,
-                   provider_reference, bank_code, account_number, failure_reason,
-                   idempotency_key, created_at, updated_at",
-    )
+         RETURNING {WITHDRAWAL_COLUMNS}",
+    ))
     .bind(withdrawal.merchant_id)
     .bind(withdrawal.amount_stroops)
     .bind(&withdrawal.asset)
@@ -383,14 +384,12 @@ async fn record_payout(
     id: Uuid,
     result: &PayoutResult,
 ) -> Result<Withdrawal, sqlx::Error> {
-    sqlx::query_as::<_, Withdrawal>(
+    sqlx::query_as::<_, Withdrawal>(&format!(
         "UPDATE withdrawals
             SET provider = $2, provider_reference = $3, status = $4, updated_at = now()
           WHERE id = $1
-          RETURNING id, merchant_id, amount_stroops, asset, status, provider,
-                    provider_reference, bank_code, account_number, failure_reason,
-                    idempotency_key, created_at, updated_at",
-    )
+          RETURNING {WITHDRAWAL_COLUMNS}",
+    ))
     .bind(id)
     .bind(&result.provider)
     .bind(&result.provider_reference)
@@ -427,13 +426,11 @@ pub async fn withdrawal_by_id_for_merchant(
     id: Uuid,
     merchant_id: Uuid,
 ) -> Result<Option<Withdrawal>, sqlx::Error> {
-    sqlx::query_as::<_, Withdrawal>(
-        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                idempotency_key, created_at, updated_at
+    sqlx::query_as::<_, Withdrawal>(&format!(
+        "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
           WHERE id = $1 AND merchant_id = $2",
-    )
+    ))
     .bind(id)
     .bind(merchant_id)
     .fetch_optional(db)
@@ -447,13 +444,11 @@ pub async fn find_by_idempotency_key(
     merchant_id: Uuid,
     idempotency_key: &str,
 ) -> Result<Option<Withdrawal>, sqlx::Error> {
-    sqlx::query_as::<_, Withdrawal>(
-        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                idempotency_key, created_at, updated_at
+    sqlx::query_as::<_, Withdrawal>(&format!(
+        "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
           WHERE merchant_id = $1 AND idempotency_key = $2",
-    )
+    ))
     .bind(merchant_id)
     .bind(idempotency_key)
     .fetch_optional(db)
@@ -490,14 +485,12 @@ pub async fn reconcile_withdrawal_status(
     // Lock the row and read its current state so we can decide whether a refund
     // is owed. `FOR UPDATE` serialises concurrent webhook deliveries for the
     // same withdrawal.
-    let current = sqlx::query_as::<_, Withdrawal>(
-        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                idempotency_key, created_at, updated_at
+    let current = sqlx::query_as::<_, Withdrawal>(&format!(
+        "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
           WHERE id = $1 OR ($1 IS NULL AND provider_reference = $2)
           FOR UPDATE",
-    )
+    ))
     .bind(reference_id)
     .bind(provider_reference)
     .fetch_optional(&mut *tx)
@@ -551,14 +544,12 @@ pub async fn reconcile_withdrawal_status(
         .await?;
     }
 
-    let updated = sqlx::query_as::<_, Withdrawal>(
+    let updated = sqlx::query_as::<_, Withdrawal>(&format!(
         "UPDATE withdrawals
             SET status = $2, failure_reason = $3, updated_at = now()
           WHERE id = $1
-          RETURNING id, merchant_id, amount_stroops, asset, status, provider,
-                    provider_reference, bank_code, account_number, failure_reason,
-                    idempotency_key, created_at, updated_at",
-    )
+          RETURNING {WITHDRAWAL_COLUMNS}",
+    ))
     .bind(current.id)
     .bind(status)
     .bind(failure_reason)
@@ -579,16 +570,14 @@ pub async fn withdrawals_by_merchant_cursor(
     limit: i64,
     cursor: Option<crate::pagination::Cursor>,
 ) -> Result<Vec<Withdrawal>, sqlx::Error> {
-    sqlx::query_as::<_, Withdrawal>(
-        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                idempotency_key, created_at, updated_at
+    sqlx::query_as::<_, Withdrawal>(&format!(
+        "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
           WHERE merchant_id = $1
             AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
           ORDER BY created_at DESC, id DESC
           LIMIT $4",
-    )
+    ))
     .bind(merchant_id)
     .bind(cursor.map(|c| c.created_at))
     .bind(cursor.map(|c| c.id))
@@ -603,15 +592,13 @@ pub async fn withdrawals_by_merchant(
     merchant_id: Uuid,
     limit: i64,
 ) -> Result<Vec<Withdrawal>, sqlx::Error> {
-    sqlx::query_as::<_, Withdrawal>(
-        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                idempotency_key, created_at, updated_at
+    sqlx::query_as::<_, Withdrawal>(&format!(
+        "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
           WHERE merchant_id = $1
           ORDER BY created_at DESC
           LIMIT $2",
-    )
+    ))
     .bind(merchant_id)
     .bind(limit)
     .fetch_all(db)
@@ -623,15 +610,13 @@ pub async fn find_pending_withdrawals_older_than(
     older_than: chrono::Duration,
 ) -> Result<Vec<Withdrawal>, sqlx::Error> {
     let cutoff = chrono::Utc::now() - older_than;
-    sqlx::query_as::<_, Withdrawal>(
-        "SELECT id, merchant_id, amount_stroops, asset, status, provider,
-                provider_reference, bank_code, account_number, failure_reason,
-                idempotency_key, created_at, updated_at
+    sqlx::query_as::<_, Withdrawal>(&format!(
+        "SELECT {WITHDRAWAL_COLUMNS}
            FROM withdrawals
           WHERE status = 'pending'
             AND created_at <= $1
           ORDER BY created_at ASC",
-    )
+    ))
     .bind(cutoff)
     .fetch_all(db)
     .await
