@@ -224,3 +224,43 @@ async fn consumed_challenge_cannot_be_reused() {
     assert_eq!(json["code"], "OTP_CHALLENGE_NOT_FOUND");
     assert!(json.get("token").is_none(), "replay must not issue a token");
 }
+
+/// Verified (consumed) challenges don't count toward the hourly cap, so five
+/// completed codes in an hour don't block a sixth request.
+#[tokio::test]
+async fn consumed_challenges_do_not_count_toward_hourly_cap() {
+    let (app, db) = app_and_db().await;
+    let (body, _phone) = fresh_signup("otp_hourly_consumed");
+
+    for n in 1..=5 {
+        let (status, json) = signup(&app, &body).await;
+        assert_eq!(status, StatusCode::OK, "signup #{n} should be allowed: {json}");
+        sqlx::query("UPDATE otp_challenges SET consumed_at = now() WHERE id = $1::uuid")
+            .bind(json["challenge_id"].as_str().unwrap())
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    let (status, json) = signup(&app, &body).await;
+    assert_eq!(status, StatusCode::OK, "consumed challenges must not trip the cap: {json}");
+}
+
+/// The 429 for the hourly cap says when a slot frees up.
+#[tokio::test]
+async fn hourly_cap_429_reports_retry_after() {
+    let (app, db) = app_and_db().await;
+    let (body, _phone) = fresh_signup("otp_hourly_retry");
+    for _ in 1..=5 {
+        let (_, json) = signup(&app, &body).await;
+        sqlx::query("UPDATE otp_challenges SET expires_at = now() - interval '1 second' WHERE id = $1::uuid")
+            .bind(json["challenge_id"].as_str().unwrap())
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let (status, json) = signup(&app, &body).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let secs = json["retry_after_secs"].as_u64().expect("retry_after_secs");
+    assert!((3000..=3600).contains(&secs), "slot frees about an hour after the first send: {secs}");
+}

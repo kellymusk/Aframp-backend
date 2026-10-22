@@ -17,7 +17,9 @@ const CODE_TTL_SECS: i64 = 600;
 const RESEND_COOLDOWN_SECS: i64 = 60;
 /// Spam cap: at most this many fresh challenges per phone+purpose per hour.
 /// A refreshed (cooldown-respecting) resend of an existing challenge doesn't
-/// count against this — only brand-new challenges do.
+/// count against this — only brand-new challenges do. Verified (consumed)
+/// challenges are excluded, so someone who completes each code isn't locked
+/// out by their own past successes.
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
 
@@ -365,7 +367,8 @@ async fn upsert_challenge(
 
     let (recent_count, oldest_recent): (i64, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
         "SELECT count(*), min(created_at) FROM otp_challenges
-          WHERE phone_number = $1 AND purpose = $2 AND created_at > now() - interval '1 hour'",
+          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
+            AND created_at > now() - interval '1 hour'",
     )
     .bind(new.phone_number)
     .bind(new.purpose)
