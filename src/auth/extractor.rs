@@ -190,6 +190,23 @@ impl FromRequestParts<AppState> for AdminUser {
             return Err(forbidden(ErrorCode::Forbidden, "admin access required"));
         }
         tracing::info!(admin_user_id = %claims.sub, path = %parts.uri.path(), "admin access");
+        let ip = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|info| info.0.ip().to_string());
+        // An audit write failure is logged rather than failing the request:
+        // the tracing line above still records the access.
+        if let Err(err) = crate::services::admin_audit::record(
+            &state.db,
+            claims.sub,
+            parts.method.as_str(),
+            parts.uri.path(),
+            ip,
+        )
+        .await
+        {
+            tracing::warn!(error = %err, admin_user_id = %claims.sub, "failed to write admin audit row");
+        }
         Ok(AdminUser)
     }
 }

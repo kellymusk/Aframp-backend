@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod admin_audit;
 pub mod api_keys;
 pub mod balances;
 pub mod email_verification;
