@@ -244,6 +244,7 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .with_state(state)
         .layer(axum::middleware::from_fn(middleware::require_json_content_type))
+        .layer(axum::middleware::from_fn(middleware::retry_after_header))
 }
 
 #[cfg(test)]

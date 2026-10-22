@@ -198,9 +198,15 @@ impl From<crate::services::otp::OtpError> for (StatusCode, Json<ApiError>) {
     fn from(err: crate::services::otp::OtpError) -> Self {
         use crate::services::otp::OtpError;
         match err {
-            OtpError::RateLimited => {
-                too_many_requests(ErrorCode::TooManyRequests, "too many requests, please try again shortly")
-            }
+            OtpError::RateLimited { retry_after_secs } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ApiError {
+                    error: "too many requests, please try again shortly".into(),
+                    code: ErrorCode::TooManyRequests,
+                    field: None,
+                    retry_after_secs: Some(retry_after_secs),
+                }),
+            ),
             OtpError::ChallengeNotFound => {
                 not_found(ErrorCode::OtpChallengeNotFound, "otp challenge not found or already used")
             }

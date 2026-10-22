@@ -24,7 +24,10 @@ const MAX_ATTEMPTS: i32 = 5;
 #[derive(Debug, thiserror::Error)]
 pub enum OtpError {
     #[error("too many requests, please try again shortly")]
-    RateLimited,
+    RateLimited {
+        /// Seconds until a new code may be requested.
+        retry_after_secs: u64,
+    },
     #[error("otp challenge not found or already used")]
     ChallengeNotFound,
     #[error("otp code has expired")]
@@ -322,8 +325,11 @@ async fn upsert_challenge(
     .await?;
 
     if let Some((id, last_sent_at)) = existing {
-        if Utc::now() - last_sent_at < Duration::seconds(RESEND_COOLDOWN_SECS) {
-            return Err(OtpError::RateLimited);
+        let since_last = Utc::now() - last_sent_at;
+        if since_last < Duration::seconds(RESEND_COOLDOWN_SECS) {
+            return Err(OtpError::RateLimited {
+                retry_after_secs: (RESEND_COOLDOWN_SECS - since_last.num_seconds()).max(1) as u64,
+            });
         }
         let code = generate_code();
         let code_hash = hash_code(hmac_secret, id, &code);
@@ -357,8 +363,8 @@ async fn upsert_challenge(
         return Ok((id, code));
     }
 
-    let recent_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM otp_challenges
+    let (recent_count, oldest_recent): (i64, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+        "SELECT count(*), min(created_at) FROM otp_challenges
           WHERE phone_number = $1 AND purpose = $2 AND created_at > now() - interval '1 hour'",
     )
     .bind(new.phone_number)
@@ -366,7 +372,11 @@ async fn upsert_challenge(
     .fetch_one(db)
     .await?;
     if recent_count >= MAX_SENDS_PER_HOUR {
-        return Err(OtpError::RateLimited);
+        // A slot frees up once the oldest send in the window ages out.
+        let frees_at = oldest_recent.unwrap_or_else(Utc::now) + Duration::hours(1);
+        return Err(OtpError::RateLimited {
+            retry_after_secs: (frees_at - Utc::now()).num_seconds().max(1) as u64,
+        });
     }
 
     let id = Uuid::new_v4();

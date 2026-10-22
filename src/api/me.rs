@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::auth::extractor::AuthUser;
 use crate::error::{
-    bad_request, bad_request_field, conflict, internal, not_found, too_many_requests, ApiResult, ErrorCode,
+    bad_request, bad_request_field, conflict, internal, not_found, ApiResult, ErrorCode,
 };
 use crate::models::OtpChallengeResponse;
 use crate::services::otp::{self, OtpError};
@@ -186,9 +186,7 @@ pub async fn update(
             .await
             .map_err(|err| match err {
                 OtpError::PhoneTaken => conflict(ErrorCode::PhoneTaken, "phone number already registered"),
-                OtpError::RateLimited => {
-                    too_many_requests(ErrorCode::TooManyRequests, "too many requests, please try again shortly")
-                }
+                err @ OtpError::RateLimited { .. } => err.into(),
                 other => internal(other),
             })?,
         ),

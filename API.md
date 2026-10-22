@@ -122,14 +122,23 @@ sequenceDiagram
 
 ### Rate limits at a glance
 
-| Action | Limit | Error |
-|---|---|---|
-| OTP send per phone | 1 per 60 seconds | `429 TOO_MANY_REQUESTS` |
-| OTP send per phone | 5 per hour | `429 TOO_MANY_REQUESTS` |
-| Wrong OTP guesses | 5 per challenge | `400 OTP_LOCKED` (challenge dead) |
-| Code validity window | 10 minutes | `400 OTP_EXPIRED` |
+| Action | Limit | Error | Header |
+|---|---|---|---|
+| OTP send per phone | 1 per 60 seconds | `429 TOO_MANY_REQUESTS` | `Retry-After: <secs>` (how long to wait, ≤ 60) |
+| OTP send per phone | 5 per hour | `429 TOO_MANY_REQUESTS` | `Retry-After: <secs>` |
+| Wrong OTP guesses | 5 per challenge | `400 OTP_LOCKED` (challenge dead) | — |
+| Code validity window | 10 minutes | `400 OTP_EXPIRED` | — |
 
-There is currently **no rate limit on the password check itself** — repeated wrong-password attempts against `/login` are not throttled before the OTP step.
+When a `429` response is returned, the `Retry-After` header value is the number
+of **whole seconds** the client should wait before retrying. Always read this
+header; do not hard-code a back-off duration on the client side.
+
+```js
+if (res.status === 429) {
+    const retryAfter = parseInt(res.headers.get('Retry-After') ?? '60', 10);
+    scheduleRetry(retryAfter * 1000); // back off for exactly this long
+}
+```
 
 ---
 
@@ -151,7 +160,7 @@ Every error returns the same shape — a human-readable `error` string plus a st
 | `404` | Resource not found | — |
 | `409` | Email or phone already registered | Show on the signup form |
 | `403` | Authenticated, but not an admin (`/admin/*` only) | Not applicable to merchant-facing routes |
-| `429` | OTP resent too soon, or too many times this hour | Show the wait; don't auto-retry |
+| `429` | OTP resent too soon, or too many times this hour | Read `Retry-After` header (seconds); show the wait; don't auto-retry |
 | `502` | Upstream payment provider failed (`PAYOUT_FAILED`) | **Do not retry the same withdrawal.** The withdrawal row is already created (then marked `failed` and the balance refunded). Show the `error` string; let the user start a *new* withdrawal if they want to try again. |
 | `500` | Internal error | Generic `INTERNAL_ERROR`; details stay in server logs |
 
@@ -178,7 +187,7 @@ Every `ErrorCode` variant defined in `src/error.rs` is listed below, with the HT
 | `OTP_EXPIRED` | `400` | Code submitted after its 10-minute window | `POST /verify-otp` |
 | `OTP_CHALLENGE_NOT_FOUND` | `404` | Unknown or already-consumed `challenge_id` | `POST /verify-otp` |
 | `OTP_LOCKED` | `400` | 5 wrong attempts on this challenge — request a new one via `/signup` or `/login` | `POST /verify-otp` |
-| `TOO_MANY_REQUESTS` | `429` | OTP resent inside the 60s cooldown, or 5th+ send this hour | `POST /signup`, `POST /login` |
+| `TOO_MANY_REQUESTS` | `429` | OTP resent inside the 60s cooldown, or 5th+ send this hour. The response includes a `Retry-After` header (integer seconds) indicating how long to wait before retrying. | `POST /signup`, `POST /login` |
 | `INTERNAL_ERROR` | `500` | Unexpected server error; generic message only | Any endpoint |
 
 > **`INTERNAL_ERROR` is always a `500`.** The response body carries the fixed, safe message `"internal server error"` — never a stack trace, SQL error, or any other internal detail. Those are written to the server logs only. Treat a `500` as "something broke on our side, retry or report it," and never try to parse the `error` string for a cause.
