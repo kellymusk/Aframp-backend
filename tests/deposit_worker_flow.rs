@@ -153,3 +153,29 @@ async fn poll_once_skips_deposit_to_unknown_address() {
         .unwrap();
     assert_eq!(recorded, 0, "a deposit to an unknown address must not be recorded");
 }
+
+/// The worker exits promptly once shutdown is signalled, both when it was
+/// already set and while it sleeps between polls.
+#[tokio::test]
+async fn worker_stops_on_shutdown_signal() {
+    let state = std::sync::Arc::new(state().await);
+    // An unreachable Horizon makes each poll fail fast instead of hitting the network.
+    let horizon = "http://127.0.0.1:9".to_string();
+
+    let (tx, rx) = tokio::sync::watch::channel(true);
+    let already = tokio::spawn(aframp::blockchain::worker::run(state.clone(), horizon.clone(), 3600, 1, 1, rx));
+    tokio::time::timeout(std::time::Duration::from_secs(5), already)
+        .await
+        .expect("worker must not start when shutdown is already set")
+        .unwrap();
+    drop(tx);
+
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let sleeping = tokio::spawn(aframp::blockchain::worker::run(state, horizon, 3600, 1, 1, rx));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tx.send(true).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), sleeping)
+        .await
+        .expect("worker must stop mid-sleep once shutdown is signalled")
+        .unwrap();
+}

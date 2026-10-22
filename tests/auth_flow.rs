@@ -1093,3 +1093,17 @@ async fn logout_revokes_only_the_presented_session() {
     let (status, _) = send(app.clone(), "GET", "/me", Some(&second), None).await;
     assert_eq!(status, StatusCode::OK, "the other session stays valid");
 }
+
+#[tokio::test]
+async fn bearer_scheme_is_case_insensitive() {
+    let app = app().await;
+    let (token, _) = common::ensure_merchant(&app, "bearer_case").await;
+    for scheme in ["bearer", "BEARER", "Bearer"] {
+        let request = axum::http::Request::get("/me")
+            .header("authorization", format!("{scheme} {token}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app.clone(), request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "scheme {scheme:?}");
+    }
+}

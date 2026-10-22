@@ -15,10 +15,13 @@ pub async fn run(
     poll_interval_secs: u64,
     poll_concurrency: usize,
     min_confirmations: i32,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let listener = StellarListener::new(horizon_url).with_concurrency(poll_concurrency);
 
-    loop {
+    // A poll in progress always runs to completion; shutdown is only observed
+    // between polls, so a deposit is never left half-processed.
+    while !*shutdown.borrow() {
         let started = std::time::Instant::now();
         let span = tracing::info_span!(
             "stellar_deposit_poll",
@@ -37,8 +40,12 @@ pub async fn run(
         if let Err(err) = result {
             tracing::warn!(error = %err, "deposit poll failed");
         }
-        tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(poll_interval_secs)) => {}
+            _ = shutdown.changed() => {}
+        }
     }
+    tracing::info!("deposit worker stopped");
 }
 
 /// Polls the blockchain listener once and processes any detected deposits,

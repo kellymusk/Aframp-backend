@@ -46,14 +46,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::error!(error = %err, "failed to reconcile pending withdrawals on startup");
     }
 
-    let listener = aframp::blockchain::worker::run(
+    // Flipped to `true` on SIGTERM/Ctrl-C so the deposit worker stops between
+    // polls instead of being killed mid-deposit.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(aframp::blockchain::worker::run(
         state.clone(),
         config.stellar_horizon_url.clone(),
         config.stellar_poll_interval_secs,
         config.stellar_poll_concurrency,
         config.stellar_min_confirmations,
-    );
-    tokio::spawn(listener);
+        shutdown_rx,
+    ));
 
     // Hard-delete expired+cancelled payment requests older than 30 days.
     let cleanup_state = state.clone();
@@ -147,6 +150,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::net::TcpListener::bind(address).await?,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
+
+    // The server has drained in-flight requests; let the worker finish its
+    // current poll, but don't hang shutdown on a stuck Horizon call.
+    let _ = shutdown_tx.send(true);
+    match tokio::time::timeout(std::time::Duration::from_secs(30), worker).await {
+        Ok(Ok(())) => tracing::info!("shutdown complete"),
+        Ok(Err(err)) => tracing::error!(error = %err, "deposit worker panicked"),
+        Err(_) => tracing::warn!("deposit worker did not stop within 30s; exiting anyway"),
+    }
     Ok(())
+}
+
+/// Resolves on Ctrl-C or SIGTERM (what container platforms send on shutdown).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %err, "failed to listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "failed to listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutdown signal received; draining requests");
 }

@@ -52,11 +52,18 @@ pub struct AdminUser;
 
 /// Extract the raw bearer token from the `Authorization` header, if present.
 fn bearer_token(parts: &Parts) -> Option<&str> {
-    parts
-        .headers
+    bearer_from_headers(&parts.headers)
+}
+
+fn bearer_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| {
+            // The auth scheme is case-insensitive (RFC 9110 §11.1).
+            let (scheme, token) = v.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("bearer").then(|| token.trim_start())
+        })
 }
 
 /// Resolve a merchant-scoped API key (`sk_test_…` / `sk_live_…`) into an
@@ -94,11 +101,7 @@ async fn authenticate_api_key(
 /// the session cookie. API clients send a bearer token; browsers send the
 /// HttpOnly session cookie, which JS on the page cannot read.
 pub(crate) fn session_token(headers: &axum::http::HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .or_else(|| cookie::from_headers(headers))
+    bearer_from_headers(headers).or_else(|| cookie::from_headers(headers))
 }
 
 /// Verifies the session token and that it hasn't been revoked by a logout.
