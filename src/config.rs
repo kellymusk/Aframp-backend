@@ -231,6 +231,14 @@ impl AppConfig {
             );
         }
 
+        // A typo here used to fall back to 60s silently; fail loudly instead,
+        // and refuse intervals short enough to hammer Horizon.
+        let stellar_poll_interval_secs = u64::from(number("STELLAR_POLL_INTERVAL_SECS", 60)?);
+        if stellar_poll_interval_secs < MIN_STELLAR_POLL_INTERVAL_SECS {
+            return Err(format!(
+                "STELLAR_POLL_INTERVAL_SECS must be at least {MIN_STELLAR_POLL_INTERVAL_SECS}, got {stellar_poll_interval_secs}"
+            ));
+        }
         let database_max_connections = number("DATABASE_MAX_CONNECTIONS", 10)?;
         let database_min_connections = number("DATABASE_MIN_CONNECTIONS", 2)?;
         let database_acquire_timeout_secs = number("DATABASE_ACQUIRE_TIMEOUT_SECS", 30)?;
@@ -254,10 +262,7 @@ impl AppConfig {
             stellar_system_wallet: Arc::new(env("STELLAR_SYSTEM_WALLET_ADDRESS")?),
             stellar_horizon_url: std::env::var("STELLAR_HORIZON_URL")
                 .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".into()),
-            stellar_poll_interval_secs: std::env::var("STELLAR_POLL_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60),
+            stellar_poll_interval_secs,
             stellar_poll_concurrency,
             stellar_min_confirmations: std::env::var("STELLAR_MIN_CONFIRMATIONS")
                 .ok()
@@ -373,6 +378,9 @@ fn validate_origin(origin: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Shortest accepted deposit poll interval, in seconds.
+const MIN_STELLAR_POLL_INTERVAL_SECS: u64 = 10;
+
 fn number(name: &str, default: u32) -> Result<u32, String> {
     match std::env::var(name) {
         Err(_) => Ok(default),
@@ -469,6 +477,24 @@ mod tests {
         std::env::set_var("JWT_SECRET", &long_secret);
         std::env::set_var("WEBHOOK_SECRET", &long_secret);
         guard
+    }
+
+    #[test]
+    fn stellar_poll_interval_rejects_typos_and_too_short_values() {
+        let _env = set_valid_env();
+        std::env::set_var("STELLAR_POLL_INTERVAL_SECS", "60s");
+        let typo = AppConfig::from_env();
+        std::env::set_var("STELLAR_POLL_INTERVAL_SECS", "5");
+        let too_short = AppConfig::from_env();
+        std::env::set_var("STELLAR_POLL_INTERVAL_SECS", "30");
+        let ok = AppConfig::from_env();
+        std::env::remove_var("STELLAR_POLL_INTERVAL_SECS");
+        let defaulted = AppConfig::from_env();
+
+        assert!(typo.unwrap_err().contains("STELLAR_POLL_INTERVAL_SECS"));
+        assert!(too_short.unwrap_err().contains("at least 10"));
+        assert_eq!(ok.unwrap().stellar_poll_interval_secs, 30);
+        assert_eq!(defaulted.unwrap().stellar_poll_interval_secs, 60);
     }
 
     #[test]
