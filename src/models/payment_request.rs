@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
+
+use super::status::PaymentRequestStatus;
+use crate::validation::{optional_i64, require_i64};
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct PaymentRequest {
@@ -11,16 +15,56 @@ pub struct PaymentRequest {
     pub amount_stroops: i64,
     pub asset: String,
     pub memo: String,
-    pub status: String,
+    pub status: PaymentRequestStatus,
     pub payment_id: Option<Uuid>,
     pub expires_at: DateTime<Utc>,
+    pub cancelled_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Parsed create-payment-request body. Built via [`Self::from_json`] so
+/// non-integer `amount_stroops` yields a field-level `INVALID_PARAMETERS`
+/// error instead of axum's default 422.
+#[derive(Debug, Clone)]
 pub struct CreatePaymentRequestRequest {
     pub amount_stroops: i64,
     pub asset: Option<String>,
     pub expires_in_secs: Option<i64>,
+    pub description: Option<String>,
+}
+
+/// Longest accepted payment request description, in characters. SEP-7 caps
+/// `msg` at 300; this leaves room for percent-encoding.
+pub const MAX_DESCRIPTION_CHARS: usize = 140;
+
+impl CreatePaymentRequestRequest {
+    pub fn from_json(body: &Value) -> Result<Self, (&'static str, &'static str)> {
+        let amount_stroops =
+            require_i64(body, "amount_stroops").map_err(|msg| ("amount_stroops", msg))?;
+        let expires_in_secs =
+            optional_i64(body, "expires_in_secs").map_err(|msg| ("expires_in_secs", msg))?;
+        let asset = match body.get("asset") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => return Err(("asset", "must be a string")),
+        };
+        // Blank descriptions are treated as absent.
+        let description = match body.get("description") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.trim().is_empty() => None,
+            Some(Value::String(s)) if s.trim().chars().count() > MAX_DESCRIPTION_CHARS => {
+                return Err(("description", "must be at most 140 characters"))
+            }
+            Some(Value::String(s)) => Some(s.trim().to_string()),
+            Some(_) => return Err(("description", "must be a string")),
+        };
+        Ok(Self {
+            amount_stroops,
+            asset,
+            expires_in_secs,
+            description,
+        })
+    }
 }

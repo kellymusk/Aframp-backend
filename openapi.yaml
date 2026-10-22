@@ -19,6 +19,13 @@ tags:
   - name: Wallet
   - name: Payment requests
   - name: Money
+  - name: Analytics
+    description: Proposed merchant reporting contract; endpoint is not implemented yet.
+  - name: Webhooks
+    description: Provider callbacks — not for merchant or admin use
+  - name: Admin
+    description: System-wide views. Requires an admin JWT (`is_admin = true` baked in at login).
+  - name: API keys
 
 # Either authenticates. The Authorization header wins when both are sent.
 security:
@@ -171,6 +178,63 @@ paths:
               schema: { type: string }
               description: aframp_session with Max-Age=0
 
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a valid session token for a fresh one
+      description: >
+        Send the current, unexpired token (bearer or session cookie) to get a
+        new 24h token, also set as the session cookie. Refreshes keep the
+        original login time and stop 7 days after it (the new token never
+        expires later than that); after that, or once the token has expired,
+        log in again.
+      responses:
+        '200':
+          description: New session token
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with the new token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change the signed-in user's password
+      description: >
+        Requires the current password even with a valid session. On success
+        the password is replaced and every session issued before the change
+        (including refreshed ones) is revoked; the caller receives a fresh
+        token, also set as the session cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Password changed; new session token
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with the new token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':
+          description: >
+            `new_password` shorter than 8 characters, or `current_password`
+            incorrect (see the `field` property).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /me:
     get:
       tags: [Auth]
@@ -186,15 +250,243 @@ paths:
               schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Auth]
+      summary: Update the signed-in user's name and/or phone number
+      description: >
+        A new name applies immediately. A new phone number is not switched
+        right away: an OTP is sent to it and the response carries
+        `phone_verification`; completing `POST /verify-otp` with that
+        challenge moves the account to the new number (same flow as signup).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 100 }
+                phone_number: { type: string, description: Nigerian number in any common form }
+      responses:
+        '200':
+          description: Name updated and/or phone verification started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  phone_number: { type: string, nullable: true, description: The number on file (unchanged until verified) }
+                  phone_verification:
+                    type: object
+                    nullable: true
+                    allOf: [{ $ref: '#/components/schemas/OtpChallengeResponse' }]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The phone number belongs to another account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '429':
+          description: Too many OTP sends to that number; try again shortly
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    delete:
+      tags: [Auth]
+      summary: Delete the signed-in account (right to erasure)
+      description: >
+        Soft delete: email, name, phone number and password are erased in
+        place and pending OTP challenges removed; payments, payment requests,
+        withdrawals, wallets and balances are kept for the financial audit
+        trail. All tokens for the account stop working immediately.
+      responses:
+        '204':
+          description: Account deleted; session cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: aframp_session with Max-Age=0
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api-keys:
+    post:
+      tags: [API keys]
+      summary: Create an API key
+      description: >
+        Mints a long-lived, merchant-scoped credential for server-to-server
+        callers, for whom a 24-hour JWT with no refresh endpoint is unusable.
+        Session-authenticated only: an API key cannot mint another API key, so
+        a leaked key cannot issue itself a replacement and survive revocation.
+        The `secret` in the response is shown exactly once — only its Argon2
+        hash is stored.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApiKeyRequest' }
+      responses:
+        '201':
+          description: Key created. Store `secret` now; it is never shown again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Authenticated with an API key; this endpoint requires a session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+    get:
+      tags: [API keys]
+      summary: List active API keys
+      description: >
+        Active (non-revoked) keys, newest first. Secrets are never returned —
+        `key_prefix` is the handle to display so two keys can be told apart.
+      responses:
+        '200':
+          description: Active keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api-keys/{id}:
+    delete:
+      tags: [API keys]
+      summary: Revoke an API key
+      description: >
+        Stamps `revoked_at`; the key stops authenticating immediately. A 404
+        covers "no such id", "another merchant's key", and "already revoked"
+        alike — the three are deliberately indistinguishable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The revoked key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/me:
+    patch:
+      tags: [Auth]
+      summary: Update the signed-in user's name (alias of PATCH /me)
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                phone_number: { type: string }
+      responses:
+        '200': { description: Updated profile }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /merchants/me:
+    get:
+      tags: [Merchant]
+      summary: Current user's merchant profile
+      description: >
+        Returns the full Merchant model for the signed-in user, separate from
+        GET /me which carries only the auth-identity fields. Use this to render
+        richer merchant/business profile data without bloating /me.
+      responses:
+        '200':
+          description: Merchant profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Merchant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: MERCHANT_NOT_FOUND — the signed-in user has no merchant profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      tags: [Merchants]
+      summary: Update the merchant's business name and/or email
+      description: >
+        A new `name` (trimmed, 1–100 characters) applies immediately. A new
+        `email` is held as `pending_email` until confirmed with the token sent
+        to that address via `POST /merchants/me/email/confirm` (valid 30 minutes).
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Updated merchant profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MerchantProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /merchants/me/email/confirm:
+    post:
+      tags: [Merchants]
+      summary: Confirm a pending merchant email change
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Email changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MerchantProfile' }
+        '400':
+          description: INVALID_PARAMETERS — token is wrong, expired, or no change is pending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: EMAIL_TAKEN — the address was registered by another account meanwhile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /wallet/create:
     post:
       tags: [Wallet]
       summary: Generate a Stellar wallet
       description: >
         Generates a real ed25519 keypair; the private key is AES-256-GCM encrypted
-        server-side and never returned. NOT idempotent — each call creates another
-        wallet, and GET /wallet then returns the newest. Check GET /wallet first.
+        server-side and never returned. One wallet per network: a second call
+        returns 409. The body is optional (`network` defaults to `stellar`, the
+        only supported network).
       requestBody:
         required: false
         content:
@@ -208,6 +500,11 @@ paths:
               schema: { $ref: '#/components/schemas/Wallet' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: A wallet already exists for this merchant; use GET /wallet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
 
   /wallet:
@@ -220,7 +517,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Wallet' }
-        '400':
+        '404':
           description: No wallet created yet — run onboarding
           content:
             application/json:
@@ -246,22 +543,60 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: Wallet not found for this merchant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
     get:
       tags: [Payment requests]
       summary: List the merchant's payment requests
-      description: Newest first, scoped to the authenticated merchant.
+      description: >
+        Newest first, scoped to the authenticated merchant. Supports
+        conditional requests: send back the `ETag` from a prior response as
+        `If-None-Match` to get `304 Not Modified` when nothing changed.
+        Responses are `Cache-Control: private, no-cache`.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - name: status
+          in: query
+          required: false
+          description: >
+            Only requests whose reported status matches. `expired` and
+            `cancelled` match by the status the API reports, not the stored
+            row; `cancelled` implies `include_cancelled=true`.
+          schema:
+            type: string
+            enum: [pending, paid, partial, expired, cancelled]
+        - name: include_cancelled
+          in: query
+          required: false
+          description: Include cancelled (archived) requests. Default false.
+          schema: { type: boolean, default: false }
       responses:
         '200':
-          description: Payment requests
+          description: Payment requests, newest first
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/PaymentRequest' }
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PaymentRequest' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '304':
+          description: Not Modified — client's cached copy is still current
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -271,8 +606,8 @@ paths:
       summary: Read a payment request (public)
       description: >
         Deliberately unauthenticated so a customer's device can read a request
-        before paying. Poll every 3-5s to detect payment; deposit detection runs
-        on a timer (default 60s), so expect up to ~60s of latency, not instant.
+        before paying. Prefer GET /payment-requests/{id}/status for polling
+        after the customer has submitted payment.
       security: []
       parameters:
         - name: id
@@ -285,6 +620,125 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /payment-requests/{id}/status:
+    get:
+      tags: [Payment requests]
+      summary: Poll a payment request's status (public)
+      description: >
+        Lightweight alternative to GET /payment-requests/{id} for customer-side
+        polling after a QR payment. Uses the same reported status as the full
+        object (an overdue pending request reports `expired`). Returns
+        `Cache-Control: public, max-age=5`.
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Status payload
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=5' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequestStatus' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /payment-requests/{id}/qr:
+    get:
+      tags: [Payment requests]
+      summary: QR code PNG of the request's SEP-0007 URI (public)
+      description: >
+        Renders `sep7_uri` as a PNG for display at a POS terminal. 400 when the
+        request has no SEP-0007 URI (a credit asset with no issuer configured).
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: size
+          in: query
+          required: false
+          description: Edge length in pixels, clamped to 64–1024.
+          schema: { type: integer, default: 256, minimum: 64, maximum: 1024 }
+      responses:
+        '200':
+          description: PNG image
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /payment-requests/{id}/cancel:
+    post:
+      tags: [Payment requests]
+      summary: Cancel (archive) a payment request
+      description: >
+        Same as `DELETE /payment-requests/{id}`. Sets `cancelled_at`; cancelled
+        requests are hidden from the list unless `include_cancelled=true`, and
+        expired+cancelled rows are hard-deleted after 30 days. Expired requests
+        can still be cancelled (archived); a paid or partially paid one cannot.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The cancelled payment request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '400':
+          description: INVALID_PARAMETERS — already cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: FORBIDDEN — the request belongs to another merchant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: PAYMENT_REQUEST_NOT_CANCELLABLE — money has already arrived (paid or partial)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /payment-requests/{id}/expire:
+    post:
+      tags: [Payment requests]
+      summary: Manually expire a pending payment request
+      description: >
+        Forces a `pending` request straight to `expired` without waiting for
+        `expires_at`, e.g. when a customer abandons a session and the merchant
+        wants to regenerate the QR immediately. Unlike the read-time computed
+        expiry, this writes the row, so the state is durable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The now-expired payment request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentRequest' }
+        '400':
+          description: Request is not currently pending (already paid, partial, or expired)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /balance:
@@ -307,28 +761,196 @@ paths:
     get:
       tags: [Money]
       summary: Detected incoming payments
+      description: >
+        Supports conditional requests: send back the `ETag` from a prior
+        response as `If-None-Match` to get `304 Not Modified` when nothing
+        changed.
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - name: asset
+          in: query
+          required: false
+          description: Only return payments in this asset (exact match, e.g. XLM, cNGN).
+          schema: { type: string }
+        - name: status
+          in: query
+          required: false
+          description: Only return payments with this status. Unknown values return 400 INVALID_PARAMETERS.
+          schema:
+            type: string
+            enum: [detected, verified, confirmed, failed]
       responses:
         '200':
-          description: Payments
+          description: Payments, newest first
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Payment' }
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Payment' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '304':
+          description: Not Modified — client's cached copy is still current
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /analytics:
+    get:
+      tags: [Analytics]
+      summary: Merchant payment analytics (proposed)
+      description: >
+        Proposed contract only; this endpoint is not currently served. Daily
+        aggregates use UTC dates and include confirmed payments. Volume values
+        are integer stroops. total_paid_requests counts requests created in the
+        selected period that reached paid status; success_rate is paid requests
+        divided by all requests created in that period, from 0 to 1.
+      x-implementation-status: planned
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+      responses:
+        '200':
+          description: Proposed merchant-scoped analytics response
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /analytics/payments:
+    get:
+      tags: [Analytics]
+      summary: Daily payment volume for the authenticated merchant
+      description: >
+        Returns daily aggregates of confirmed payments for the authenticated
+        merchant within the requested date range. Only payments with status
+        `confirmed` are included — `detected` and `verified` payments are
+        still in-flight and excluded. All timestamps and date keys are UTC.
+        Amounts are always integer stroops (1 XLM = 10,000,000 stroops).
+
+
+        **Default range:** last 30 days (today minus 29 days through today
+        inclusive, UTC).  Supply `from` and/or `to` to override.  At most
+        366 days may be requested in a single call; a wider window returns
+        400 INVALID_PARAMETERS.
+
+
+        **Implementation notes for the backend (issue #1266):**
+
+        - Query: `SELECT DATE(created_at AT TIME ZONE 'UTC') AS date, COUNT(*) AS
+          count, SUM(amount_stroops) AS total_stroops, asset FROM payments WHERE
+          merchant_id = $1 AND status = 'confirmed' AND created_at >= $2 AND
+          created_at < $3 GROUP BY 1, asset ORDER BY 1`.
+
+        - A DB index on `payments(merchant_id, status, created_at)` is required
+          to keep this query sub-millisecond at scale.
+
+        - Dates with zero activity are **omitted** from the response array
+          (sparse representation); clients must fill gaps themselves.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: >
+            Start date, inclusive. ISO 8601 calendar date (`YYYY-MM-DD`).
+            Interpreted as midnight UTC. Defaults to today minus 29 days.
+          schema:
+            type: string
+            format: date
+            example: '2026-09-19'
+        - name: to
+          in: query
+          required: false
+          description: >
+            End date, inclusive. ISO 8601 calendar date (`YYYY-MM-DD`).
+            Interpreted as 23:59:59.999 UTC. Defaults to today.
+          schema:
+            type: string
+            format: date
+            example: '2026-10-19'
+      responses:
+        '200':
+          description: Daily payment volume aggregates for the requested window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [from, to, data]
+                properties:
+                  from:
+                    type: string
+                    format: date
+                    description: Actual start date used (after defaulting), inclusive.
+                    example: '2026-09-19'
+                  to:
+                    type: string
+                    format: date
+                    description: Actual end date used (after defaulting), inclusive.
+                    example: '2026-10-19'
+                  data:
+                    type: array
+                    description: >
+                      Sparse list of days that had at least one confirmed payment.
+                      Ordered by `date` ascending.
+                    items:
+                      $ref: '#/components/schemas/DailyPaymentAggregate'
+              example:
+                from: '2026-09-19'
+                to: '2026-10-19'
+                data:
+                  - date: '2026-10-01'
+                    count: 3
+                    total_stroops: 30000000
+                    asset: XLM
+                  - date: '2026-10-03'
+                    count: 1
+                    total_stroops: 5000000
+                    asset: XLM
+        '400':
+          description: >
+            INVALID_PARAMETERS — malformed `from`/`to` date, `from` is after
+            `to`, or the window exceeds 366 days.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
 
   /withdraw:
     post:
       tags: [Money]
       summary: Withdraw to a Nigerian bank account
       description: >
+        Debits the balance and calls Paystack Transfers. On provider failure the
+        API returns 502 with code PAYOUT_FAILED. The withdrawal row is already
+        created (then marked failed) and the balance is refunded — clients must
+        NOT auto-retry; start a new withdrawal only if the user explicitly retries.
+        Payouts do not currently complete in production (Paystack balance unfunded).
         Debits the balance and calls Paystack Transfers. Payouts do not currently
         complete — Aframp's Paystack balance is unfunded, so live calls return 502.
         On failure the balance is automatically refunded and the withdrawal is
         recorded with status "failed" plus a failure_reason; nothing is lost.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 255 }
+          description: >
+            Optional client-generated key. Resubmitting the same key returns the
+            original withdrawal instead of creating and debiting a second one.
       requestBody:
         required: true
         content:
@@ -343,11 +965,24 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
-        '502':
-          description: Payout provider failed; balance already refunded
+        '422':
+          description: Bank account could not be resolved, so no payout was attempted
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        '502':
+          description: >
+            Payout provider failed (`PAYOUT_FAILED`). The withdrawal row was
+            already created, then marked failed, and the balance was refunded.
+            Clients must NOT auto-retry this request — a retry creates a
+            duplicate withdrawal attempt. Show the error and let the user
+            start a new withdrawal if needed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+              example:
+                error: simulated provider failure
+                code: PAYOUT_FAILED
 
   /withdrawals:
     get:
@@ -355,16 +990,550 @@ paths:
       summary: List withdrawals
       parameters:
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Withdrawals, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Withdrawal' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /webhooks/termii:
+    post:
+      tags: [Webhooks]
+      summary: Termii SMS delivery-status callback
+      description: >
+        Register this URL at https://termii.com/account/webhook/config — it is
+        a single account-wide setting, not something passed per API call.
+        Termii POSTs SMS delivery-status events (Delivered, Message Failed,
+        Rejected, etc.) signed with X-Termii-Signature (HMAC-SHA512 over the
+        raw request body, keyed by TERMII_API_KEY). This endpoint verifies the
+        signature, logs the event, and always acks with 204 for any recognized
+        or unrecognized event shape so Termii never retries a genuine delivery.
+        Not for merchant or admin use.
+      security: []
+      parameters:
+        - name: X-Termii-Signature
+          in: header
+          required: true
+          description: HMAC-SHA512 of the raw request body, keyed by TERMII_API_KEY.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TermiiWebhookEvent' }
+      responses:
+        '204':
+          description: Event acknowledged (signature valid)
+        '403':
+          description: Invalid webhook signature
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+
+  /admin:
+    get:
+      tags: [Admin]
+      summary: Admin dashboard shell
+      description: >
+        Static HTML/JS dashboard. Unauthenticated by design — no data is baked
+        into the markup. The dashboard logs in via /login (setting the same
+        HttpOnly session cookie) and every data fetch rides the cookie.
+        Known gap: the login form only handles the one-step legacy flow; an
+        admin account with a phone number will appear to fail to log in until
+        the dashboard is updated for the OTP challenge step.
+      security: []
+      responses:
+        '200':
+          description: Dashboard HTML
+          content:
+            text/html:
+              schema: { type: string }
+
+  /admin/overview:
+    get:
+      tags: [Admin]
+      summary: System-wide counts and status breakdowns
+      description: Aggregated totals across every merchant. Requires admin JWT.
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      x-admin-roles: [super_admin, finance]
+      responses:
+        '200':
+          description: Overview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/merchants:
+    get:
+      tags: [Admin]
+      summary: All merchants
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminLimit'
+        - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, support]
+      responses:
+        '200':
+          description: Merchants
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminMerchantRow' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: All users
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminLimit'
+        - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, support]
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminUserRow' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/wallets:
+    get:
+      tags: [Admin]
+      summary: All wallets
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminLimit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Wallets
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminWalletRow' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/transactions:
+    get:
+      tags: [Admin]
+      summary: All detected payments
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminLimit'
+        - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, finance]
+      responses:
+        '200':
+          description: Transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminTransactionRow' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/withdrawals:
+    get:
+      tags: [Admin]
+      summary: All withdrawals
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminLimit'
+        - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, finance]
       responses:
         '200':
           description: Withdrawals
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/Withdrawal' }
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminWithdrawalRow' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/payment-requests:
+    get:
+      tags: [Admin]
+      summary: All payment requests
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminLimit'
+        - $ref: '#/components/parameters/Cursor'
+      x-admin-roles: [super_admin, finance]
+      responses:
+        '200':
+          description: Payment requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminPaymentRequestRow' }
+                  next_cursor:
+                    type: string
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /withdrawals/{id}:
+    get:
+      tags: [Money]
+      summary: Read one withdrawal
+      description: >
+        The withdrawal returned by POST /withdraw, by id — poll this instead of
+        re-reading the whole list to watch a single payout's status. Scoped to
+        the authenticated merchant: another merchant's withdrawal answers 404,
+        exactly as a nonexistent id does.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Withdrawal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Withdrawal' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /health/detailed:
+    get:
+      tags: [Health]
+      summary: Readiness — checks the database and Horizon
+      description: >
+        Checks each dependency concurrently within 2s. Separate from /health
+        so a Horizon outage doesn't make the platform restart a healthy container.
+      security: []
+      responses:
+        '200':
+          description: All dependencies answered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailedHealth' }
+        '503':
+          description: At least one dependency failed; `checks` says which
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DetailedHealth' }
+
+  /verify-email:
+    get:
+      tags: [Auth]
+      summary: Confirm an email address with the emailed token
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email_verified: { type: boolean, example: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /verify-email/resend:
+    post:
+      tags: [Auth]
+      summary: Issue a new email verification token
+      description: Replaces any outstanding token.
+      responses:
+        '200':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: boolean, example: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /transactions/export:
+    get:
+      tags: [Money]
+      summary: Export payments as CSV
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [csv], default: csv }
+        - name: from
+          in: query
+          required: false
+          description: RFC 3339 timestamp, inclusive.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: RFC 3339 timestamp.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /withdrawal-fee:
+    get:
+      tags: [Money]
+      summary: Quote the fee for a withdrawal amount
+      parameters:
+        - name: amount_stroops
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Fee quote
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [amount_stroops, fee_stroops, net_amount_stroops]
+                properties:
+                  amount_stroops: { type: integer, format: int64 }
+                  fee_stroops: { type: integer, format: int64 }
+                  net_amount_stroops: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /withdrawals/verify-bank:
+    get:
+      tags: [Money]
+      summary: Resolve a bank account's name before withdrawing
+      parameters:
+        - name: bank_code
+          in: query
+          required: true
+          description: 3-digit bank code.
+          schema: { type: string, pattern: '^[0-9]{3}$' }
+        - name: account_number
+          in: query
+          required: true
+          description: 10-digit NUBAN.
+          schema: { type: string, pattern: '^[0-9]{10}$' }
+      responses:
+        '200':
+          description: Resolved account
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [account_name, bank_code, account_number]
+                properties:
+                  account_name: { type: string }
+                  bank_code: { type: string }
+                  account_number: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /webhooks:
+    post:
+      tags: [Webhooks]
+      summary: Register a URL for this merchant's outbound events
+      description: Events (`payment.confirmed`) are signed with `X-Aframp-Signature`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, description: Absolute http or https URL. }
+      responses:
+        '200':
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MerchantWebhook' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [Webhooks]
+      summary: List this merchant's webhook URLs
+      responses:
+        '200':
+          description: Registered webhooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MerchantWebhook' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /webhooks/paystack:
+    post:
+      tags: [Webhooks]
+      summary: Paystack transfer webhook (inbound)
+      description: >
+        Verified with the `X-Paystack-Signature` HMAC-SHA512 of the raw body.
+        Each event is recorded in webhook_events first, so a retry is a no-op.
+      security: []
+      responses:
+        '204': { description: Acknowledged }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/events:
+    get:
+      tags: [Admin]
+      summary: Live admin event stream (Server-Sent Events)
+      responses:
+        '200':
+          description: SSE stream of new_payment, new_withdrawal, new_signup and withdrawal_failed events
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/merchants/{id}/suspend:
+    post:
+      tags: [Admin]
+      summary: Suspend a merchant (blocks login, payment requests and withdrawals)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The suspended merchant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Merchant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/merchants/{id}/unsuspend:
+    post:
+      tags: [Admin]
+      summary: Lift a merchant suspension
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The reinstated merchant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Merchant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/users/{id}/unlock:
+    post:
+      tags: [Admin]
+      summary: Clear a user's failed-login lockout
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Unlocked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
 components:
   securitySchemes:
@@ -373,8 +1542,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >
-        HS256, 24h expiry. No refresh endpoint — a 401 means re-login. For API
-        clients and scripts; browsers should use cookieAuth instead.
+        Either a session JWT (HS256, 24h expiry; renew an unexpired one with
+        POST /auth/refresh for up to 7 days from the original login, after
+        which a 401 means re-login) or an `sk_`-prefixed merchant API key
+        (see POST /api-keys). The scheme name is matched case-insensitively.
+        Browsers should use cookieAuth instead.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -383,6 +1555,21 @@ components:
         HttpOnly session cookie set by /signup and /login, cleared by /logout.
         The preferred method for browsers — JS cannot read it, so an XSS on the
         page cannot steal the session. Never copy the token into localStorage.
+    adminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Same JWT as bearerAuth, but the token must have been issued to a user
+        with `is_admin = true`. The flag is baked into the JWT at login — flip
+        the DB flag and re-login to pick up the change.
+    adminCookieAuth:
+      type: apiKey
+      in: cookie
+      name: aframp_session
+      description: >
+        Same session cookie, but the JWT must carry `is_admin = true`.
+        Re-login after flipping `is_admin` in Postgres.
 
   parameters:
     Limit:
@@ -391,6 +1578,34 @@ components:
       required: false
       description: Max rows to return. Clamped server-side to 1-200.
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >
+        Opaque token from the previous page's `next_cursor`. Pages are keyed
+        on (created_at, id), so rows created while paging never shift or
+        repeat later pages. An invalid cursor returns 400.
+      schema: { type: string }
+    AdminLimit:
+      name: limit
+      in: query
+      required: false
+      description: Max rows to return. Clamped server-side to 1-500.
+      schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: >
+        ETag from a prior response. If it still matches, the server returns
+        304 Not Modified instead of the full payload.
+      schema: { type: string }
+
+  headers:
+    ETag:
+      description: Hash of the response payload. Echo it back as If-None-Match to poll cheaply.
+      schema: { type: string }
 
   responses:
     BadRequest:
@@ -403,8 +1618,18 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
+    InternalError:
+      description: INTERNAL_ERROR — unexpected server failure
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: Authenticated but not an admin
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
@@ -417,6 +1642,13 @@ components:
           schema: { $ref: '#/components/schemas/ApiError' }
 
   schemas:
+    MerchantProfile:
+      type: object
+      properties:
+        merchant_id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, nullable: true }
+        pending_email: { type: string, nullable: true }
     ApiError:
       type: object
       required: [error, code]
@@ -425,32 +1657,94 @@ components:
         code:
           type: string
           example: INSUFFICIENT_BALANCE
-          description: "Machine-readable error code. Full catalog: INVALID_PARAMETERS, INVALID_AMOUNT, INSUFFICIENT_BALANCE, UNSUPPORTED_ASSET, PAYOUT_FAILED, EMAIL_TAKEN, PHONE_TAKEN, INVALID_CREDENTIALS, USER_NOT_FOUND, MERCHANT_NOT_FOUND, WALLET_NOT_FOUND, PAYMENT_REQUEST_NOT_FOUND, FORBIDDEN, OTP_INVALID, OTP_EXPIRED, OTP_LOCKED, OTP_CHALLENGE_NOT_FOUND, TOO_MANY_REQUESTS, INTERNAL_ERROR"
+          description: Machine-readable error code. Match on this field, never on `error`.
+          enum:
+            - INVALID_PARAMETERS
+            - INVALID_AMOUNT
+            - INSUFFICIENT_BALANCE
+            - UNSUPPORTED_ASSET
+            - PAYOUT_FAILED
+            - EMAIL_TAKEN
+            - PHONE_TAKEN
+            - INVALID_CREDENTIALS
+            - USER_NOT_FOUND
+            - MERCHANT_NOT_FOUND
+            - WALLET_NOT_FOUND
+            - PAYMENT_REQUEST_NOT_FOUND
+            - FORBIDDEN
+            - OTP_INVALID
+            - OTP_EXPIRED
+            - OTP_LOCKED
+            - OTP_CHALLENGE_NOT_FOUND
+            - TOO_MANY_REQUESTS
+            - ACCOUNT_LOCKED
+            - ACCOUNT_VERIFICATION_FAILED
+            - DAILY_LIMIT_EXCEEDED
+            - PAYLOAD_TOO_LARGE
+            - PAYMENT_REQUEST_NOT_CANCELLABLE
+            - WITHDRAWAL_NOT_FOUND
+            - INTERNAL_ERROR
+        field:
+          type: string
+          nullable: true
+          description: The request field at fault, for field-level validation errors.
+        retry_after_secs:
+          type: integer
+          nullable: true
+          description: >
+            On 429 (rate limited) and 423 (ACCOUNT_LOCKED): seconds until the
+            request may be retried. The same value is sent as a Retry-After header.
 
     SignupRequest:
       type: object
+      description: Credentials for starting a signup. The account is not created until POST /verify-otp succeeds.
       required: [email, password, name, phone_number]
       properties:
-        email: { type: string, format: email }
-        password: { type: string, minLength: 8 }
-        name: { type: string, minLength: 1 }
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Account email, unique among verified accounts. RFC 5321 max length 254.
+        password:
+          type: string
+          minLength: 8
+          maxLength: 1024
+          description: 8–1024 characters, with at least one uppercase letter, one digit and one special character.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Display name for the user and merchant.
         phone_number:
           type: string
+          maxLength: 20
           description: Nigerian mobile, any common format (0801..., 801..., +234801..., 234801...); normalized to E.164 server-side.
 
     LoginRequest:
       type: object
+      description: Credentials for authenticating. A phone-verified account receives an OTP challenge instead of a session.
       required: [email, password]
       properties:
-        email: { type: string, format: email }
-        password: { type: string }
+        email:
+          type: string
+          format: email
+          description: Account email.
+        password:
+          type: string
+          description: Account password.
 
     VerifyOtpRequest:
       type: object
+      description: Completes a signup or login challenge and issues a session.
       required: [challenge_id, code]
       properties:
-        challenge_id: { type: string, format: uuid }
-        code: { type: string, description: 6-digit code. }
+        challenge_id:
+          type: string
+          format: uuid
+          description: Challenge id returned by /signup or /login.
+        code:
+          type: string
+          description: 6-digit code sent to the account's phone number.
 
     OtpChallengeResponse:
       type: object
@@ -471,16 +1765,91 @@ components:
           nullable: true
           description: Null for an account with no merchant; such accounts get 400 from merchant-scoped endpoints.
 
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        environment:
+          type: string
+          enum: [test, live]
+          default: test
+          description: Defaults to the safe half of the choice, so an omitted field cannot mint a live key.
+
+    ApiKey:
+      type: object
+      required: [id, merchant_id, key_prefix, environment, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        key_prefix:
+          type: string
+          example: sk_test_a1b2c3d4
+          description: The clear-text handle of the key. Displayable; not a credential on its own.
+        environment: { type: string, enum: [test, live] }
+        created_at: { type: string, format: date-time }
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreatedApiKey:
+      type: object
+      required: [id, key_prefix, environment, created_at, secret]
+      properties:
+        id: { type: string, format: uuid }
+        key_prefix: { type: string, example: sk_test_a1b2c3d4 }
+        environment: { type: string, enum: [test, live] }
+        created_at: { type: string, format: date-time }
+        secret:
+          type: string
+          example: sk_test_a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4
+          description: >
+            The full key, returned once and never again. Send it as
+            `Authorization: Bearer sk_...` on any authenticated endpoint.
+
     Me:
       type: object
-      required: [user_id, email, name, created_at]
+      required: [user_id, email, name, created_at, phone_number, phone_verified]
       properties:
         user_id: { type: string, format: uuid }
         email: { type: string, format: email }
         name: { type: string }
         created_at: { type: string, format: date-time }
+        phone_number: { type: string, nullable: true, description: Null for legacy accounts without a phone number }
+        phone_verified: { type: boolean, description: True after the phone number has been verified by OTP }
         merchant_id: { type: string, format: uuid, nullable: true }
         merchant_name: { type: string, nullable: true }
+
+    MerchantWebhook:
+      type: object
+      required: [id, merchant_id, url, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+
+    DetailedHealth:
+      type: object
+      required: [status, version, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string }
+        checks:
+          type: object
+          properties:
+            database: { type: string, enum: [ok, fail] }
+            horizon: { type: string, enum: [ok, fail] }
+
+    Merchant:
+      type: object
+      required: [id, user_id, name, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        suspended_at: { type: string, format: date-time, nullable: true, description: Set when the merchant account is suspended. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     CreateWalletRequest:
       type: object
@@ -508,14 +1877,23 @@ components:
           type: integer
           format: int64
           minimum: 1
-          description: Amount in stroops (1 unit = 10,000,000 stroops).
+          description: >
+            Amount in stroops (1 unit = 10,000,000 stroops). Must be a JSON
+            integer — floats and strings are rejected with INVALID_PARAMETERS
+            on field amount_stroops.
           example: 25000000
         asset: { type: string, default: XLM }
         expires_in_secs:
           type: integer
           format: int64
           default: 900
-          description: Clamped server-side to 60-86400.
+          minimum: 60
+          maximum: 86400
+          description: Seconds until the request expires; outside 60–86400 is a 400 on this field.
+        description:
+          type: string
+          maxLength: 140
+          description: Optional note shown to the payer (sent as the SEP-7 `msg`); trimmed, blank treated as absent.
 
     PaymentRequest:
       type: object
@@ -525,7 +1903,13 @@ components:
         merchant_id: { type: string, format: uuid }
         address: { type: string, description: Stellar destination address to pay. }
         network: { type: string, example: stellar }
-        amount_stroops: { type: integer, format: int64 }
+        description: { type: string, nullable: true, description: "Merchant-defined note, if any." }
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "Amount in stroops (1 XLM = 10,000,000 stroops). Convert for display: stroops / 10_000_000."
+          example: 25000000
         asset: { type: string, example: XLM }
         memo:
           type: string
@@ -534,10 +1918,11 @@ components:
             but leaves the request pending forever. Included in sep7_uri automatically.
         status:
           type: string
-          enum: [pending, paid, expired]
+          enum: [pending, paid, expired, cancelled]
           description: >
             'expired' is computed at read time from expires_at. A request that
-            expires and is then paid still flips to 'paid'.
+            expires and is then paid still flips to 'paid'. 'cancelled' is set
+            only by POST /payment-requests/{id}/cancel and is terminal.
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         sep7_uri:
@@ -548,17 +1933,40 @@ components:
             no cNGN issuer address is configured, and a guessed one would misdirect funds.
           example: web+stellar:pay?destination=GDDT...&amount=2.5000000&memo=1f97c93409172a7d&memo_type=MEMO_TEXT
 
+    PaymentRequestStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, paid, partial, expired, cancelled]
+          description: >
+            Same reported status as GET /payment-requests/{id} — overdue
+            pending rows report as expired at read time.
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Present when status is paid (row updated_at at mark-paid).
+
     Balance:
       type: object
       required: [merchant_id, asset, available, pending, updated_at]
       properties:
         merchant_id: { type: string, format: uuid }
         asset: { type: string, example: XLM }
-        available: { type: integer, format: int64, description: Withdrawable, in stroops. }
+        available:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Withdrawable balance in stroops (1 XLM = 10,000,000 stroops)."
+          example: 100000000000
         pending:
           type: integer
           format: int64
-          description: Detected but unconfirmed. Almost always 0 — no confirmation-depth threshold yet.
+          minimum: 0
+          description: "Detected but unconfirmed, in stroops. Almost always 0 — no confirmation-depth threshold yet."
+          example: 0
         updated_at: { type: string, format: date-time }
 
     Payment:
@@ -572,15 +1980,78 @@ components:
         tx_hash:
           type: string
           description: Real Stellar transaction hash; linkable to a block explorer.
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "Amount received in stroops (1 XLM = 10,000,000 stroops)."
+          example: 25000000
         asset: { type: string }
         network: { type: string, example: stellar }
         status: { type: string, enum: [detected, verified, confirmed, failed] }
         confirmations:
           type: integer
-          description: Currently always 0 — confirmation-depth tracking is not implemented. Do not display.
+          description: Ledger confirmations counted so far; credited to available at STELLAR_MIN_CONFIRMATIONS.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        flagged: { type: boolean, description: Deposit exceeded an anomaly threshold and is under review; it is still credited. }
+
+    DailyPaymentAggregate:
+      type: object
+      required: [date, count, total_stroops, asset]
+      description: >
+        Aggregated confirmed-payment statistics for a single calendar day and
+        asset. Days with no confirmed payments are omitted from the response
+        (sparse representation).
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar date of the aggregation bucket.
+          example: '2026-10-01'
+        count:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Number of confirmed payments on this date for this asset.
+          example: 3
+        total_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Sum of `amount_stroops` for all confirmed payments in this bucket.
+          example: 30000000
+        asset:
+          type: string
+          description: Asset code (e.g. `XLM`, `cNGN`).
+          example: XLM
+
+    AnalyticsResponse:
+      type: object
+      required: [period, daily, total_paid_requests, success_rate]
+      properties:
+        period: { type: string, enum: [7d, 30d, 90d] }
+        daily:
+          type: array
+          items:
+            type: object
+            required: [date, payment_count, volume_by_asset]
+            properties:
+              date: { type: string, format: date }
+              payment_count: { type: integer, format: int64, minimum: 0 }
+              volume_by_asset:
+                type: object
+                description: Confirmed payment volume per asset, in stroops.
+                additionalProperties:
+                  type: integer
+                  format: int64
+                  minimum: 0
+        total_paid_requests: { type: integer, format: int64, minimum: 0 }
+        success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Paid requests divided by all requests created in the selected period.
 
     CreateWithdrawalRequest:
       type: object
@@ -590,8 +2061,12 @@ components:
           type: integer
           format: int64
           description: >
-            Must be a whole multiple of 100000 (1 kobo). Paystack's minimum
-            transfer is NGN 50 = 500000000 stroops.
+            Amount in cNGN stroops (1 cNGN = 10,000,000 stroops; 1 cNGN stroop
+            = 100,000 kobo). Must be a whole multiple of 100000 (1 kobo).
+            Paystack's minimum transfer is NGN 50 = 500000000 stroops. Must be
+            a JSON integer — floats and strings are rejected with
+            INVALID_PARAMETERS on field amount_stroops. Never send whole units:
+            NGN 2,500 is 25,000,000,000 stroops, not 2500.
           example: 500000000
         asset:
           type: string
@@ -609,16 +2084,173 @@ components:
       properties:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
-        amount_stroops: { type: integer, format: int64 }
+        amount_stroops:
+          type: integer
+          format: int64
+          minimum: 1
+          description: "Amount withdrawn in stroops (1 XLM = 10,000,000 stroops)."
+          example: 500000000
         asset: { type: string, example: cNGN }
         status: { type: string, enum: [pending, processing, completed, failed] }
         provider: { type: string, nullable: true, example: paystack }
         provider_reference: { type: string, nullable: true }
         bank_code: { type: string, nullable: true }
-        account_number: { type: string, nullable: true }
+        account_number:
+          type: string
+          nullable: true
+          description: Masked destination account number in ****1234 format.
+          example: '****6789'
         failure_reason:
           type: string
           nullable: true
           description: Provider's own wording on a failed payout. Show this to the merchant.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TermiiWebhookEvent:
+      type: object
+      description: >
+        Termii SMS delivery-status event payload. Fields are all optional — Termii
+        does not guarantee a fixed shape for every event type. Unrecognized shapes
+        are logged and acked with 204; never 4xx on an unknown field.
+      properties:
+        message_id: { type: string, nullable: true, description: Termii's internal message id. }
+        status:
+          type: string
+          nullable: true
+          description: "Delivery status string, e.g. 'Delivered', 'Message Failed', 'Rejected'."
+        receiver: { type: string, nullable: true, description: Destination phone number (E.164). }
+        channel: { type: string, nullable: true, description: "Delivery channel, e.g. 'generic'." }
+
+    AdminOverview:
+      type: object
+      required: [total_users, total_merchants, total_wallets, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
+      properties:
+        total_users: { type: integer, format: int64 }
+        total_merchants: { type: integer, format: int64 }
+        total_wallets: { type: integer, format: int64 }
+        balances_by_asset:
+          type: array
+          items: { $ref: '#/components/schemas/AssetTotal' }
+        payments_by_status:
+          type: array
+          items: { $ref: '#/components/schemas/StatusCount' }
+        withdrawals_by_status:
+          type: array
+          items: { $ref: '#/components/schemas/StatusCount' }
+        payment_requests_by_status:
+          type: array
+          items: { $ref: '#/components/schemas/StatusCount' }
+
+    AssetTotal:
+      type: object
+      required: [asset, available, pending]
+      properties:
+        asset: { type: string, example: XLM }
+        available: { type: integer, format: int64 }
+        pending: { type: integer, format: int64 }
+
+    StatusCount:
+      type: object
+      required: [status, count]
+      properties:
+        status: { type: string }
+        count: { type: integer, format: int64 }
+
+    AdminUserRow:
+      type: object
+      required: [id, email, name, is_admin, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        is_admin: { type: boolean }
+        created_at: { type: string, format: date-time }
+        merchant_id: { type: string, format: uuid, nullable: true }
+        merchant_name: { type: string, nullable: true }
+
+    AdminMerchantRow:
+      type: object
+      required: [id, name, owner_user_id, owner_email, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner_user_id: { type: string, format: uuid }
+        owner_email: { type: string, format: email }
+        created_at: { type: string, format: date-time }
+        wallet_address: { type: string, nullable: true, description: "Most recent wallet address, if any." }
+
+    AdminWalletRow:
+      type: object
+      required: [id, merchant_id, merchant_name, address, network, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        merchant_name: { type: string }
+        address: { type: string, description: Stellar public key (G...). }
+        network: { type: string, example: stellar }
+        created_at: { type: string, format: date-time }
+
+    AdminTransactionRow:
+      type: object
+      required: [id, merchant_id, merchant_name, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        merchant_name: { type: string }
+        wallet_address: { type: string }
+        tx_hash: { type: string }
+        amount_stroops:
+          type: integer
+          format: int64
+          description: "Amount in stroops (1 unit = 10,000,000 stroops). 1 cNGN stroop = 100,000 kobo."
+          example: 25000000
+        asset: { type: string }
+        network: { type: string, example: stellar }
+        status: { type: string, enum: [detected, verified, confirmed, failed] }
+        confirmations: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        flagged: { type: boolean, description: Deposit exceeded an anomaly threshold and needs review. }
+
+    AdminWithdrawalRow:
+      type: object
+      required: [id, merchant_id, merchant_name, amount_stroops, asset, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        merchant_name: { type: string }
+        amount_stroops:
+          type: integer
+          format: int64
+          description: "Amount in stroops (1 unit = 10,000,000 stroops). 1 cNGN stroop = 100,000 kobo."
+          example: 25000000
+        asset: { type: string }
+        status: { type: string, enum: [pending, processing, completed, failed] }
+        provider: { type: string, nullable: true }
+        provider_reference: { type: string, nullable: true }
+        bank_code: { type: string, nullable: true }
+        account_number: { type: string, nullable: true }
+        failure_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AdminPaymentRequestRow:
+      type: object
+      required: [id, merchant_id, merchant_name, amount_stroops, asset, memo, status, expires_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        merchant_id: { type: string, format: uuid }
+        merchant_name: { type: string }
+        amount_stroops:
+          type: integer
+          format: int64
+          description: "Amount in stroops (1 unit = 10,000,000 stroops). 1 cNGN stroop = 100,000 kobo."
+          example: 25000000
+        asset: { type: string }
+        memo: { type: string }
+        status: { type: string, enum: [pending, paid, expired] }
+        payment_id: { type: string, format: uuid, nullable: true, description: Set once correlated to a payment. }
+        expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }

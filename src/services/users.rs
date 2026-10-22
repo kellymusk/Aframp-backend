@@ -1,12 +1,32 @@
+use chrono::Utc;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use crate::auth::password;
-use crate::models::{Merchant, User};
+use crate::models::{Merchant, User, UserProfile};
+
+/// Number of consecutive failed login attempts before an account is locked.
+const MAX_FAILED_ATTEMPTS: i32 = 10;
+/// How long (minutes) an account stays locked after hitting the threshold.
+const LOCKOUT_DURATION_MINS: i64 = 30;
+
+/// Column list shared by all SELECT queries on the users table — keeps the
+/// new lockout columns in sync across every call site.
+pub(crate) const USER_COLS: &str =
+    "id, email, password_hash, name, is_admin, phone_number, phone_verified, \
+     failed_login_count, locked_until, created_at, updated_at";
 
 #[derive(Debug, thiserror::Error)]
 pub enum UserError {
     #[error("invalid email or password")]
     InvalidCredentials,
+    /// The account is temporarily locked due to too many failed attempts.
+    /// `until` is when the lock expires (30 minutes from the 10th failure).
+    #[error("account locked until {until}")]
+    AccountLocked { until: chrono::DateTime<Utc> },
+    /// The merchant account has been suspended by an admin.
+    #[error("merchant account has been suspended")]
+    MerchantSuspended,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -23,11 +43,11 @@ pub async fn create_verified(
     phone_number: &str,
 ) -> Result<(User, Merchant), sqlx::Error> {
     let mut tx = db.begin().await?;
-    let user = sqlx::query_as::<_, User>(
+    let user = sqlx::query_as::<_, User>(&format!(
         "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
-         VALUES ($1, $2, $3, $4, true)
-         RETURNING id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at",
-    )
+             VALUES ($1, $2, $3, $4, true)
+             RETURNING {USER_COLS}"
+    ))
     .bind(email)
     .bind(password_hash)
     .bind(name)
@@ -38,7 +58,7 @@ pub async fn create_verified(
     let merchant = sqlx::query_as::<_, Merchant>(
         "INSERT INTO merchants (user_id, name)
          VALUES ($1, $2)
-         RETURNING id, user_id, name, created_at",
+         RETURNING id, user_id, name, suspended_at, created_at, updated_at",
     )
     .bind(user.id)
     .bind(name)
@@ -58,33 +78,121 @@ pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
     }
 }
 
-pub async fn login(db: &PgPool, email: &str, password_raw: &str) -> Result<(User, Option<Merchant>), UserError> {
-    let user = sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at
-           FROM users WHERE email = $1",
-    )
+/// Authenticate a user by email + password.
+///
+/// On success: resets `failed_login_count` to 0.
+/// On wrong password: increments `failed_login_count`; locks the account for
+/// [`LOCKOUT_DURATION_MINS`] minutes after [`MAX_FAILED_ATTEMPTS`] failures.
+/// Returns [`UserError::AccountLocked`] when the account is currently locked,
+/// regardless of whether the supplied password is correct.
+#[tracing::instrument(skip_all, err)]
+pub async fn login(
+    db: &PgPool,
+    email: &str,
+    password_raw: &str,
+) -> Result<(User, Option<Merchant>), UserError> {
+    let user = sqlx::query_as::<_, User>(&format!(
+        "SELECT {USER_COLS} FROM users WHERE email = $1 AND deleted_at IS NULL"
+    ))
     .bind(email)
     .fetch_optional(db)
-    .await?
-    .ok_or(UserError::InvalidCredentials)?;
+    .await?;
+
+    // Equalize response time between the "unknown email" and "wrong password"
+    // paths: when no user is found we still run a full Argon2 verification
+    // against a dummy hash (same parameters as real hashes) so the timing of
+    // the two failure modes is indistinguishable. This closes the username
+    // enumeration timing side-channel.
+    let user = match user {
+        Some(user) => user,
+        None => {
+            password::verify(password_raw, password::dummy_hash());
+            return Err(UserError::InvalidCredentials);
+        }
+    };
+
+    // Check lockout before verifying the password — avoids leaking timing info
+    // about whether a locked account's password is correct or not.
+    if let Some(locked_until) = user.locked_until {
+        if Utc::now() < locked_until {
+            return Err(UserError::AccountLocked {
+                until: locked_until,
+            });
+        }
+    }
 
     if !password::verify(password_raw, &user.password_hash) {
+        // Increment failure counter; lock if threshold reached.
+        let new_count = user.failed_login_count + 1;
+        if new_count >= MAX_FAILED_ATTEMPTS {
+            let locked_until = Utc::now() + chrono::Duration::minutes(LOCKOUT_DURATION_MINS);
+            sqlx::query(
+                "UPDATE users
+                    SET failed_login_count = $2, locked_until = $3, updated_at = now()
+                  WHERE id = $1",
+            )
+            .bind(user.id)
+            .bind(new_count)
+            .bind(locked_until)
+            .execute(db)
+            .await?;
+        } else {
+            sqlx::query(
+                "UPDATE users
+                    SET failed_login_count = $2, updated_at = now()
+                  WHERE id = $1",
+            )
+            .bind(user.id)
+            .bind(new_count)
+            .execute(db)
+            .await?;
+        }
         return Err(UserError::InvalidCredentials);
     }
 
+    // Successful authentication — reset the failure counter and clear any
+    // expired lock (a time-expired lock doesn't block login above, but we
+    // clean it up here so the column doesn't mislead in admin views).
+    sqlx::query(
+        "UPDATE users
+            SET failed_login_count = 0, locked_until = NULL, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(user.id)
+    .execute(db)
+    .await?;
+
     let merchant = sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
+        "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
     .bind(user.id)
     .fetch_optional(db)
     .await?;
 
+    // Refuse login for suspended merchants.
+    if let Some(ref m) = merchant {
+        if m.is_suspended() {
+            return Err(UserError::MerchantSuspended);
+        }
+    }
+
     Ok((user, merchant))
 }
 
-pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>, sqlx::Error> {
-    sqlx::query_as::<_, User>(
-        "SELECT id, email, password_hash, name, is_admin, phone_number, phone_verified, created_at, updated_at
+#[tracing::instrument(skip_all, err, fields(%user_id))]
+pub async fn user_by_id(db: &PgPool, user_id: Uuid) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(&format!("SELECT {USER_COLS} FROM users WHERE id = $1"))
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+}
+
+pub async fn user_profile_by_id(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Option<UserProfile>, sqlx::Error> {
+    sqlx::query_as::<_, UserProfile>(
+        "SELECT id, email, name, is_admin, created_at
            FROM users WHERE id = $1",
     )
     .bind(user_id)
@@ -92,20 +200,162 @@ pub async fn user_by_id(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<User>
     .await
 }
 
-pub async fn merchant_by_user(db: &PgPool, user_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+#[tracing::instrument(skip_all, err, fields(%user_id))]
+pub async fn merchant_by_user(db: &PgPool, user_id: Uuid) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at FROM merchants WHERE user_id = $1 LIMIT 1",
+        "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE user_id = $1 LIMIT 1",
     )
     .bind(user_id)
     .fetch_optional(db)
     .await
 }
 
-pub async fn merchant_by_id(db: &PgPool, merchant_id: uuid::Uuid) -> Result<Option<Merchant>, sqlx::Error> {
+#[tracing::instrument(skip_all, err, fields(%merchant_id))]
+pub async fn merchant_by_id(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<Merchant>, sqlx::Error> {
     sqlx::query_as::<_, Merchant>(
-        "SELECT id, user_id, name, created_at FROM merchants WHERE id = $1",
+        "SELECT id, user_id, name, suspended_at, created_at, updated_at FROM merchants WHERE id = $1",
     )
     .bind(merchant_id)
     .fetch_optional(db)
     .await
+}
+
+/// Erases a user's personal data (GDPR / NDPA right to erasure) while
+/// keeping the rows that the financial records point at:
+///
+/// - email becomes `deleted-<user id>@deleted.invalid`, name and the
+///   merchant name become "Deleted user", the phone number is cleared
+/// - the password hash is blanked, so the account can never log in again
+/// - pending OTP challenges (which can hold PII) are removed
+/// - `deleted_at` is set, which makes every outstanding session token for
+///   this user fail authentication
+///
+/// Payments, payment requests, withdrawals, wallets and balances are left
+/// intact. Returns `false` if the user doesn't exist or was already deleted.
+pub async fn anonymize_and_delete(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let updated = sqlx::query(
+        "UPDATE users
+            SET email = 'deleted-' || id::text || '@deleted.invalid',
+                name = 'Deleted user',
+                phone_number = NULL,
+                phone_verified = false,
+                password_hash = '',
+                deleted_at = now(),
+                updated_at = now()
+          WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE merchants SET name = 'Deleted user' WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM otp_challenges WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Whether the account exists and hasn't been deleted.
+pub async fn is_active(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT deleted_at IS NULL FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?
+            .unwrap_or(false),
+    )
+}
+
+/// Whether a session that began at `session_start` (unix seconds — the
+/// token's `orig_iat`) is still valid: the account must be active and the
+/// session must not predate the last password change.
+pub async fn session_is_valid(
+    db: &PgPool,
+    user_id: Uuid,
+    session_start: i64,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT deleted_at IS NULL
+                AND (password_changed_at IS NULL
+                     OR $2 >= floor(extract(epoch FROM password_changed_at))::bigint)
+           FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(session_start)
+    .fetch_optional(db)
+    .await?
+    .unwrap_or(false))
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ChangePasswordError {
+    #[error("current password is incorrect")]
+    WrongCurrentPassword,
+    #[error("failed to hash password")]
+    Hash,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Verifies `current_password` against the stored hash, then stores the hash
+/// of `new_password` and stamps `password_changed_at`, which invalidates every
+/// session issued before now (see [`session_is_valid`]).
+pub async fn change_password(
+    db: &PgPool,
+    user_id: Uuid,
+    current_password: &str,
+    new_password: &str,
+) -> Result<(), ChangePasswordError> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+    let Some(stored) = stored else {
+        return Err(ChangePasswordError::WrongCurrentPassword);
+    };
+    if !password::verify(current_password, &stored) {
+        return Err(ChangePasswordError::WrongCurrentPassword);
+    }
+    let new_hash = password::hash(new_password).map_err(|_| ChangePasswordError::Hash)?;
+    // Stamped from the app clock, not Postgres `now()`: it's compared against
+    // JWT `iat`s minted by this process, so both sides must share a clock.
+    sqlx::query(
+        "UPDATE users
+            SET password_hash = $2, password_changed_at = $3, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(&new_hash)
+    .bind(Utc::now())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Admin operation: clear a user's account lockout immediately.
+/// Also resets `failed_login_count` so the next bad attempt starts fresh.
+pub async fn admin_unlock(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(
+        "UPDATE users
+            SET failed_login_count = 0, locked_until = NULL, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(rows > 0)
 }

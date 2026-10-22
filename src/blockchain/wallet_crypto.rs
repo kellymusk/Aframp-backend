@@ -5,7 +5,8 @@ use rand::RngCore;
 const NONCE_LEN: usize = 12;
 
 pub fn parse_key(hex_key: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex_key).map_err(|e| format!("WALLET_ENCRYPTION_KEY is not valid hex: {e}"))?;
+    let bytes =
+        hex::decode(hex_key).map_err(|e| format!("WALLET_ENCRYPTION_KEY is not valid hex: {e}"))?;
     bytes
         .try_into()
         .map_err(|_| "WALLET_ENCRYPTION_KEY must decode to exactly 32 bytes".to_string())
@@ -15,7 +16,8 @@ pub fn encrypt(key: &[u8; 32], plaintext: &str) -> Result<String, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
+    let nonce = &nonce;
 
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
@@ -34,8 +36,41 @@ pub fn decrypt(key: &[u8; 32], encoded: &str) -> Result<String, String> {
     }
     let (nonce_bytes, ciphertext) = bytes.split_at(NONCE_LEN);
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes).map_err(|_| "invalid nonce length".to_string())?;
+    let nonce = &nonce;
 
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| e.to_string())?;
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| e.to_string())?;
     String::from_utf8(plaintext).map_err(|e| e.to_string())
+}
+
+/// Decrypt `encoded` under `old_key` and encrypt the plaintext under
+/// `new_key`, for key rotation. Fails without producing anything if
+/// `old_key` doesn't decrypt it.
+pub fn reencrypt(old_key: &[u8; 32], new_key: &[u8; 32], encoded: &str) -> Result<String, String> {
+    encrypt(new_key, &decrypt(old_key, encoded)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reencrypt_moves_ciphertext_to_the_new_key() {
+        let old_key = [1u8; 32];
+        let new_key = [2u8; 32];
+        let encoded = encrypt(&old_key, "SSECRETSEED").unwrap();
+
+        let rotated = reencrypt(&old_key, &new_key, &encoded).unwrap();
+
+        assert_eq!(decrypt(&new_key, &rotated).unwrap(), "SSECRETSEED");
+        assert!(decrypt(&old_key, &rotated).is_err());
+    }
+
+    #[test]
+    fn reencrypt_fails_with_the_wrong_old_key() {
+        let encoded = encrypt(&[1u8; 32], "SSECRETSEED").unwrap();
+        assert!(reencrypt(&[3u8; 32], &[2u8; 32], &encoded).is_err());
+    }
 }

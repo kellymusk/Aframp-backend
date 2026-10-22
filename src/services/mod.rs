@@ -1,5 +1,11 @@
 pub mod admin;
+pub mod admin_audit;
+pub mod api_keys;
 pub mod balances;
+pub mod bitcoin_rpc;
+pub mod email_verification;
+pub mod login_rate_limit;
+pub mod merchant_webhooks;
 pub mod otp;
 pub mod payment_requests;
 pub mod payments;

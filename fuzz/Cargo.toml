@@ -1,0 +1,31 @@
+[package]
+name = "aframp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+aframp = { path = ".." }
+serde_json = "1"
+
+[[bin]]
+name = "fuzz_signup"
+path = "fuzz_targets/fuzz_signup.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_login"
+path = "fuzz_targets/fuzz_login.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_payment_request"
+path = "fuzz_targets/fuzz_payment_request.rs"
+test = false
+doc = false
