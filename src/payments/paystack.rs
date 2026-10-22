@@ -288,8 +288,9 @@ impl PaymentProvider for PaystackProvider {
 
         let status = match transfer.status.to_lowercase().as_str() {
             "success" => "completed",
-            "failed" | "reversed" | "abandoned" => "failed",
-            "processing" => "processing",
+            "failed" | "reversed" | "abandoned" | "cancelled" | "canceled" => "failed",
+            // Live mode can park a transfer awaiting OTP finalization.
+            "processing" | "otp" | "sending" | "sent" => "processing",
             _ => "pending",
         };
 

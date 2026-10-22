@@ -156,6 +156,31 @@ Every error returns the same shape — a human-readable `error` string plus a st
 
 ### Error code catalog
 
+Every `ErrorCode` variant defined in `src/error.rs` is listed below, with the HTTP status it travels with and the endpoints that can emit it. Match on `code`; the `error` string is for humans and may change.
+
+| Code | HTTP Status | Description | Endpoints that can return it |
+|---|---|---|---|
+| `INVALID_PARAMETERS` | `400` | A required field is missing or malformed (short password, empty name/email, unparseable phone, bad `bank_code`/`account_number`, malformed body) | `POST /signup`, `POST /login`, `POST /verify-otp`, `POST /wallet/create`, `POST /payment-requests`, `POST /withdraw` |
+| `INVALID_AMOUNT` | `400` | Amount is not positive, or not a whole number of kobo (`amount_stroops` not a multiple of `100000`) | `POST /payment-requests`, `POST /withdraw` |
+| `INSUFFICIENT_BALANCE` | `400` | Withdrawal exceeds the merchant's available balance | `POST /withdraw` |
+| `UNSUPPORTED_ASSET` | `400` | Withdrawal `asset` isn't `cNGN` | `POST /withdraw` |
+| `PAYOUT_FAILED` | `502` | Upstream payment provider (Paystack) rejected the payout; the balance is refunded and the withdrawal is recorded as `failed` | `POST /withdraw` |
+| `EMAIL_TAKEN` | `409` | Signup email already registered to a verified account | `POST /signup` |
+| `PHONE_TAKEN` | `409` | Signup phone already registered to a verified account | `POST /signup` |
+| `INVALID_CREDENTIALS` | `401` | Wrong password or unknown email on login; also any missing, malformed, or expired token on an authenticated route | `POST /login`, every auth-required endpoint |
+| `USER_NOT_FOUND` | `404` | Authenticated user no longer exists | Any auth-required endpoint (`GET /me`, `POST /wallet/create`, `GET /wallet`, `POST /payment-requests`, `GET /payment-requests`, `GET /balance`, `GET /transactions`, `POST /withdraw`, `GET /withdrawals`) |
+| `MERCHANT_NOT_FOUND` | `400` | Account has no merchant — send the user through onboarding | Any merchant-scoped endpoint (`GET /me`, `POST /wallet/create`, `GET /wallet`, `POST /payment-requests`, `GET /payment-requests`, `GET /balance`, `GET /transactions`, `POST /withdraw`, `GET /withdrawals`) |
+| `WALLET_NOT_FOUND` | `400` | No wallet yet, or none created before a payment-request call | `GET /wallet`, `POST /payment-requests` |
+| `PAYMENT_REQUEST_NOT_FOUND` | `404` | Payment request id doesn't exist | `GET /payment-requests/{id}` |
+| `FORBIDDEN` | `403` | Authenticated but not an admin, on an `/admin/*` route | `/admin/*` routes |
+| `OTP_INVALID` | `400` | Wrong code submitted to `/verify-otp` | `POST /verify-otp` |
+| `OTP_EXPIRED` | `400` | Code submitted after its 10-minute window | `POST /verify-otp` |
+| `OTP_CHALLENGE_NOT_FOUND` | `404` | Unknown or already-consumed `challenge_id` | `POST /verify-otp` |
+| `OTP_LOCKED` | `400` | 5 wrong attempts on this challenge — request a new one via `/signup` or `/login` | `POST /verify-otp` |
+| `TOO_MANY_REQUESTS` | `429` | OTP resent inside the 60s cooldown, or 5th+ send this hour | `POST /signup`, `POST /login` |
+| `INTERNAL_ERROR` | `500` | Unexpected server error; generic message only | Any endpoint |
+
+> **`INTERNAL_ERROR` is always a `500`.** The response body carries the fixed, safe message `"internal server error"` — never a stack trace, SQL error, or any other internal detail. Those are written to the server logs only. Treat a `500` as "something broke on our side, retry or report it," and never try to parse the `error` string for a cause.
 | Code | Status | When it's returned |
 |---|---|---|
 | `INVALID_PARAMETERS` | `400` | A required field is missing/malformed (e.g. short password, bad account_number/bank_code) |
