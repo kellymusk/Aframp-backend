@@ -3,7 +3,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha512;
 
-use super::OtpProvider;
+use super::{OtpError, OtpProvider};
 
 const BASE_URL: &str = "https://api.ng.termii.com/api";
 
@@ -86,6 +86,7 @@ struct SendResponse {
 
 #[async_trait]
 impl OtpProvider for TermiiProvider {
+    async fn send_sms(&self, phone: &str, message: &str) -> Result<(), OtpError> {
     async fn send_sms(&self, phone: &str, message: &str) -> Result<(), String> {
         // SECURITY (#1120 / #1122):
         // Termii's Messaging API requires `api_key` in the JSON body — their
@@ -125,17 +126,37 @@ impl OtpProvider for TermiiProvider {
             }))
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                if e.is_timeout() || e.is_connect() {
+                    OtpError::Transient(e.to_string())
+                } else {
+                    OtpError::Permanent(e.to_string())
+                }
+            })?;
 
         let status = response.status();
-        let raw = response.text().await.map_err(|e| e.to_string())?;
+        let raw = response.text().await.map_err(|e| {
+            if e.is_timeout() || e.is_connect() {
+                OtpError::Transient(e.to_string())
+            } else {
+                OtpError::Permanent(e.to_string())
+            }
+        })?;
         let body: SendResponse = serde_json::from_str(&raw).map_err(|e| {
-            format!("Termii returned an unexpected response (HTTP {status}): {e} — body: {raw}")
+            OtpError::Permanent(format!(
+                "Termii returned an unexpected response (HTTP {status}): {e} — body: {raw}"
+            ))
         })?;
 
         if !status.is_success() || body.code.as_deref() != Some("ok") {
             let message = body.message.unwrap_or_else(|| raw.clone());
-            return Err(format!("Termii error (HTTP {status}): {message}"));
+            let detail = format!("Termii error (HTTP {status}): {message}");
+            // 5xx (and 429 rate limiting) are worth retrying; 4xx like an
+            // invalid phone number are permanent and should not be retried.
+            if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(OtpError::Transient(detail));
+            }
+            return Err(OtpError::Permanent(detail));
         }
         Ok(())
     }

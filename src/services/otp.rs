@@ -52,6 +52,10 @@ const RESEND_COOLDOWN_SECS: i64 = 60;
 /// OTP isn't locked out by their own past successes.
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
+/// Number of retries for transient SMS send failures (network blips, 5xx).
+const SEND_MAX_RETRIES: u32 = 2;
+/// Delay between retries of a transient SMS send failure.
+const SEND_RETRY_DELAY_MS: u64 = 500;
 
 /// OTP retention policy: audit records are kept for 24 hours after the
 /// challenge's `expires_at` timestamp. This gives enough time for
@@ -335,6 +339,25 @@ impl OtpProvider for MockOtpProvider {
     Ok(VerifiedOutcome::Signup(user, merchant))
 }
 
+/// Sends the OTP SMS, retrying transient failures (network blips, provider
+/// 5xx) up to `SEND_MAX_RETRIES` times with a short delay. Permanent failures
+/// (e.g. 400 invalid phone) are returned immediately without retrying.
+async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
+    let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
+
+    let mut attempt = 0;
+    loop {
+        match otp.send_sms(phone, &message).await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.is_transient() && attempt < SEND_MAX_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(SEND_RETRY_DELAY_MS)).await;
+            }
+            Err(err) => return Err(OtpError::SendFailed(err.to_string())),
+        }
+    }
+}
+
 struct NewChallenge<'a> {
     purpose: &'static str,
     user_id: Option<Uuid>,
@@ -419,6 +442,9 @@ async fn upsert_challenge(
         return Ok((id, code));
     }
 
+    let recent_sends: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM otp_challenges
+          WHERE phone_number = $1 AND purpose = $2 AND created_at > now() - interval '1 hour'",
     // Only count fresh (unconsumed) challenges toward the hourly spam cap.
     // Successfully verified challenges are excluded so a merchant who has
     // already proven ownership of the phone isn't locked out by their own
@@ -432,6 +458,7 @@ async fn upsert_challenge(
     .bind(new.purpose)
     .fetch_one(db)
     .await?;
+    if recent_sends >= MAX_SENDS_PER_HOUR {
     if recent >= MAX_SENDS_PER_HOUR {
         return Err(OtpError::RateLimited);
     }
@@ -472,6 +499,11 @@ fn generate_code() -> String {
     let mut bytes = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut bytes);
     let n = u32::from_be_bytes(bytes) % 1_000_000;
+    format!("{n:06}")
+}
+
+fn hash_code(secret: &str, challenge_id: Uuid, code: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
     format!("{:06}", n)
 }
 
@@ -483,6 +515,19 @@ fn hash_code(hmac_secret: &str, challenge_id: Uuid, code: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+fn verify_code(secret: &str, challenge_id: Uuid, code: &str, expected_hash: &str) -> bool {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(challenge_id.as_bytes());
+    mac.update(code.as_bytes());
+    let computed = hex::encode(mac.finalize().into_bytes());
+    // Constant-time comparison to avoid leaking the hash via timing.
+    computed.len() == expected_hash.len()
+        && computed
+            .bytes()
+            .zip(expected_hash.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
 fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, expected_hash: &str) -> bool {
     let mut mac = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes())
         .expect("HMAC accepts keys of any length");
@@ -499,7 +544,32 @@ fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, expected_hash:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otp::OtpSendError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Provider that fails transiently on the first call, then succeeds.
+    struct FlakyProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl OtpProvider for FlakyProvider {
+        async fn send_sms(&self, _phone: &str, _message: &str) -> Result<(), OtpSendError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Err(OtpSendError::Transient("network timeout".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn send_code_retries_transient_failure_and_succeeds() {
+        let provider = FlakyProvider { calls: AtomicUsize::new(0) };
+        let result = send_code(&provider, "+15555550100", "123456").await;
+        assert!(result.is_ok(), "expected retry to succeed, got {result:?}");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     /// Demonstrates the difference between counting all challenges in the
     /// past hour vs only fresh (unconsumed) ones. The hourly spam cap query
     /// must exclude consumed challenges so verified merchants aren't locked

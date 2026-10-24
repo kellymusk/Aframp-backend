@@ -201,6 +201,43 @@ pub struct PaymentRequestWithWallet {
     pub network: String,
 }
 
+/// Optional `status` filter for the payment-request list endpoint.
+///
+/// Valid values are `pending`, `paid`, `partial`, and `expired`. For
+/// `pending`, the SQL additionally requires the request to be not yet expired
+/// so a POS terminal polling for active requests doesn't see stale rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentRequestStatusFilter {
+    Pending,
+    Paid,
+    Partial,
+    Expired,
+}
+
+impl PaymentRequestStatusFilter {
+    /// Parses a raw `?status=` query value. Returns `Ok(None)` when the value
+    /// is absent, and `Err(())` when it is present but not a valid status.
+    pub fn parse(raw: Option<&str>) -> Result<Option<Self>, ()> {
+        match raw {
+            None => Ok(None),
+            Some("pending") => Ok(Some(Self::Pending)),
+            Some("paid") => Ok(Some(Self::Paid)),
+            Some("partial") => Ok(Some(Self::Partial)),
+            Some("expired") => Ok(Some(Self::Expired)),
+            Some(_) => Err(()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Paid => "paid",
+            Self::Partial => "partial",
+            Self::Expired => "expired",
+        }
+    }
+}
+
 pub async fn payment_requests_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
@@ -259,11 +296,31 @@ pub async fn payment_requests_by_merchant(
 /// Keyset-paginated variant of [`payment_requests_by_merchant`]. Orders by
 /// `(created_at, id)` DESC so concurrent inserts can't shift rows across
 /// pages the way an OFFSET-based scan can.
+///
+/// When `status` is supplied the filter is applied at the SQL level. For
+/// `pending` the query also requires `expires_at > now()` so only active
+/// requests are returned. Pagination is unaffected: the keyset predicate and
+/// ordering are identical regardless of the filter.
 pub async fn payment_requests_by_merchant_cursor(
     db: &PgPool,
     merchant_id: Uuid,
     limit: i64,
     cursor: Option<crate::pagination::Cursor>,
+    status: Option<PaymentRequestStatusFilter>,
+) -> Result<Vec<PaymentRequestWithWallet>, sqlx::Error> {
+    // Build the status predicate once; `$1` is always merchant_id and the
+    // cursor/limit placeholders are appended after it.
+    let status_clause = match status {
+        None => "",
+        Some(PaymentRequestStatusFilter::Pending) => {
+            " AND pr.status = 'pending' AND pr.expires_at > now()"
+        }
+        Some(_) => " AND pr.status = $5",
+    };
+
+    match cursor {
+        Some(c) => {
+            let sql = format!(
     include_cancelled: bool,
 ) -> Result<Vec<PaymentRequestWithWallet>, sqlx::Error> {
     match (cursor, include_cancelled) {
@@ -275,18 +332,26 @@ pub async fn payment_requests_by_merchant_cursor(
                    FROM payment_requests pr
                    JOIN wallets w ON w.id = pr.wallet_id
                   WHERE pr.merchant_id = $1
+                    AND (pr.created_at, pr.id) < ($2, $3){status_clause}
                     AND w.address IS NOT NULL
                     AND (pr.created_at, pr.id) < ($2, $3)
                   ORDER BY pr.created_at DESC, pr.id DESC
-                  LIMIT $4",
-            )
-            .bind(merchant_id)
-            .bind(c.created_at)
-            .bind(c.id)
-            .bind(limit + 1)
-            .fetch_all(db)
-            .await
+                  LIMIT $4"
+            );
+            let mut query = sqlx::query_as::<_, PaymentRequestWithWallet>(&sql)
+                .bind(merchant_id)
+                .bind(c.created_at)
+                .bind(c.id)
+                .bind(limit + 1);
+            if let Some(s) = status {
+                if s != PaymentRequestStatusFilter::Pending {
+                    query = query.bind(s.as_str());
+                }
+            }
+            query.fetch_all(db).await
         }
+        None => {
+            let sql = format!(
         (Some(c), false) => {
             sqlx::query_as::<_, PaymentRequestWithWallet>(
                 "SELECT pr.id, pr.merchant_id, pr.wallet_id, pr.amount_stroops, pr.asset, pr.memo,
@@ -296,6 +361,7 @@ pub async fn payment_requests_by_merchant_cursor(
                         w.address, w.network
                    FROM payment_requests pr
                    JOIN wallets w ON w.id = pr.wallet_id
+                  WHERE pr.merchant_id = $1{status_clause}
                   WHERE pr.merchant_id = $1
                     AND pr.cancelled_at IS NULL
                     AND (pr.created_at, pr.id) < ($2, $3)
@@ -338,12 +404,17 @@ pub async fn payment_requests_by_merchant_cursor(
                   WHERE pr.merchant_id = $1
                     AND pr.cancelled_at IS NULL
                   ORDER BY pr.created_at DESC, pr.id DESC
-                  LIMIT $2",
-            )
-            .bind(merchant_id)
-            .bind(limit + 1)
-            .fetch_all(db)
-            .await
+                  LIMIT $2"
+            );
+            let mut query = sqlx::query_as::<_, PaymentRequestWithWallet>(&sql)
+                .bind(merchant_id)
+                .bind(limit + 1);
+            if let Some(s) = status {
+                if s != PaymentRequestStatusFilter::Pending {
+                    query = query.bind(s.as_str());
+                }
+            }
+            query.fetch_all(db).await
         }
     }
 }

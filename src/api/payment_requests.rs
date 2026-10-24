@@ -382,12 +382,17 @@ pub async fn list(
         ),
         None => None,
     };
+    let status = match params.status.as_deref() {
+        Some(raw) => Some(parse_status_filter(raw)?),
+        None => None,
+    };
 
     let rows = payment_requests::payment_requests_by_merchant_cursor(
         &state.db,
         merchant_id,
         limit,
         cursor,
+        status,
         include_cancelled,
     )
     .await
@@ -459,6 +464,22 @@ pub async fn cancel(
 pub struct ListParams {
     pub limit: Option<i64>,
     pub cursor: Option<String>,
+    pub status: Option<String>,
+}
+
+/// Validates the optional `?status=` filter. Only the four documented values
+/// are accepted; anything else is a client error rather than a silent no-op.
+fn parse_status_filter(raw: &str) -> ApiResult<payment_requests::PaymentRequestStatusFilter> {
+    match raw {
+        "pending" => Ok(payment_requests::PaymentRequestStatusFilter::Pending),
+        "paid" => Ok(payment_requests::PaymentRequestStatusFilter::Paid),
+        "partial" => Ok(payment_requests::PaymentRequestStatusFilter::Partial),
+        "expired" => Ok(payment_requests::PaymentRequestStatusFilter::Expired),
+        _ => Err(bad_request(
+            ErrorCode::InvalidParameters,
+            "status must be one of: pending, paid, partial, expired",
+        )),
+    }
     /// When true, include soft-deleted (cancelled) requests in the list.
     /// Default: false.
     pub include_cancelled: Option<bool>,
