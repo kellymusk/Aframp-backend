@@ -8,6 +8,7 @@ aes-gcm = "0.11.0"
 argon2 = "0.5"
 async-trait = "0.1"
 axum = "0.8"
+axum-extra = { version = "0.10", features = ["typed-header"] }
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 ed25519-dalek = "3.0.0"
@@ -16,21 +17,29 @@ hmac = "0.12"
 http = "1"
 jsonwebtoken = "9"
 mime = "0.3"
+qrcode = "0.14"
 rand = "0.8"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "query", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "derive"] }
 stellar-strkey = "0.0.18"
 thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio-util = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 tower-http = { version = "0.6", features = ["trace", "limit", "cors"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 arbitrary = { version = "1", features = ["derive"] }
+httpmock = "0.7"
+proptest = "1"
+insta = { version = "1", features = ["json"] }
 stellar-base = "0.7.0"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+wiremock = "0.6"

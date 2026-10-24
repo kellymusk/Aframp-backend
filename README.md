@@ -1,5 +1,7 @@
 # Aframp
 
+[![codecov](https://codecov.io/gh/kellymusk/Aframp-backend/branch/dev-backend/graph/badge.svg)](https://codecov.io/gh/kellymusk/Aframp-backend)
+
 **Building the POS network for Stellar in Africa.**
 
 Aframp brings Stellar-powered payments into everyday physical commerce, starting in Nigeria. The idea is simple: Nigerians already understand the POS terminal — tap, transfer, withdraw. Aframp adds another familiar option on top of that muscle memory: **scan and pay**, settled on Stellar, without the merchant or customer ever needing to think about wallets, addresses, or blockchains.
@@ -51,14 +53,44 @@ This section is deliberately literal: everything marked ✅ has been exercised e
 |---|---|
 | QR-based payment (cNGN) | `sep7_uri` is `null` for cNGN payment requests — there's no real cNGN issuer Stellar address configured, and a guessed one would silently misdirect a customer's payment. Works for XLM today; cNGN needs a real issuer address sourced first |
 | Real payout funding ("Stage A") | Paystack Transfers are wired and code-correct (see above), but Paystack's own business-account balance is ₦0 — `source: "balance"` transfers have nothing to draw from. Confirmed live: a real bank account + valid amount still failed with *"Your balance is not enough to fulfil this request."* Nothing pays out until there's a real crypto→fiat funding pipeline (e.g. cNGN issuer redemption) |
-| Confirmation-depth threshold | Deposits move `detected → verified → confirmed` immediately on detection — there's no real "wait N ledger confirmations" logic yet (Stellar has fast finality, so this matters less than on Bitcoin, but it's still an open TODO in `blockchain/worker.rs`) |
-| Settlement/sweep wallet | Each merchant's Stellar secret is held (encrypted) by the platform, but nothing yet sweeps funds from individual merchant wallets into a platform settlement wallet. `STELLAR_SYSTEM_WALLET_ADDRESS` is still validated at startup and reserved for this, but isn't used by anything yet |
+| Confirmation-depth threshold | Implemented, but shallow by default: each detected deposit records the ledger sequence it landed in, and the worker only promotes `pending → available` once `STELLAR_MIN_CONFIRMATIONS` (default `1`) ledger closes have passed. With the default of `1` that's effectively immediate on Stellar's fast finality; raising the setting is what actually buys reorg protection. There's no per-asset or per-merchant override yet |
+| Settlement/sweep wallet | Each merchant's Stellar secret is held (encrypted) by the platform, but nothing yet sweeps funds from individual merchant wallets into a platform settlement wallet. `STELLAR_SYSTEM_WALLET_ADDRESS` is still validated at startup and reserved for this, but isn't used by anything yet. See [`docs/settlement-sweep-wallet.md`](docs/settlement-sweep-wallet.md) for the full implementation plan (issue [#1276](https://github.com/kellymusk/Aframp-backend/issues/1276)) |
 | TLS | The server speaks plain HTTP by design and must run behind a TLS-terminating reverse proxy. Deployed without one, passwords cross the network in cleartext and no amount of hashing helps — the attacker sees the password before it is hashed. See [Deploying behind TLS](#deploying-behind-tls) |
 | Login rate limiting | Nothing throttles password guessing against `/login` yet |
 | Token revocation | `POST /logout` clears the browser cookie, but a JWT already copied elsewhere stays valid for its full 24h. No revocation list, no refresh rotation |
-| `src/stellar/mod.rs` | Vestigial stub from an earlier, abandoned design (single system wallet + memo-based correlation). Not compiled into the binary's active module tree in any meaningful way, superseded by the per-wallet design in `src/blockchain/`. Left in place as known cleanup debt rather than silently deleted. |
 
 See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider choice, cNGN issuer sourcing, confirmation policy) and roadmap.
+
+## Settlement/sweep wallet architecture
+
+`STELLAR_SYSTEM_WALLET_ADDRESS` is a required environment variable that is validated at startup, but **no code path uses it yet**. This section explains what it is for so contributors do not remove it thinking it is dead code.
+
+### What the sweep wallet is for
+
+Today every merchant has their own Stellar wallet. Deposits land directly into that wallet and are reflected in the merchant's balance. Withdrawals are sent from the platform's Paystack account. There is currently no automated bridge between the two rails — the crypto side and the fiat side are separate.
+
+The `STELLAR_SYSTEM_WALLET_ADDRESS` is the address of a **platform-owned Stellar wallet** that will act as the settlement/sweep point. When the sweep feature is built, funds will move:
+
+```
+merchant Stellar wallet → platform sweep wallet → Paystack → merchant bank account
+```
+
+### Planned sweep flow
+
+1. The deposit-detection worker detects a confirmed deposit into a merchant wallet.
+2. A sweep transaction moves the funds (XLM or cNGN) from the merchant wallet to the platform sweep wallet, signed with the merchant wallet's encrypted secret key.
+3. The platform now holds the funds on its own Stellar address.
+4. The fiat conversion pipeline (cNGN issuer redemption or XLM → NGN via an exchange) converts the Stellar balance to NGN.
+5. Paystack's balance is topped up with the NGN equivalent.
+6. Merchant withdrawal requests draw from Paystack's funded balance.
+
+### Current state
+
+Step 2 onwards is not implemented. `STELLAR_SYSTEM_WALLET_ADDRESS` is parsed and validated at startup (a startup-time check that the configured value is a valid Stellar `G...` address) so a misconfigured key is caught early rather than silently ignored. It is stored in `AppState` via `config.stellar_system_wallet` but no service reads it.
+
+**Do not remove this variable or the startup validation.** It is an intentional placeholder for a known upcoming feature, not dead code.
+
+<!-- TODO(#1272): wire STELLAR_SYSTEM_WALLET_ADDRESS into the sweep service once the fiat pipeline is ready. See docs/proposals/ for the sweep architecture. -->
 
 ## How it actually works today
 
@@ -68,6 +100,63 @@ See **[`PRD.md`](PRD.md)** for the full open-decisions list (payout provider cho
 - Merchants can withdraw their available balance (`/withdraw`) to a Nigerian bank account. The Paystack integration itself is real and tested; what's missing is money to actually send — see gaps above.
 
 The originally-planned memo-based correlation model (one shared system wallet, deposits routed by transaction memo) was replaced with real per-merchant wallets during development — simpler to reason about and matches how a QR-code-per-merchant product actually needs to work.
+
+## Architecture
+
+How data flows from merchant signup to payment detection and payout (#1240).
+
+### Signup and OTP verification
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor M as Merchant
+    participant API as Aframp API (Axum)
+    participant DB as Postgres
+    participant SMS as OTP provider (Termii / mock)
+
+    M->>API: POST /signup (email, password, phone)
+    API->>DB: INSERT user + merchant, store HMAC(OTP)
+    API->>SMS: send_sms(phone, code)
+    SMS-->>M: SMS with 6-digit code
+    M->>API: POST /verify-otp (phone, code)
+    API->>DB: compare HMAC, mark phone verified
+    API-->>M: JWT (cookie / bearer)
+    M->>API: POST /wallet/create
+    API->>API: generate Stellar keypair
+    API->>DB: INSERT wallet (public address, AES-256-GCM encrypted seed)
+    API-->>M: wallet address
+```
+
+### Payment detection and withdrawal
+
+```mermaid
+flowchart LR
+    subgraph Merchant side
+        M[Merchant] -->|POST /payment-requests| API
+        API -->|destination + memo + QR| M
+    end
+
+    C[Customer] -->|scans QR, sends XLM| ST[(Stellar network)]
+
+    subgraph Background worker
+        W[Deposit worker<br/>every STELLAR_POLL_INTERVAL_SECS]
+    end
+
+    W -->|poll payments per wallet| HZ[Horizon API]
+    HZ --> ST
+    W -->|INSERT payment, credit pending| DB[(Postgres<br/>payments / balances)]
+    W -->|after STELLAR_MIN_CONFIRMATIONS:<br/>pending → available,<br/>mark request paid| DB
+
+    M -->|GET /balance| API[Aframp API]
+    API --> DB
+    M -->|POST /withdraw| API
+    API -->|debit available WHERE available >= amount| DB
+    API -->|create transfer| PS[Paystack]
+    PS -->|NGN payout| BANK[Merchant bank account]
+    PS -->|webhook: success / failed| API
+    API -->|on failure: refund via apply_delta| DB
+```
 
 ## Tech stack
 
@@ -98,6 +187,9 @@ Fill in `.env`:
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | Postgres connection string |
+| `DB_MAX_CONNECTIONS` | no | `5` | Maximum size of the Postgres connection pool. Raise for production load; lower it on small managed Postgres tiers where the connection limit is shared across apps (e.g. Supabase free tier allows 15 total) |
+| `DB_MIN_CONNECTIONS` | no | `0` | Minimum number of idle connections kept open in the pool. Leave at `0` unless you want to avoid reconnect latency under steady load |
+| `DB_ACQUIRE_TIMEOUT_SECS` | no | `30` | How long a request waits for a free pooled connection before failing. Raise it if the pool is legitimately saturated; lower it to fail fast instead of queueing |
 | `APP_BIND_ADDR` | no | `127.0.0.1:3000` | Address the HTTP server binds to |
 | `JWT_SECRET` | yes | — | Secret used to sign merchant session tokens. Generate with `openssl rand -hex 32` |
 | `WEBHOOK_SECRET` | yes | — | Secret used to verify inbound provider webhooks. Generate with `openssl rand -hex 32` |
@@ -105,7 +197,13 @@ Fill in `.env`:
 | `STELLAR_SYSTEM_WALLET_ADDRESS` | yes | — | Reserved for a future platform settlement/sweep wallet. Validated at startup but not used by deposit detection today (see [Status](#status-real-progress-not-aspiration)) |
 | `STELLAR_HORIZON_URL` | no | `https://horizon-testnet.stellar.org` | Horizon endpoint to poll |
 | `STELLAR_POLL_INTERVAL_SECS` | no | `60` | How often the deposit-detection worker polls Horizon, per wallet |
+| `STELLAR_MIN_CONFIRMATIONS` | no | `1` | Number of ledger closes a detected deposit must wait for before it is promoted from `pending` to `available` balance. `1` credits as soon as the deposit's ledger is closed; raise it to hold deposits longer against reorgs |
 | `PAYSTACK_SECRET_KEY` | yes | — | Paystack Dashboard → Settings → API Keys & Webhooks. `sk_test_...` for dev, `sk_live_...` only once the business is verified/activated for Transfers (see `PRD.md` §9.1) |
+| `TERMII_WEBHOOK_SECRET` | no | — | Secret used to verify the `X-Termii-Signature` header on `/webhooks/termii` (HMAC-SHA512). Set this to the webhook secret from your Termii dashboard. If absent, verification falls back to `TERMII_API_KEY` and the server logs a startup warning — see [Termii webhook](#termii-webhook) |
+| `OTP_HMAC_SECRET` | yes | — | HMAC secret used to store OTP codes securely. A bare hash of a 6-digit code is trivially reversible — this secret makes it infeasible. Generate with `openssl rand -hex 32`. Never reuse this value for anything else |
+| `OTP_PROVIDER` | no | `termii` | `mock` logs the OTP to stdout instead of sending it (read it from `cargo run` output — no Termii account needed). `termii` sends a real SMS. Always use `mock` in local dev |
+| `TERMII_API_KEY` | no | — | Termii Dashboard → API Keys. Required only when `OTP_PROVIDER=termii` |
+| `TERMII_SENDER_ID` | no | `Aframp` | Sender name shown on the SMS. Must match an ID registered and approved in the Termii dashboard. Ignored when `OTP_PROVIDER=mock` |
 | `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
 | `COOKIE_SAME_SITE` | no | `lax` | `lax` or `none`. `none` (which forces `Secure`) is only for a frontend on a different origin, and lets the session ride cross-site requests — prefer serving the frontend same-origin |
@@ -140,6 +238,8 @@ See **[`command.txt`](command.txt)** for a copy-paste reference of every command
 
 ### Cloudflare Containers
 
+> **Deploying to production?** See **[DEPLOY.md](DEPLOY.md)** for the full guide: prerequisites, secrets, the environment-variable checklist, the single-instance constraint, the cron keepalive, Caddy, and post-deploy verification. The summary below is kept for quick reference.
+
 This repository includes a Cloudflare Container deployment scaffold. It runs the existing Axum binary in a single named container, with the `aframp-backend` Worker acting as the public HTTPS proxy. The single instance is intentional: multiple instances would each run the Stellar polling loop and duplicate work.
 
 Before deploying:
@@ -154,7 +254,22 @@ Before deploying:
    npx wrangler secret put WALLET_ENCRYPTION_KEY
    npx wrangler secret put STELLAR_SYSTEM_WALLET_ADDRESS
    npx wrangler secret put PAYSTACK_SECRET_KEY
+   npx wrangler secret put TERMII_WEBHOOK_SECRET   # only if Termii is used in production
+   npx wrangler secret put OTP_HMAC_SECRET
+   # Required when OTP_PROVIDER=termii (the production default). Skip only if
+   # you deliberately set OTP_PROVIDER=mock for a non-production deploy.
+   npx wrangler secret put TERMII_API_KEY
+   npx wrangler secret put TERMII_SENDER_ID
    ```
+
+   These match every required var in `AppConfig::from_env()`: `DATABASE_URL`,
+   `JWT_SECRET`, `WEBHOOK_SECRET`, `STELLAR_SYSTEM_WALLET_ADDRESS`,
+   `WALLET_ENCRYPTION_KEY`, `PAYSTACK_SECRET_KEY`, and `OTP_HMAC_SECRET` are
+   always required at startup. `TERMII_API_KEY` and `TERMII_SENDER_ID` are
+   required whenever `OTP_PROVIDER` is `termii` (default). Optional vars with
+   defaults (`APP_BIND_ADDR`, `STELLAR_HORIZON_URL`, `STELLAR_POLL_INTERVAL_SECS`,
+   `OTP_PROVIDER`, `CORS_ALLOWED_ORIGINS`, `COOKIE_SECURE`, `COOKIE_SAME_SITE`)
+   can stay as Worker plain-text vars in `wrangler.jsonc`.
 
 3. Run the SQL migrations against the production database, then deploy:
 
@@ -167,14 +282,39 @@ Before deploying:
 
 The Worker has a five-minute Cron Trigger that calls `/health`. This keeps the container awake so its 60-second Stellar polling loop continues when there is no API traffic. Cloudflare may take several minutes to provision the first container after deployment.
 
+### Container keep-alive (`/health`) — #1130
+
+| Piece | Where | Role |
+|---|---|---|
+| Path constant | [`scripts/health_path.ts`](scripts/health_path.ts) (`HEALTH_CHECK_PATH = "/health"`) | Single documented source of truth for contributors |
+| Rust liveness route | `src/lib.rs` → `GET /health` → `204 No Content` | What the cron must hit |
+| Worker cron | `cloudflare/worker.ts` → `scheduled()` fetches `http://container.internal/health` | Wakes the container every tick |
+| Schedule | `wrangler.jsonc` → `triggers.crons: ["*/5 * * * *"]` | Every five minutes |
+| Contract test | `tests/health_keepalive.rs` | Fails CI if the Worker / Rust path / constant drift |
+| Monitor | [`.github/workflows/health-monitor.yml`](.github/workflows/health-monitor.yml) | Every 10 minutes probes `HEALTH_CHECK_URL/health` (repo variable); alerts if it stops responding |
+
+**Dependency:** if `/health` is renamed or stops returning a success status (`204`, or `200` behind some proxies), the keep-alive cron no longer proves the container is alive and Stellar polling can stall when there is no API traffic. Update the constant, Worker, Rust route, and monitor together.
+
+Set the GitHub Actions repository variable `HEALTH_CHECK_URL` to your deployed Worker origin (no trailing slash) to enable the 10-minute monitor.
+
 ### Running tests
 
-Integration tests need a separate database, and **silently skip with a false "ok" if it isn't configured** — this bit us during development (a full green `cargo test` run had actually tested nothing). Always set `TEST_DATABASE_URL` before trusting the result:
+Integration tests need a separate database. When `TEST_DATABASE_URL` is not set, tests **no longer pass silently** — each one prints `skipping: TEST_DATABASE_URL not set` to stderr and exits without exercising anything, so a green run with no database configured is visibly a run of skips, not a run of passes. Always set `TEST_DATABASE_URL` before trusting the result:
 
 ```bash
 docker exec -i aframp-postgres psql -U postgres -c "CREATE DATABASE aframp_test;"
 TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test cargo test
 ```
+
+To confirm tests actually ran (rather than skipped), look for the `skipping: TEST_DATABASE_URL not set` lines — if any appear, the run exercised nothing. CI enforces this: the workflow asserts `TEST_DATABASE_URL` is set before running tests and fails loudly otherwise.
+
+Tests that require a database are marked `#[ignore]` so they don't masquerade as passing when the environment isn't configured. Run them explicitly with:
+
+```bash
+cargo test -q --ignored
+```
+
+`-q` keeps the output to the test results, and `--ignored` runs only the ignored (database-backed) tests — the same set CI runs once `TEST_DATABASE_URL` is present.
 
 ## API reference
 
@@ -198,6 +338,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 | `POST` | `/payment-requests` | ✅ | Create a payment request for the authenticated merchant's wallet. Body: `{ amount_stroops, asset? (default XLM), expires_in_secs? (60–86400, default 900) }` |
 | `GET` | `/payment-requests?limit=` | ✅ | List the merchant's own requests, newest first (default 50, max 200) |
 | `GET` | `/payment-requests/{id}` | — | Deliberately public — a customer's wallet needs to read amount/destination/status before paying. Includes `sep7_uri` for XLM requests (`null` for cNGN — no issuer address configured yet) |
+| `GET` | `/payment-requests/{id}/status` | — | Deliberately public, lightweight polling endpoint returning only `{ id, status, paid_at }` — use this instead of the full request object for high-frequency status polling |
+| `GET` | `/payment-requests/{id}/status` | — | Public lightweight poll — `{ status, paid_at? }` with `Cache-Control: public, max-age=5`. Prefer this after the customer has submitted payment |
 | `POST` | `/withdraw` | ✅ | Debit available balance, record a withdrawal, and call Paystack Transfers. Body: `{ amount_stroops, asset? (cNGN only), bank_code, account_number }`. **Note:** the Paystack call is real, but nothing actually pays out yet — Paystack's own account balance is unfunded (Stage A gap) — see [Status](#status-real-progress-not-aspiration) |
 | `GET` | `/withdrawals?limit=` | ✅ | List the merchant's withdrawals, including `failure_reason` on failed ones |
 | `GET` | `/health` | — | Liveness check (`204 No Content`) |
@@ -216,6 +358,8 @@ Authenticated routes accept either the `aframp_session` HttpOnly cookie (set by 
 
 Local dev never needs a real Termii account: set `OTP_PROVIDER=mock` (see `.env.example`) and the code is logged via `tracing::info!` instead of sent, so you can read it straight out of `cargo run`'s stdout.
 
+OTP / Termii credential handling (API key in request body, HTTPS-only send URL, Token API notes) is documented in [docs/SECURITY.md](docs/SECURITY.md).
+
 ### Admin access
 
 There's no self-service way to become an admin — flag a user directly in Postgres:
@@ -224,13 +368,13 @@ There's no self-service way to become an admin — flag a user directly in Postg
 UPDATE users SET is_admin = true WHERE email = 'you@example.com';
 ```
 
-The `is_admin` flag is baked into the JWT at login, so **re-login after flipping it** (or revoking it) — outstanding tokens keep whatever `is_admin` value they were signed with for up to 24h (`TOKEN_TTL_HOURS`). Then open `/admin` in a browser and sign in with that account.
+The `is_admin` flag is also baked into the JWT at login, so **re-login after granting it**. Revoking it takes effect immediately: every admin request re-checks `users.is_admin` in the database, so an outstanding token stops working for `/admin/*` on its next request even though it hasn't expired. Then open `/admin` in a browser and sign in with that account.
 
 ### Termii webhook
 
 Register `https://<your-deployed-host>/webhooks/termii` at [termii.com/account/webhook/config](https://termii.com/account/webhook/config) — it's one account-wide setting, not something passed per API call. Termii POSTs SMS delivery-status events (`Delivered`, `Message Failed`, `Rejected`, etc. — see [their docs](https://developers.termii.com/events-and-reports)) there, signed with `X-Termii-Signature` (HMAC-SHA512). This endpoint verifies that signature and logs the event; it doesn't yet correlate a delivery status back to the `otp_challenges` row that sent it — that'd need the provider's `message_id` captured at send time and a column to hold it, which nothing does today.
 
-**Their docs don't say which secret signs the header** — "your secret key," unspecified. This verifies against `TERMII_API_KEY`, the only secret both sides are known to share. If real Termii traffic starts failing signature checks, that assumption is the first thing to check against the dashboard.
+**Which secret signs the header:** set `TERMII_WEBHOOK_SECRET` to the webhook secret shown in your Termii dashboard, and the signature is verified against that. If `TERMII_WEBHOOK_SECRET` is unset, the server falls back to `TERMII_API_KEY` — Termii's docs only say "your secret key," unspecified — and logs a startup warning so the fallback is never silent. Prefer the dedicated secret: it keeps the API key out of the webhook path, so rotating one doesn't break the other. If real Termii traffic starts failing signature checks, confirm which secret the dashboard signs with before anything else.
 
 **Known gap since OTP shipped:** the `/admin` page's login form only knows the old one-step `/login` → cookie flow. An admin account created *before* OTP existed (no `phone_number` on the row) still logs in through it fine. An admin account with a phone number now gets a challenge response back instead of a session, and the dashboard has no code-entry step to handle that — it'll appear to fail to log in. Until the dashboard is updated, keep your admin account phone-less, or drive `/login` → `/verify-otp` manually with `curl`/Postman and paste the resulting cookie in by hand.
 
@@ -257,9 +401,13 @@ pay.example.com {
 }
 ```
 
-Caddy provisions and renews the certificate itself. With this, the frontend calls `/api/me` as a relative path, sends no `Authorization` header, and never touches the token.
+Caddy provisions and renews the certificate itself. The `Strict-Transport-Security` line above is what enforces HTTPS on repeat visits: the Axum app does **not** set HSTS itself today, so if you deploy without Caddy (or with a proxy that doesn't add it), add `Strict-Transport-Security: max-age=31536000; includeSubDomains` at your proxy. The plan is for the app to emit it whenever `COOKIE_SECURE=true` and skip it in plain-HTTP dev mode — see [`docs/proposals/1248-hsts-header.md`](docs/proposals/1248-hsts-header.md). With this, the frontend calls `/api/me` as a relative path, sends no `Authorization` header, and never touches the token.
 
 If the frontend genuinely must live on a separate origin, set `CORS_ALLOWED_ORIGINS` to it and `COOKIE_SAME_SITE=none` — and understand that you have then opted into cross-site cookie sending and need to think about CSRF. (Today's saving grace is that every mutating route uses the JSON extractor, so a cross-site HTML form POST can't reach one; don't rely on that if you add form-encoded endpoints.)
+
+## Metrics
+
+There is no `/metrics` endpoint yet. The planned design — Prometheus text format on a separate `APP_METRICS_ADDR` listener (disabled by default, never on the public port) with deposit-worker and auth instrumentation — is in [`docs/proposals/1250-prometheus-metrics.md`](docs/proposals/1250-prometheus-metrics.md).
 
 ## Project layout
 
@@ -272,7 +420,6 @@ src/
   models/      Request/response and row types
   services/    Business logic (users, wallets, balances, payments, payment_requests, withdrawals)
   payments/    PaymentProvider abstraction — real PaystackProvider + a MockProvider for tests
-  stellar/     Vestigial unused stub from an earlier design — see Status
 migrations/    SQL schema migrations (sqlx)
 tests/         Integration tests (auth, wallet, payment request, withdrawal flows)
 examples/      prove_payment_loop.rs — end-to-end demo harness (real testnet payment)
@@ -285,6 +432,26 @@ command.txt    Copy-paste command reference for running/testing/interacting with
 
 Nigeria has a large digital-payments ecosystem and near-universal familiarity with POS and bank-transfer payments — the exact behavior Aframp is extending rather than replacing. The plan is to prove the merchant payment experience narrowly here, then expand to other African markets and cross-border corridors.
 
+## Security
+
+Found a vulnerability? Please do not open a public issue. See **[`SECURITY.md`](SECURITY.md)** for how to report it privately and what response times to expect.
+## Architecture Decision Records
+
+The `docs/adr/` directory documents the reasoning behind key design choices —
+not just what was built, but why, and what was ruled out. Read these before
+making changes that touch the areas they cover.
+
+| ADR | Decision |
+|-----|----------|
+| [ADR-001](docs/adr/ADR-001-custodial-wallet-design.md) | Per-merchant custodial wallets (vs. single system wallet + memo correlation) |
+| [ADR-002](docs/adr/ADR-002-otp-gated-signup.md) | Phone OTP gates account creation, not just session issuance; full 2FA on login |
+| [ADR-003](docs/adr/ADR-003-hmac-otp-storage.md) | HMAC-SHA256 for OTP codes (not bcrypt/Argon2 — 6-digit space makes KDFs useless) |
+| [ADR-004](docs/adr/ADR-004-commit-before-paystack.md) | Commit withdrawal record before calling Paystack; compensate on failure |
+
 ## Contributing
 
-This project is under active MVP development — expect the API and schema to change as real payout funding, a real cNGN issuer address, and settlement sweeping land. Open an issue or PR against `master`.
+This project is under active MVP development — expect the API and schema to change as real payout funding, a real cNGN issuer address, and settlement sweeping land. Open an issue or PR against `dev-backend`.
+
+Before opening a PR, read **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the dev
+setup, the `dev-backend` contribution branch, protected paths, commit/PR
+conventions, and the checklist reviewers expect.

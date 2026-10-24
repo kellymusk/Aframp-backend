@@ -1,7 +1,10 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::models::status::PaymentStatus;
 use crate::models::{NewPayment, Payment, UpdatePaymentStatus};
+
+const PAYMENT_COLUMNS: &str = "id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at";
 
 #[derive(Debug, thiserror::Error)]
 pub enum PaymentError {
@@ -12,13 +15,133 @@ pub enum PaymentError {
 }
 
 pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment, PaymentError> {
+    let existing = sqlx::query_as!(
+        Payment,
+    let existing = sqlx::query_as::<_, Payment>(&format!(
+        "SELECT {PAYMENT_COLUMNS}
+/// Records a deposit, returning the payment row together with a flag that is
+/// `true` when the row was freshly inserted and `false` when an existing row
+/// was returned by the `tx_hash` idempotency check.
+///
+/// Callers must gate any balance mutation on the returned flag: a `false`
+/// value means this deposit has already been observed (possibly by an earlier
+/// poll cycle that crashed before completing), so re-applying a balance delta
+/// would double-credit the merchant.
+pub async fn record_deposit(
+    db: &PgPool,
+    payment: NewPayment,
+) -> Result<(Payment, bool), PaymentError> {
+    let existing = sqlx::query_as::<_, Payment>(
+        "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                network, status, confirmations, created_at, updated_at
+           FROM payments
+          WHERE tx_hash = $1",
+        payment.tx_hash
+    )
+    ))
+    .bind(&payment.tx_hash)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some(p) = existing {
+        return Ok((p, false));
+    }
+
+    sqlx::query_as!(
+        Payment,
+    sqlx::query_as::<_, Payment>(&format!(
+        "INSERT INTO payments (
+             merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'detected')
+         RETURNING {PAYMENT_COLUMNS}",
+    ))
+    let inserted = sqlx::query_as::<_, Payment>(
+        "INSERT INTO payments (
+             merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                   network, status, confirmations, created_at, updated_at",
+        payment.merchant_id,
+        payment.wallet_id,
+        payment.wallet_address,
+        payment.tx_hash,
+        payment.amount_stroops,
+        payment.asset,
+        payment.network
+    )
+    .bind(payment.merchant_id)
+    .bind(payment.wallet_id)
+    .bind(&payment.wallet_address)
+    .bind(&payment.tx_hash)
+    .bind(payment.amount_stroops)
+    .bind(&payment.asset)
+    .bind(&payment.network)
+    .bind(PaymentStatus::Detected)
+    .fetch_one(db)
+    .await
+    .map_err(PaymentError::Database)?;
+
+    Ok((inserted, true))
+}
+
+pub async fn set_status(
+    db: &PgPool,
+    id: Uuid,
+    new_status: UpdatePaymentStatus,
+) -> Result<Option<Payment>, sqlx::Error> {
+    let status = match new_status {
+        UpdatePaymentStatus::Verified => PaymentStatus::Verified,
+        UpdatePaymentStatus::Confirmed => PaymentStatus::Confirmed,
+        UpdatePaymentStatus::Failed => PaymentStatus::Failed,
+    };
+    sqlx::query_as!(
+        Payment,
+        "UPDATE payments
+            SET status = $2, updated_at = now()
+          WHERE id = $1
+          RETURNING id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                    network, status, confirmations, created_at, updated_at",
+        id,
+        status
+    )
+    sqlx::query_as::<_, Payment>(&format!(
+        "UPDATE payments
+            SET status = $2, updated_at = now()
+          WHERE id = $1
+          RETURNING {PAYMENT_COLUMNS}",
+    ))
+    .bind(id)
+    .bind(status)
+    .fetch_optional(db)
+    .await
+}
+
+/// Records a sweep transaction in the payments table with a `sweep` type.
+///
+/// A sweep moves a merchant's custodial balance to the consolidated
+/// settlement wallet (`STELLAR_SYSTEM_WALLET_ADDRESS`). The row is keyed by
+/// the on-chain sweep `tx_hash` so retries are idempotent, mirroring
+/// [`record_deposit`].
+#[allow(clippy::too_many_arguments)]
+pub async fn record_sweep(
+    db: &PgPool,
+    merchant_id: Uuid,
+    wallet_id: Uuid,
+    wallet_address: &str,
+    tx_hash: &str,
+    amount_stroops: i64,
+    asset: &str,
+    network: &str,
+) -> Result<Payment, PaymentError> {
     let existing = sqlx::query_as::<_, Payment>(
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                 network, status, confirmations, created_at, updated_at
            FROM payments
           WHERE tx_hash = $1",
     )
-    .bind(&payment.tx_hash)
+    .bind(tx_hash)
     .fetch_optional(db)
     .await?;
 
@@ -28,45 +151,23 @@ pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment,
 
     sqlx::query_as::<_, Payment>(
         "INSERT INTO payments (
-             merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status
+             merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network,
+             status, payment_type
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'detected')
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'confirmed', 'sweep')
          RETURNING id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                    network, status, confirmations, created_at, updated_at",
     )
-    .bind(payment.merchant_id)
-    .bind(payment.wallet_id)
-    .bind(&payment.wallet_address)
-    .bind(&payment.tx_hash)
-    .bind(payment.amount_stroops)
-    .bind(&payment.asset)
-    .bind(&payment.network)
+    .bind(merchant_id)
+    .bind(wallet_id)
+    .bind(wallet_address)
+    .bind(tx_hash)
+    .bind(amount_stroops)
+    .bind(asset)
+    .bind(network)
     .fetch_one(db)
     .await
     .map_err(PaymentError::Database)
-}
-
-pub async fn set_status(
-    db: &PgPool,
-    id: Uuid,
-    new_status: UpdatePaymentStatus,
-) -> Result<Option<Payment>, sqlx::Error> {
-    let status = match new_status {
-        UpdatePaymentStatus::Verified => "verified",
-        UpdatePaymentStatus::Confirmed => "confirmed",
-        UpdatePaymentStatus::Failed => "failed",
-    };
-    sqlx::query_as::<_, Payment>(
-        "UPDATE payments
-            SET status = $2, updated_at = now()
-          WHERE id = $1
-          RETURNING id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
-                    network, status, confirmations, created_at, updated_at",
-    )
-    .bind(id)
-    .bind(status)
-    .fetch_optional(db)
-    .await
 }
 
 pub async fn payments_by_merchant(
@@ -74,14 +175,20 @@ pub async fn payments_by_merchant(
     merchant_id: Uuid,
     limit: i64,
 ) -> Result<Vec<Payment>, sqlx::Error> {
-    sqlx::query_as::<_, Payment>(
+    sqlx::query_as!(
+        Payment,
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                 network, status, confirmations, created_at, updated_at
+    sqlx::query_as::<_, Payment>(&format!(
+        "SELECT {PAYMENT_COLUMNS}
            FROM payments
           WHERE merchant_id = $1
           ORDER BY created_at DESC
           LIMIT $2",
+        merchant_id,
+        limit
     )
+    ))
     .bind(merchant_id)
     .bind(limit)
     .fetch_all(db)
@@ -90,24 +197,36 @@ pub async fn payments_by_merchant(
 
 /// Keyset-paginated variant of [`payments_by_merchant`]. Orders by
 /// `(created_at, id)` DESC so concurrent inserts can't shift rows across
-/// pages the way an OFFSET-based scan can.
+/// pages the way an OFFSET-based scan can. `asset` and `status` are optional
+/// filters; they are applied in the same WHERE clause as the keyset predicate
+/// so pagination stays correct when filtering.
 pub async fn payments_by_merchant_cursor(
     db: &PgPool,
     merchant_id: Uuid,
     limit: i64,
     cursor: Option<crate::pagination::Cursor>,
+    asset: Option<&str>,
+    status: Option<&str>,
 ) -> Result<Vec<Payment>, sqlx::Error> {
     match cursor {
         Some(c) => {
-            sqlx::query_as::<_, Payment>(
+            sqlx::query_as!(
+                Payment,
                 "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                         network, status, confirmations, created_at, updated_at
+            sqlx::query_as::<_, Payment>(&format!(
+                "SELECT {PAYMENT_COLUMNS}
                    FROM payments
                   WHERE merchant_id = $1
                     AND (created_at, id) < ($2, $3)
                   ORDER BY created_at DESC, id DESC
                   LIMIT $4",
+                merchant_id,
+                c.created_at,
+                c.id,
+                limit + 1
             )
+            ))
             .bind(merchant_id)
             .bind(c.created_at)
             .bind(c.id)
@@ -116,14 +235,20 @@ pub async fn payments_by_merchant_cursor(
             .await
         }
         None => {
-            sqlx::query_as::<_, Payment>(
+            sqlx::query_as!(
+                Payment,
                 "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                         network, status, confirmations, created_at, updated_at
+            sqlx::query_as::<_, Payment>(&format!(
+                "SELECT {PAYMENT_COLUMNS}
                    FROM payments
                   WHERE merchant_id = $1
                   ORDER BY created_at DESC, id DESC
                   LIMIT $2",
+                merchant_id,
+                limit + 1
             )
+            ))
             .bind(merchant_id)
             .bind(limit + 1)
             .fetch_all(db)
@@ -133,13 +258,118 @@ pub async fn payments_by_merchant_cursor(
 }
 
 pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sqlx::Error> {
-    sqlx::query_as::<_, Payment>(
+    sqlx::query_as!(
+        Payment,
         "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
                 network, status, confirmations, created_at, updated_at
            FROM payments
           WHERE id = $1",
+        id
     )
+    sqlx::query_as::<_, Payment>(
+        "SELECT id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset,
+                network, status, confirmations, created_at, updated_at
+           FROM payments
+          WHERE merchant_id = $1
+            AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3::uuid))
+            AND ($4::text IS NULL OR asset = $4)
+            AND ($5::text IS NULL OR status = $5)
+          ORDER BY created_at DESC, id DESC
+          LIMIT $6",
+    )
+    .bind(merchant_id)
+    .bind(cursor.as_ref().map(|c| c.created_at))
+    .bind(cursor.as_ref().map(|c| c.id))
+    .bind(asset)
+    .bind(status)
+    .bind(limit + 1)
+    .fetch_all(db)
+    .await
+}
+
+pub async fn payment_by_id(db: &PgPool, id: Uuid) -> Result<Option<Payment>, sqlx::Error> {
+    sqlx::query_as::<_, Payment>(&format!(
+        "SELECT {PAYMENT_COLUMNS}
+           FROM payments
+          WHERE id = $1",
+    ))
     .bind(id)
     .fetch_optional(db)
     .await
+}
+
+/// Merchant notification preferences relevant to deposit alerts.
+///
+/// Notifications are opt-in: a merchant only receives a deposit email when
+/// `deposit_email_enabled` is true. `unsubscribe_token` is a stable, opaque
+/// value embedded in the email's unsubscribe link so merchants can opt out
+/// without authenticating (GDPR-compliant one-click unsubscribe).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MerchantNotificationPrefs {
+    pub merchant_id: Uuid,
+    pub email: Option<String>,
+    pub deposit_email_enabled: bool,
+    pub unsubscribe_token: Uuid,
+}
+
+/// Loads the notification preferences for a merchant. Returns `None` when the
+/// merchant has no preferences row yet (i.e. has never opted in).
+pub async fn merchant_notification_prefs(
+    db: &PgPool,
+    merchant_id: Uuid,
+) -> Result<Option<MerchantNotificationPrefs>, sqlx::Error> {
+    sqlx::query_as::<_, MerchantNotificationPrefs>(
+        "SELECT merchant_id, email, deposit_email_enabled, unsubscribe_token
+           FROM merchant_notification_prefs
+          WHERE merchant_id = $1",
+    )
+    .bind(merchant_id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Opts a merchant in (or out) of deposit email notifications. Creates the
+/// preferences row on first call, generating a stable unsubscribe token.
+pub async fn set_deposit_email_enabled(
+    db: &PgPool,
+    merchant_id: Uuid,
+    email: &str,
+    enabled: bool,
+) -> Result<MerchantNotificationPrefs, sqlx::Error> {
+    sqlx::query_as::<_, MerchantNotificationPrefs>(
+        "INSERT INTO merchant_notification_prefs (
+             merchant_id, email, deposit_email_enabled, unsubscribe_token
+         )
+         VALUES ($1, $2, $3, gen_random_uuid())
+         ON CONFLICT (merchant_id) DO UPDATE
+            SET email = EXCLUDED.email,
+                deposit_email_enabled = EXCLUDED.deposit_email_enabled,
+                updated_at = now()
+         RETURNING merchant_id, email, deposit_email_enabled, unsubscribe_token",
+    )
+    .bind(merchant_id)
+    .bind(email)
+    .bind(enabled)
+    .fetch_one(db)
+    .await
+}
+
+/// Disables deposit email notifications using the opaque unsubscribe token
+/// from the email link. Returns `true` when a matching opt-in was disabled.
+/// This is the GDPR-compliant one-click unsubscribe path and requires no
+/// authentication.
+pub async fn unsubscribe_deposit_email(
+    db: &PgPool,
+    token: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE merchant_notification_prefs
+            SET deposit_email_enabled = false, updated_at = now()
+          WHERE unsubscribe_token = $1
+            AND deposit_email_enabled = true",
+    )
+    .bind(token)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
