@@ -3,15 +3,68 @@ use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
 
+/// Multi-level admin role used for field-level access control.
+///
+/// - `super_admin`: full access to all admin data
+/// - `support`: PII-heavy endpoints (e.g. user emails), no financial data
+/// - `finance`: financial data (withdrawals, overview balances), no PII
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminRole {
+    SuperAdmin,
+    Support,
+    Finance,
+}
+
+impl AdminRole {
+    /// Parse the `admin_role` claim stored on the user record.
+    ///
+    /// Unknown or missing values fall back to the least-privileged role so a
+    /// misconfigured admin never gains access to sensitive data by default.
+    pub fn from_claim(claim: Option<&str>) -> Self {
+        match claim {
+            Some("super_admin") => AdminRole::SuperAdmin,
+            Some("finance") => AdminRole::Finance,
+            Some("support") => AdminRole::Support,
+            _ => AdminRole::Support,
+        }
+    }
+
+    /// Whether this role may view financial data (withdrawals, overview balances).
+    pub fn can_view_financials(self) -> bool {
+        matches!(self, AdminRole::SuperAdmin | AdminRole::Finance)
+    }
+
+    /// Whether this role may view PII-heavy data (user emails, etc.).
+    pub fn can_view_pii(self) -> bool {
+        matches!(self, AdminRole::SuperAdmin | AdminRole::Support)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct AdminUserRow {
     pub id: Uuid,
     pub email: String,
     pub name: String,
     pub is_admin: bool,
+    pub admin_role: Option<String>,
     pub created_at: DateTime<Utc>,
     pub merchant_id: Option<Uuid>,
     pub merchant_name: Option<String>,
+}
+
+impl AdminUserRow {
+    /// Resolve the caller's admin role from the stored claim.
+    pub fn admin_role(&self) -> AdminRole {
+        AdminRole::from_claim(self.admin_role.as_deref())
+    }
+
+    /// Redact PII fields when the caller's role is not allowed to see them.
+    pub fn redact_for(&mut self, role: AdminRole) {
+        if !role.can_view_pii() {
+            self.email = "[redacted]".to_string();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -104,4 +157,80 @@ pub struct AdminOverview {
     pub payments_by_status: Vec<StatusCount>,
     pub withdrawals_by_status: Vec<StatusCount>,
     pub payment_requests_by_status: Vec<StatusCount>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for issue #1209: a merchant with multiple wallets must
+    /// not be duplicated in the admin merchants listing. The query must return
+    /// exactly one row per merchant, with a single deterministic wallet_address.
+    #[sqlx::test]
+    async fn admin_merchants_returns_one_row_per_merchant_with_multiple_wallets(
+        pool: sqlx::PgPool,
+    ) {
+        let owner_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO users (id, email, name, is_admin, created_at)
+            VALUES ($1, $2, $3, false, NOW())
+            "#,
+        )
+        .bind(owner_id)
+        .bind("owner@example.com")
+        .bind("Owner")
+        .execute(&pool)
+        .await
+        .expect("insert owner");
+
+        let merchant_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO merchants (id, name, owner_user_id, created_at)
+            VALUES ($1, $2, $3, NOW())
+            "#,
+        )
+        .bind(merchant_id)
+        .bind("Multi Wallet Merchant")
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .expect("insert merchant");
+
+        // Two wallets for the same merchant (the API does not prevent this).
+        for address in ["GADDR_ONE", "GADDR_TWO"] {
+            sqlx::query(
+                r#"
+                INSERT INTO wallets (id, merchant_id, address, network, created_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(merchant_id)
+            .bind(address)
+            .bind("testnet")
+            .execute(&pool)
+            .await
+            .expect("insert wallet");
+        }
+
+        let rows: Vec<AdminMerchantRow> = crate::services::admin::merchants(&pool, None, None)
+            .await
+            .expect("admin merchants query");
+
+        let matching: Vec<&AdminMerchantRow> =
+            rows.iter().filter(|r| r.id == merchant_id).collect();
+
+        assert_eq!(
+            matching.len(),
+            1,
+            "merchant with multiple wallets must appear exactly once"
+        );
+        assert_eq!(
+            matching[0].wallet_address.as_deref(),
+            Some("GADDR_ONE"),
+            "wallet_address must be deterministic (lowest address)"
+        );
+    }
 }

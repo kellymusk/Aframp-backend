@@ -1,0 +1,30 @@
+# Pre-commit hooks for Aframp Backend
+#
+# These hooks run locally before each commit, catching fmt and clippy issues
+# before they reach CI. Setup instructions are in CONTRIBUTING.md.
+#
+# Quick start:
+#   pip install pre-commit
+#   pre-commit install
+#
+# To skip hooks for a single commit (not recommended):
+#   git commit --no-verify
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt-check
+        name: cargo fmt --check
+        description: Fail if any Rust source file is not formatted with rustfmt.
+        language: system
+        entry: cargo fmt --all -- --check
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        description: Fail on any clippy warning (matches CI behaviour).
+        language: system
+        entry: cargo clippy -- -D warnings
+        types: [rust]
+        pass_filenames: false

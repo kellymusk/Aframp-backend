@@ -264,11 +264,18 @@
     <h1>Aframp Admin</h1>
     <p class="sub">Sign in with an admin account to view system activity.</p>
     <div id="login-error" hidden></div>
-    <label for="email">Email</label>
-    <input type="email" id="email" required autocomplete="username">
-    <label for="password">Password</label>
-    <input type="password" id="password" required autocomplete="current-password">
-    <button class="primary" type="submit">Sign in</button>
+    <div id="otp-hint" hidden style="color:var(--info);background:var(--info-bg);border-radius:8px;padding:8px 10px;font-size:0.8rem;margin-bottom:12px;"></div>
+    <div id="credentials-fields">
+      <label for="email">Email</label>
+      <input type="email" id="email" required autocomplete="username">
+      <label for="password">Password</label>
+      <input type="password" id="password" required autocomplete="current-password">
+    </div>
+    <div id="otp-fields" hidden>
+      <label for="otp-code">Verification code</label>
+      <input type="text" id="otp-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6-digit code">
+    </div>
+    <button class="primary" type="submit" id="login-btn">Sign in</button>
   </form>
 </div>
 
@@ -303,6 +310,10 @@
   const appView = document.getElementById("app-view");
   const loginForm = document.getElementById("login-form");
   const loginError = document.getElementById("login-error");
+  const otpHint = document.getElementById("otp-hint");
+  const credentialsFields = document.getElementById("credentials-fields");
+  const otpFields = document.getElementById("otp-fields");
+  const loginBtn = document.getElementById("login-btn");
   const appError = document.getElementById("app-error");
   const whoEmail = document.getElementById("who-email");
   const tabsNav = document.getElementById("tabs");
@@ -310,16 +321,40 @@
   const logoutBtn = document.getElementById("logout-btn");
 
   let activeTab = "overview";
+  // Holds the challenge_id when we're in the OTP step
+  let pendingChallengeId = null;
 
   function showLogin(message) {
     appView.hidden = true;
     loginView.hidden = false;
+    // Reset back to credentials step
+    pendingChallengeId = null;
+    credentialsFields.hidden = false;
+    otpFields.hidden = true;
+    otpHint.hidden = true;
+    loginBtn.textContent = "Sign in";
+    document.getElementById("email").required = true;
+    document.getElementById("password").required = true;
+    document.getElementById("otp-code").required = false;
     if (message) {
       loginError.textContent = message;
       loginError.hidden = false;
     } else {
       loginError.hidden = true;
     }
+  }
+
+  function showOtpStep(expiresInSecs) {
+    credentialsFields.hidden = true;
+    otpFields.hidden = false;
+    document.getElementById("email").required = false;
+    document.getElementById("password").required = false;
+    document.getElementById("otp-code").required = true;
+    loginBtn.textContent = "Verify code";
+    otpHint.textContent = "A verification code was sent to your phone. It expires in " + Math.round(expiresInSecs / 60) + " min.";
+    otpHint.hidden = false;
+    loginError.hidden = true;
+    document.getElementById("otp-code").focus();
   }
 
   function showApp(me) {
@@ -541,11 +576,33 @@
   loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     loginError.hidden = true;
-    const email = document.getElementById("email").value.trim();
-    const password = document.getElementById("password").value;
+
     try {
-      await api("/login", { method: "POST", body: JSON.stringify({ email, password }) });
-      await checkSession();
+      if (pendingChallengeId) {
+        // Step 2: verify the OTP code
+        const code = document.getElementById("otp-code").value.trim();
+        await api("/verify-otp", {
+          method: "POST",
+          body: JSON.stringify({ challenge_id: pendingChallengeId, code }),
+        });
+        await checkSession();
+      } else {
+        // Step 1: submit credentials
+        const email = document.getElementById("email").value.trim();
+        const password = document.getElementById("password").value;
+        const result = await api("/login", {
+          method: "POST",
+          body: JSON.stringify({ email, password }),
+        });
+        if (result && result.challenge_id) {
+          // Phone-verified account — show OTP entry step
+          pendingChallengeId = result.challenge_id;
+          showOtpStep(result.expires_in_secs || 600);
+        } else {
+          // Legacy account (no phone) — session issued directly
+          await checkSession();
+        }
+      }
     } catch (err) {
       loginError.textContent = err.message || "Login failed";
       loginError.hidden = false;

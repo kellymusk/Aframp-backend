@@ -51,8 +51,17 @@ export default {
   // Keep the singleton alive so the backend's 60-second Stellar polling loop
   // continues even when the API has no browser traffic.
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    await primaryContainer(env).fetch(
+    const response = await primaryContainer(env).fetch(
       new Request("http://container.internal/health"),
     );
+
+    // Cloudflare's cron worker expects a 200 response from health check
+    // targets. Surface a non-200 so the cron run is marked as failed instead
+    // of silently succeeding against a broken container.
+    if (response.status !== 200) {
+      throw new Error(
+        `Health check failed with status ${response.status}`,
+      );
+    }
   },
 } satisfies ExportedHandler<Env>;
