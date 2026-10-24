@@ -1,3 +1,4 @@
+use axum::extract::{Path, Query, State};
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::extract::{Path, Query, State};
@@ -120,6 +121,25 @@ pub async fn merchants(
     Ok(Json(rows))
 }
 
+pub async fn suspend_merchant(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<AdminMerchantRow>> {
+    let row = admin::set_merchant_active(&state.db, id, false)
+        .await
+        .map_err(internal)?;
+    Ok(Json(row))
+}
+
+pub async fn activate_merchant(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<AdminMerchantRow>> {
+    let row = admin::set_merchant_active(&state.db, id, true)
+        .await
+        .map_err(internal)?;
 pub async fn set_merchant_kyc(
     State(state): State<AppState>,
     _admin: AdminUser,

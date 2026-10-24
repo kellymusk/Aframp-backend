@@ -176,6 +176,10 @@ pub async fn users(
     }))
 }
 
+pub async fn merchants(db: &PgPool, limit: i64) -> Result<Vec<AdminMerchantRow>, sqlx::Error> {
+    sqlx::query_as::<_, AdminMerchantRow>(
+        "SELECT m.id, m.name, m.user_id AS owner_user_id, u.email AS owner_email, m.active,
+                m.created_at, w.address AS wallet_address
 pub async fn merchants(
     db: &PgPool,
     limit: i64,
@@ -291,6 +295,24 @@ pub async fn set_kyc_status(
     .await
 }
 
+pub async fn set_merchant_active(
+    db: &PgPool,
+    merchant_id: uuid::Uuid,
+    active: bool,
+) -> Result<Option<AdminMerchantRow>, sqlx::Error> {
+    sqlx::query_as::<_, AdminMerchantRow>(
+        "UPDATE merchants m
+         SET active = $2, updated_at = now()
+         FROM users u
+         WHERE m.id = $1 AND u.id = m.user_id
+         RETURNING m.id, m.name, m.user_id AS owner_user_id, u.email AS owner_email, m.active,
+                   m.created_at,
+                   (SELECT w.address FROM wallets w WHERE w.merchant_id = m.id LIMIT 1) AS wallet_address",
+    )
+    .bind(merchant_id)
+    .bind(active)
+    .fetch_optional(db)
+    .await
 pub async fn merchant_kyc_status(
     db: &PgPool,
     merchant_id: uuid::Uuid,

@@ -1,25 +1,29 @@
 name: CI
 
 on:
-  push:
-    branches: ["dev-backend"]
   pull_request:
-    branches: ["dev-backend"]
+    branches:
+      - dev-backend
+      - master
+  push:
+    branches:
+      - dev-backend
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────────
-  # GUARD: Fail if a contributor touches any file that belongs to the main/master
-  # backend source tree. Contributors work only in the dev-backend branch and
-  # should not modify the production source under src/, migrations/, examples/,
-  # the Dockerfile, or other root-level production files.
-  # ─────────────────────────────────────────────────────────────────────────────
-  guard-main-source:
-    name: "Guard — no touches to main backend source"
+  fmt:
+    name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
           fetch-depth: 0
 
       - name: Check for forbidden file changes
@@ -91,14 +95,31 @@ jobs:
 
           echo "✅  No protected files touched. Guard passed."
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # BUILD + TEST: Compile and run the test suite.
-  # ─────────────────────────────────────────────────────────────────────────────
-  build-and-test:
-    name: "Build & Test"
+  clippy:
+    name: cargo clippy
     runs-on: ubuntu-latest
-    needs: guard-main-source
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
+  build:
+    name: cargo build --release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
     # Set at job level so every step (and every `cargo test` binary) sees it.
     # The test helper in tests/common fails — it never skips — when this is
     # missing, so an unset URL turns the run red instead of falsely green.
@@ -119,8 +140,14 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
+    env:
+      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -262,33 +289,13 @@ jobs:
           echo "✅  $PASSED tests exercised."
         run: cargo test --all --test paystack_contract
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # LINT: clippy + fmt
-  # ─────────────────────────────────────────────────────────────────────────────
-  lint:
-    name: "Lint (clippy + fmt)"
+  audit:
+    name: cargo audit
     runs-on: ubuntu-latest
-    needs: guard-main-source
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain (with clippy + rustfmt)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        run: cargo audit

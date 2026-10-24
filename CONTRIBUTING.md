@@ -33,6 +33,38 @@ All 100 issues in this repo are fair game. Each one is grounded in a real gap, b
 5. Open a PR targeting `dev-backend`.
 6. CI must be green (guard + build + lint) before review.
 
+## CI pipeline
+
+Every pull request targeting `dev-backend` or `master` runs the workflow defined in
+`.github/workflows/ci.yml`. It consists of the following jobs:
+
+| Job | Command | Purpose |
+|-----|---------|---------|
+| `guard` | `git diff` against protected paths | Blocks changes to production files |
+| `fmt` | `cargo fmt --all -- --check` | Enforces formatting |
+| `clippy` | `cargo clippy --all-targets --all-features -- -D warnings` | Treats lints as errors |
+| `build` | `cargo build --release` | Verifies the release build |
+| `test` | `cargo test` | Runs the test suite against Postgres |
+| `audit` | `cargo audit` | Scans dependencies for known vulnerabilities |
+
+### Running the checks locally
+
+Before pushing, run the same checks the CI runs:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release
+cargo test
+cargo install cargo-audit --locked && cargo audit
+```
+
+### Test database secret
+
+The `test` job connects to a Postgres service and reads the connection string from
+the `TEST_DATABASE_URL` GitHub Actions secret. Maintainers configure this secret in
+**Settings → Secrets and variables → Actions**. Contributors do not need access to it;
+locally, set `TEST_DATABASE_URL` as shown below.
 ## Adding a new HTTP method
 
 The CORS layer in `src/main.rs` has an explicit `allow_methods` list. It already

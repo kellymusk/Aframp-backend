@@ -96,14 +96,19 @@ CREATE TABLE api_keys (
   revoked_at TIMESTAMPTZ
 );
 
+-- Audit trail for inbound provider webhooks (Termii, Paystack, ...).
+-- merchant_id is nullable because some providers (e.g. Termii SMS delivery
+-- receipts) are not merchant-specific; such events are still recorded so the
+-- table reflects a real audit trail rather than an always-empty placeholder.
 -- webhook_events: reserved for the planned inbound webhook handling system.
 -- Not yet referenced by any Rust code; intended to persist raw provider webhook
 -- payloads for idempotent processing and replay. The UNIQUE (provider,
 -- external_id) constraint deduplicates repeated deliveries of the same event.
 CREATE TABLE webhook_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  merchant_id UUID NOT NULL REFERENCES merchants(id),
+  merchant_id UUID REFERENCES merchants(id),
   provider TEXT NOT NULL,
+  event_type TEXT,
   external_id TEXT NOT NULL,
   payload JSONB NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),

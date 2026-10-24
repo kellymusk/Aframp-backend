@@ -99,11 +99,20 @@ pub struct UpdateMeRequest {
 }
 
 pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<MeView>> {
+    let row = users::user_with_merchant_by_id(&state.db, auth.user_id)
     let user = users::user_profile_by_id(&state.db, auth.user_id)
         .await
         .map_err(internal)?
         .ok_or_else(|| not_found(ErrorCode::UserNotFound, "user not found"))?;
 
+    Ok(Json(MeView {
+        user_id: row.user_id,
+        email: row.email,
+        name: row.name,
+        is_admin: row.is_admin,
+        created_at: row.created_at,
+        merchant_id: row.merchant_id,
+        merchant_name: row.merchant_name,
     let merchant = users::merchant_by_user(&state.db, auth.user_id)
         .await
         .map_err(internal)?;
