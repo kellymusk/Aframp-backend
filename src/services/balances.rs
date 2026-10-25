@@ -3,10 +3,8 @@ use uuid::Uuid;
 
 use crate::models::{Balance, UpdateBalance};
 
-pub async fn get_balances(
-    db: &PgPool,
-    merchant_id: Uuid,
-) -> Result<Vec<Balance>, sqlx::Error> {
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id))]
+pub async fn get_balances(db: &PgPool, merchant_id: Uuid) -> Result<Vec<Balance>, sqlx::Error> {
     sqlx::query_as::<_, Balance>(
         "SELECT merchant_id, asset, available, pending, updated_at
            FROM balances
@@ -17,21 +15,122 @@ pub async fn get_balances(
     .await
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %delta.merchant_id, asset = %delta.asset))]
+/// Unconditionally adds `delta` to a balance row, creating it if needed.
+///
+/// Only for credits and for moving funds `pending -> available` (the deposit
+/// worker is the sole caller). Debits of `available` must go through the
+/// guarded `available >= amount` update in `services::withdrawals`; the
+/// `check_available_non_negative` constraint (migration 0021) rejects any write that would
+/// take `available` below zero.
 pub async fn apply_delta(db: &PgPool, delta: &UpdateBalance) -> Result<(), sqlx::Error> {
+    // Not a single INSERT .. ON CONFLICT DO UPDATE: Postgres checks the
+    // proposed INSERT row against the non-negative CHECK constraints before
+    // resolving the conflict, so a negative delta (e.g. pending -> available)
+    // would always be rejected. Ensure the row exists, then apply the delta;
+    // the CHECK still rejects any delta that would drive a balance negative.
+    let mut tx = db.begin().await?;
     sqlx::query(
         "INSERT INTO balances (merchant_id, asset, available, pending)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (merchant_id, asset)
-         DO UPDATE SET
-           available = balances.available + $3,
-           pending = balances.pending + $4,
-           updated_at = now()",
+         VALUES ($1, $2, 0, 0)
+         ON CONFLICT (merchant_id, asset) DO NOTHING",
+    )
+    .bind(delta.merchant_id)
+    .bind(&delta.asset)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE balances
+            SET available = available + $3,
+                pending = pending + $4,
+                updated_at = now()
+          WHERE merchant_id = $1 AND asset = $2",
     )
     .bind(delta.merchant_id)
     .bind(&delta.asset)
     .bind(delta.available_delta)
     .bind(delta.pending_delta)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+/// Credits a confirmed deposit directly to the merchant's available balance in a
+/// single UPSERT, avoiding the two `apply_delta` round-trips (pending credit then
+/// pending -> available move) that were previously issued per deposit.
+///
+/// TODO(#1063): once the confirmation depth feature lands, deposits will be
+/// credited to `pending` on first observation and only moved to `available`
+/// after the required confirmations. At that point this helper should be split
+/// back into two `apply_delta` calls (pending_delta = amount, then
+/// pending_delta = -amount / available_delta = amount) so the intermediate
+/// pending state is observable.
+pub async fn credit_confirmed_deposit(
+    db: &PgPool,
+    merchant_id: Uuid,
+    asset: &str,
+    amount: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1, $2, $3, 0)
+         ON CONFLICT (merchant_id, asset)
+         DO UPDATE SET
+           available = balances.available + $3,
+           updated_at = now()",
+    )
+    .bind(merchant_id)
+    .bind(asset)
+    .bind(amount)
     .execute(db)
     .await
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn credit_confirmed_deposit_sets_available_balance(db: PgPool) {
+        // balances.merchant_id references merchants, which references users.
+        let user_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (email, password_hash, name) VALUES ('balance@example.com', 'x', 'Balance Test')
+             RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .expect("user inserted");
+        let merchant_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO merchants (user_id, name) VALUES ($1, 'Balance Test') RETURNING id",
+        )
+        .bind(user_id)
+        .fetch_one(&db)
+        .await
+        .expect("merchant inserted");
+
+        credit_confirmed_deposit(&db, merchant_id, "USDC", 1_000)
+            .await
+            .expect("first deposit credit should succeed");
+
+        let balances = get_balances(&db, merchant_id)
+            .await
+            .expect("balances should be readable");
+        assert_eq!(balances.len(), 1);
+        assert_eq!(balances[0].asset, "USDC");
+        assert_eq!(balances[0].available, 1_000);
+        assert_eq!(balances[0].pending, 0);
+
+        // A second deposit should accumulate onto the existing row.
+        credit_confirmed_deposit(&db, merchant_id, "USDC", 500)
+            .await
+            .expect("second deposit credit should succeed");
+
+        let balances = get_balances(&db, merchant_id)
+            .await
+            .expect("balances should be readable");
+        assert_eq!(balances.len(), 1);
+        assert_eq!(balances[0].available, 1_500);
+        assert_eq!(balances[0].pending, 0);
+    }
 }

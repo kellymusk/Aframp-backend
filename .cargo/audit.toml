@@ -1,0 +1,39 @@
+# cargo-audit configuration
+#
+# This file (.cargo/audit.toml, the path cargo-audit reads) configures `cargo audit` (https://github.com/rustsec/rustsec).
+# It is consumed by the `cargo-audit` CI job defined in .github/workflows/ci.yml,
+# which runs `cargo audit --deny warnings` so that any unignored advisory
+# (including high/critical severity) fails the build.
+#
+# The `ignore` list below is for KNOWN FALSE POSITIVES only. Every entry MUST
+# include a justification comment explaining why the advisory does not affect
+# this project, and SHOULD reference a tracking issue for removal.
+#
+# See https://rustsec.org/ for the advisory database.
+
+[advisories]
+# The CI job passes `--deny warnings`, so any unignored advisory (including
+# unmaintained/yanked warnings) fails the build; run it the same way locally.
+
+# Advisories that are known false positives or otherwise not exploitable in
+# this project. Each entry must be justified.
+ignore = [
+    # Example:
+    # "RUSTSEC-0000-0000", # <crate>: <why this does not affect us>; tracked in #<issue>
+
+    # rsa (Marvin timing side channel, no fixed release): only reachable via
+    # sqlx-mysql, which sits in Cargo.lock because sqlx-macros lists it, but is
+    # never compiled: we enable only the `postgres` driver (`cargo tree -i rsa`
+    # is empty).
+    "RUSTSEC-2023-0071",
+    # rkyv 0.7: only reachable via rust_decimal's optional `rkyv` feature,
+    # which nothing enables, so it is never compiled (`cargo tree -i rkyv`
+    # is empty).
+    "RUSTSEC-2026-0235",
+    # async-std (unmaintained, no vulnerability): dev-dependency of httpmock,
+    # used only by tests.
+    "RUSTSEC-2025-0052",
+    # json (unmaintained, no vulnerability): dev-dependency of stellar-base,
+    # used only by tests.
+    "RUSTSEC-2022-0081",
+]

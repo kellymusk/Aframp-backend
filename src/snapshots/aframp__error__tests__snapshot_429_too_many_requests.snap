@@ -1,0 +1,8 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "rate limit exceeded",
+  "code": "TOO_MANY_REQUESTS"
+}

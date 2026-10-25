@@ -3,6 +3,10 @@ use std::sync::Arc;
 
 use crate::auth::cookie::{CookieConfig, SameSite};
 
+/// Default request body limit (64 KiB) used when `MAX_REQUEST_BODY_BYTES` is
+/// unset. Every request body this API accepts is a small JSON object.
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
+
 #[derive(Clone)]
 pub struct SecretString(Arc<String>);
 
@@ -42,6 +46,36 @@ impl AsRef<str> for SecretString {
     }
 }
 
+/// Fixed-size secret key material (e.g. the wallet AES-256 key). Zeroed on
+/// drop, and like [`SecretString`] its `Debug` output is `[REDACTED]`, so the
+/// raw bytes can't reach a log line or panic message via `{:?}`.
+#[derive(Clone)]
+pub struct SecretBytes<const N: usize>(zeroize::Zeroizing<[u8; N]>);
+
+impl<const N: usize> SecretBytes<N> {
+    pub fn new(bytes: [u8; N]) -> Self {
+        SecretBytes(zeroize::Zeroizing::new(bytes))
+    }
+
+    pub fn expose(&self) -> &[u8; N] {
+        &self.0
+    }
+}
+
+impl<const N: usize> fmt::Debug for SecretBytes<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl<const N: usize> std::ops::Deref for SecretBytes<N> {
+    type Target = [u8; N];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Which SMS backend delivers OTP codes. `Mock` logs the code instead of
 /// sending it (see `otp::mock`), so local dev never needs live Termii
 /// credentials — the walkthrough in the OTP plan runs entirely on `Mock`.
@@ -54,12 +88,33 @@ pub enum OtpProviderKind {
 #[derive(Clone, Debug)]
 pub struct AppConfig {
     pub database_url: String,
+    /// Upper bound on pooled Postgres connections. Under concurrent load
+    /// (merchants withdrawing while the poll worker runs) the old hardcoded
+    /// ceiling of 5 made requests queue; this is now tunable per deployment.
+    pub database_max_connections: u32,
+    /// Connections kept warm so bursts don't pay full connect latency.
+    pub database_min_connections: u32,
+    /// Seconds a request waits for a free pooled connection before failing.
+    pub database_acquire_timeout_secs: u32,
     pub bind_addr: String,
     pub jwt_secret: SecretString,
     pub webhook_secret: SecretString,
     pub stellar_system_wallet: Arc<String>,
     pub stellar_horizon_url: String,
     pub stellar_poll_interval_secs: u64,
+    /// A single deposit above this many stroops is credited but flagged for
+    /// review (`MAX_SINGLE_DEPOSIT_STROOPS`, default 10,000 units).
+    pub max_single_deposit_stroops: i64,
+    /// A merchant's deposits of one asset totalling more than this within an
+    /// hour are flagged (`MAX_HOURLY_DEPOSIT_STROOPS`, default 50,000 units).
+    pub max_hourly_deposit_stroops: i64,
+    /// Maximum number of Horizon requests the deposit worker keeps in flight
+    /// at once. Bounds the fan-out when polling many wallet addresses so a
+    /// large merchant set doesn't open thousands of sockets simultaneously.
+    pub stellar_poll_concurrency: usize,
+    /// Poll passes a deposit must be seen in before its funds move from
+    /// `pending` to `available` (`STELLAR_MIN_CONFIRMATIONS`, default 1).
+    pub stellar_min_confirmations: i32,
     pub wallet_encryption_key: SecretString,
     pub paystack_secret_key: SecretString,
     /// Keys the HMAC that OTP codes are stored under. A bare hash of a
@@ -71,6 +126,20 @@ pub struct AppConfig {
     /// Required when `otp_provider` is `Termii`; absent when it's `Mock`.
     pub termii_api_key: Option<SecretString>,
     pub termii_sender_id: Option<String>,
+    /// Optional dedicated secret for verifying `X-Termii-Signature` on the
+    /// delivery-status webhook. Falls back to `termii_api_key` when unset.
+    pub termii_webhook_secret: Option<SecretString>,
+    /// Stellar account that issues cNGN (`CNGNX_ISSUER_ADDRESS`). cNGN
+    /// payment requests only get a SEP-0007 URI when this is set — a guessed
+    /// issuer would silently misdirect a customer's payment.
+    pub cngn_issuer_address: Option<String>,
+    /// `TRUST_PROXY_HEADERS`: set when a reverse proxy you control sits in
+    /// front of the app and appends `X-Forwarded-For`. Off by default.
+    pub trust_proxy_headers: bool,
+    /// `WEBHOOK_ALLOW_PRIVATE_TARGETS`: accept localhost/private webhook URLs.
+    /// Never enable in production: it lets merchants aim the backend at
+    /// internal services.
+    pub webhook_allow_private_targets: bool,
     /// Browser origins allowed to call this API. The merchant frontend is a
     /// separate origin, so without this every request fails CORS preflight.
     pub cors_allowed_origins: Vec<String>,
@@ -78,6 +147,12 @@ pub struct AppConfig {
     /// `Secure` on, `SameSite=Lax`. Browsers treat localhost as a secure
     /// context, so the defaults also work for local development over HTTP.
     pub cookie: CookieConfig,
+    /// Maximum accepted request body size in bytes. Applied via
+    /// `RequestBodyLimitLayer`; requests over this limit are rejected with a
+    /// 413 before reaching a handler. Defaults to 64 KiB.
+    pub max_request_body_bytes: usize,
+    /// Per-merchant daily withdrawal limit in stroops.
+    pub daily_withdrawal_limit_stroops: Option<i64>,
 }
 
 impl AppConfig {
@@ -91,7 +166,11 @@ impl AppConfig {
         {
             "lax" => SameSite::Lax,
             "none" => SameSite::None,
-            other => return Err(format!("COOKIE_SAME_SITE must be `lax` or `none`, got `{other}`")),
+            other => {
+                return Err(format!(
+                    "COOKIE_SAME_SITE must be `lax` or `none`, got `{other}`"
+                ))
+            }
         };
         if cookie_same_site == SameSite::None && !cookie_secure {
             return Err("COOKIE_SAME_SITE=none requires COOKIE_SECURE=true; browsers reject a SameSite=None cookie that is not Secure".into());
@@ -105,8 +184,25 @@ impl AppConfig {
         {
             "termii" => OtpProviderKind::Termii,
             "mock" => OtpProviderKind::Mock,
-            other => return Err(format!("OTP_PROVIDER must be `termii` or `mock`, got `{other}`")),
+            other => {
+                return Err(format!(
+                    "OTP_PROVIDER must be `termii` or `mock`, got `{other}`"
+                ))
+            }
         };
+        let cngn_issuer_address = match std::env::var("CNGNX_ISSUER_ADDRESS") {
+            Ok(value) if !value.trim().is_empty() => {
+                let value = value.trim().to_string();
+                if stellar_strkey::ed25519::PublicKey::from_string(&value).is_err() {
+                    return Err(format!(
+                        "CNGNX_ISSUER_ADDRESS must be a Stellar account ID (G...), got `{value}`"
+                    ));
+                }
+                Some(value)
+            }
+            _ => None,
+        };
+
         let (termii_api_key, termii_sender_id) = if otp_provider == OtpProviderKind::Termii {
             (
                 Some(SecretString::new(env("TERMII_API_KEY")?)),
@@ -116,40 +212,233 @@ impl AppConfig {
             (None, None)
         };
 
+        let stellar_poll_concurrency = std::env::var("STELLAR_POLL_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(50);
+        let max_request_body_bytes = match std::env::var("MAX_REQUEST_BODY_BYTES") {
+            Err(_) => DEFAULT_MAX_REQUEST_BODY_BYTES,
+            Ok(value) => value.trim().parse::<usize>().map_err(|_| {
+                format!("MAX_REQUEST_BODY_BYTES must be a positive integer, got `{value}`")
+            })?,
+        };
+        if max_request_body_bytes == 0 {
+            return Err("MAX_REQUEST_BODY_BYTES must be greater than 0".into());
+        }
+
+        let daily_withdrawal_limit_stroops = match std::env::var("DAILY_WITHDRAWAL_LIMIT_STROOPS") {
+            Ok(val) => match val.trim().parse::<i64>() {
+                Ok(limit) => Some(limit),
+                Err(e) => {
+                    return Err(format!(
+                        "DAILY_WITHDRAWAL_LIMIT_STROOPS must be an integer: {e}"
+                    ))
+                }
+            },
+            Err(_) => None,
+        };
+
+        let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".into());
+        if app_env.trim().eq_ignore_ascii_case("production") && !cookie_secure {
+            // This server speaks plain HTTP; it relies on a TLS-terminating reverse
+            // proxy (Caddy/nginx) in front of it. COOKIE_SECURE=false in production
+            // means the session cookie would be sent unencrypted, so refuse to start.
+            tracing::error!(
+                "REFUSING TO START: APP_ENV=production but COOKIE_SECURE=false. \
+                 The session cookie would be sent over plain HTTP. Run this service \
+                 behind a TLS-terminating reverse proxy (Caddy or nginx) and set \
+                 COOKIE_SECURE=true (the default) once TLS is in place. See README.md."
+            );
+            return Err(
+                "APP_ENV=production requires COOKIE_SECURE=true (see README.md for the reverse-proxy/TLS setup)".into(),
+            );
+        }
+
+        // A typo here used to fall back to 60s silently; fail loudly instead,
+        // and refuse intervals short enough to hammer Horizon.
+        let stellar_poll_interval_secs = u64::from(number("STELLAR_POLL_INTERVAL_SECS", 60)?);
+        if stellar_poll_interval_secs < MIN_STELLAR_POLL_INTERVAL_SECS {
+            return Err(format!(
+                "STELLAR_POLL_INTERVAL_SECS must be at least {MIN_STELLAR_POLL_INTERVAL_SECS}, got {stellar_poll_interval_secs}"
+            ));
+        }
+        let database_max_connections = number("DATABASE_MAX_CONNECTIONS", 10)?;
+        let database_min_connections = number("DATABASE_MIN_CONNECTIONS", 2)?;
+        let database_acquire_timeout_secs = number("DATABASE_ACQUIRE_TIMEOUT_SECS", 30)?;
+        if database_max_connections == 0 {
+            return Err("DATABASE_MAX_CONNECTIONS must be greater than 0".into());
+        }
+        if database_min_connections > database_max_connections {
+            return Err(format!(
+                "DATABASE_MIN_CONNECTIONS ({database_min_connections}) must not exceed DATABASE_MAX_CONNECTIONS ({database_max_connections})"
+            ));
+        }
+
         Ok(Self {
             database_url: env("DATABASE_URL")?,
+            database_max_connections,
+            database_min_connections,
+            database_acquire_timeout_secs,
             bind_addr: std::env::var("APP_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into()),
-            jwt_secret: SecretString::new(env("JWT_SECRET")?),
-            webhook_secret: SecretString::new(env("WEBHOOK_SECRET")?),
+            jwt_secret: secret("JWT_SECRET")?,
+            webhook_secret: secret("WEBHOOK_SECRET")?,
             stellar_system_wallet: Arc::new(env("STELLAR_SYSTEM_WALLET_ADDRESS")?),
             stellar_horizon_url: std::env::var("STELLAR_HORIZON_URL")
                 .unwrap_or_else(|_| "https://horizon-testnet.stellar.org".into()),
-            stellar_poll_interval_secs: std::env::var("STELLAR_POLL_INTERVAL_SECS")
+            stellar_poll_interval_secs,
+            max_single_deposit_stroops: positive_stroops(
+                "MAX_SINGLE_DEPOSIT_STROOPS",
+                100_000_000_000,
+            )?,
+            max_hourly_deposit_stroops: positive_stroops(
+                "MAX_HOURLY_DEPOSIT_STROOPS",
+                500_000_000_000,
+            )?,
+            stellar_poll_concurrency,
+            stellar_min_confirmations: std::env::var("STELLAR_MIN_CONFIRMATIONS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(60),
+                .filter(|n: &i32| *n >= 1)
+                .unwrap_or(1),
             wallet_encryption_key: SecretString::new(env("WALLET_ENCRYPTION_KEY")?),
             paystack_secret_key: SecretString::new(env("PAYSTACK_SECRET_KEY")?),
-            otp_hmac_secret: SecretString::new(env("OTP_HMAC_SECRET")?),
+            otp_hmac_secret: secret("OTP_HMAC_SECRET")?,
             otp_provider,
             termii_api_key,
             termii_sender_id,
-            cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
-                .unwrap_or_else(|_| "http://localhost:3001".into())
-                .split(',')
-                .map(|origin| origin.trim().to_string())
-                .filter(|origin| !origin.is_empty())
-                .collect(),
+            cors_allowed_origins: parse_cors_origins(
+                &std::env::var("CORS_ALLOWED_ORIGINS")
+                    .unwrap_or_else(|_| "http://localhost:3001".into()),
+            )?,
+            termii_webhook_secret: std::env::var("TERMII_WEBHOOK_SECRET")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(SecretString::new),
+            cngn_issuer_address,
+            trust_proxy_headers: flag("TRUST_PROXY_HEADERS", false)?,
+            webhook_allow_private_targets: flag("WEBHOOK_ALLOW_PRIVATE_TARGETS", false)?,
             cookie: CookieConfig {
                 secure: cookie_secure,
                 same_site: cookie_same_site,
             },
+            max_request_body_bytes,
+            daily_withdrawal_limit_stroops,
         })
     }
 }
 
+/// Minimum number of characters required for HMAC/signing secrets.
+/// HMAC-SHA256 security degrades significantly with keys shorter than
+/// 32 bytes; this constant makes the threshold explicit and testable.
+pub const MIN_SECRET_LEN: usize = 32;
+
 fn env(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("{name} is required"))
+}
+
+/// Read a required secret from the environment and enforce a minimum length.
+///
+/// A secret that is too short is rejected at startup with a clear error
+/// message and a `openssl rand -hex 32` generation hint so the operator
+/// knows exactly what to do.
+fn secret(name: &str) -> Result<SecretString, String> {
+    let value = env(name)?;
+    if value.len() < MIN_SECRET_LEN {
+        return Err(format!(
+            "{name} is too short ({} chars); it must be at least {MIN_SECRET_LEN} characters \
+             to provide adequate security. Generate a strong value with: \
+             openssl rand -hex 32",
+            value.len()
+        ));
+    }
+    Ok(SecretString::new(value))
+}
+
+/// Parses `CORS_ALLOWED_ORIGINS` into a list of validated origins, failing
+/// fast with a clear message rather than letting a malformed value surface
+/// later as an opaque panic from `HeaderValue` parsing in `main.rs`, or
+/// silently reach the CORS layer as a value it doesn't handle the way the
+/// operator expects.
+fn parse_cors_origins(raw: &str) -> Result<Vec<String>, String> {
+    raw.split(',')
+        .map(|origin| origin.trim())
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            validate_origin(origin)?;
+            Ok(origin.to_string())
+        })
+        .collect()
+}
+
+/// An "origin" is scheme + host [+ port] only — no path, query, fragment, or
+/// userinfo. `http::Uri` already gives us a real URL parser without pulling
+/// in a new dependency (`http` is already required by `axum`).
+fn validate_origin(origin: &str) -> Result<(), String> {
+    if origin == "*" {
+        return Err(
+            "CORS_ALLOWED_ORIGINS: wildcard `*` is not allowed — this API sends credentials \
+             (the session cookie), and browsers reject a wildcard origin on a credentialed \
+             request anyway. List each allowed origin explicitly."
+                .into(),
+        );
+    }
+
+    let uri: http::Uri = origin
+        .parse()
+        .map_err(|_| format!("CORS_ALLOWED_ORIGINS: `{origin}` is not a valid URL"))?;
+
+    let scheme = uri.scheme_str().ok_or_else(|| {
+        format!("CORS_ALLOWED_ORIGINS: `{origin}` must include a scheme (http:// or https://)")
+    })?;
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` scheme must be http or https, got `{scheme}`"
+        ));
+    }
+    if uri.host().is_none() {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` must include a host"
+        ));
+    }
+    if !matches!(uri.path(), "" | "/") {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` must not include a path — an origin is scheme + host + port only"
+        ));
+    }
+    if uri.query().is_some() {
+        return Err(format!(
+            "CORS_ALLOWED_ORIGINS: `{origin}` must not include a query string"
+        ));
+    }
+    Ok(())
+}
+
+/// A positive stroop amount from the environment. Zero, negative or garbage is
+/// a startup error, so a typo can't silently disable anomaly flagging.
+fn positive_stroops(name: &str, default: i64) -> Result<i64, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) => match value.trim().parse::<i64>() {
+            Ok(v) if v > 0 => Ok(v),
+            _ => Err(format!(
+                "{name} must be a positive number of stroops, got `{value}`"
+            )),
+        },
+    }
+}
+
+/// Shortest accepted deposit poll interval, in seconds.
+const MIN_STELLAR_POLL_INTERVAL_SECS: u64 = 10;
+
+fn number(name: &str, default: u32) -> Result<u32, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{name} must be a positive integer, got `{value}`")),
+    }
 }
 
 fn flag(name: &str, default: bool) -> Result<bool, String> {
@@ -168,6 +457,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secret_bytes_debug_redacts_key_material() {
+        let key = SecretBytes::new([0xABu8; 32]);
+        let debug_str = format!("{key:?}");
+        assert_eq!(debug_str, "[REDACTED]");
+        assert_eq!(key.expose(), &[0xABu8; 32]);
+    }
+
+    #[test]
+    fn number_parses_with_default() {
+        std::env::remove_var("AFRAMP_TEST_NUMBER");
+        assert_eq!(number("AFRAMP_TEST_NUMBER", 10).unwrap(), 10);
+        std::env::set_var("AFRAMP_TEST_NUMBER", "25");
+        assert_eq!(number("AFRAMP_TEST_NUMBER", 10).unwrap(), 25);
+        std::env::set_var("AFRAMP_TEST_NUMBER", "lots");
+        assert!(number("AFRAMP_TEST_NUMBER", 10).is_err());
+        std::env::remove_var("AFRAMP_TEST_NUMBER");
+    }
+
+    #[test]
+    fn cors_origins_are_validated() {
+        assert_eq!(
+            parse_cors_origins("https://app.aframp.com, http://localhost:3001").unwrap(),
+            vec!["https://app.aframp.com", "http://localhost:3001"]
+        );
+        assert!(parse_cors_origins("*").is_err());
+        assert!(parse_cors_origins("app.aframp.com").is_err());
+        assert!(parse_cors_origins("ftp://app.aframp.com").is_err());
+        assert!(parse_cors_origins("https://app.aframp.com/path").is_err());
+    }
+
+    #[test]
     fn secret_string_debug_redacts_secret() {
         let secret = SecretString::new("my-secret-key".to_string());
         let debug_str = format!("{:?}", secret);
@@ -183,29 +503,188 @@ mod tests {
         assert!(!display_str.contains("my-secret-key"));
     }
 
+    /// Serializes tests that rewrite the process-wide env vars `from_env` reads.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes the env lock and populates every required var. Hold the returned
+    /// guard for the rest of the test.
+    fn set_valid_env() -> std::sync::MutexGuard<'static, ()> {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A 64-char hex string — well above the 32-char minimum.
+        let long_secret = "a".repeat(64);
+        // Don't clobber a real DATABASE_URL: `#[sqlx::test]` tests in the same
+        // process read it concurrently to provision their databases.
+        if std::env::var("DATABASE_URL").is_err() {
+            std::env::set_var("DATABASE_URL", "postgres://localhost/test");
+        }
+        std::env::set_var("WALLET_ENCRYPTION_KEY", &long_secret);
+        std::env::set_var(
+            "STELLAR_SYSTEM_WALLET_ADDRESS",
+            "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+        );
+        std::env::set_var("PAYSTACK_SECRET_KEY", "sk_test_placeholder");
+        std::env::set_var("OTP_HMAC_SECRET", &long_secret);
+        std::env::set_var("OTP_PROVIDER", "mock");
+        // Set the secrets to valid values; individual tests may override these.
+        std::env::set_var("JWT_SECRET", &long_secret);
+        std::env::set_var("WEBHOOK_SECRET", &long_secret);
+        guard
+    }
+
+    #[test]
+    fn stellar_poll_interval_rejects_typos_and_too_short_values() {
+        let _env = set_valid_env();
+        std::env::set_var("STELLAR_POLL_INTERVAL_SECS", "60s");
+        let typo = AppConfig::from_env();
+        std::env::set_var("STELLAR_POLL_INTERVAL_SECS", "5");
+        let too_short = AppConfig::from_env();
+        std::env::set_var("STELLAR_POLL_INTERVAL_SECS", "30");
+        let ok = AppConfig::from_env();
+        std::env::remove_var("STELLAR_POLL_INTERVAL_SECS");
+        let defaulted = AppConfig::from_env();
+
+        assert!(typo.unwrap_err().contains("STELLAR_POLL_INTERVAL_SECS"));
+        assert!(too_short.unwrap_err().contains("at least 10"));
+        assert_eq!(ok.unwrap().stellar_poll_interval_secs, 30);
+        assert_eq!(defaulted.unwrap().stellar_poll_interval_secs, 60);
+    }
+
+    #[test]
+    fn deposit_anomaly_thresholds_must_be_positive() {
+        let _env = set_valid_env();
+        std::env::set_var("MAX_SINGLE_DEPOSIT_STROOPS", "0");
+        let zero = AppConfig::from_env();
+        std::env::remove_var("MAX_SINGLE_DEPOSIT_STROOPS");
+        assert!(zero.unwrap_err().contains("MAX_SINGLE_DEPOSIT_STROOPS"));
+        assert_eq!(
+            AppConfig::from_env().unwrap().max_single_deposit_stroops,
+            100_000_000_000
+        );
+    }
+
+    #[test]
+    fn production_refuses_insecure_session_cookie() {
+        let _env = set_valid_env();
+        std::env::set_var("APP_ENV", "production");
+        std::env::set_var("COOKIE_SECURE", "false");
+        let result = AppConfig::from_env();
+        std::env::remove_var("APP_ENV");
+        std::env::remove_var("COOKIE_SECURE");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("COOKIE_SECURE=true"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn jwt_secret_too_short_is_rejected() {
+        let _env = set_valid_env();
+        std::env::set_var("JWT_SECRET", "tooshort");
+
+        let err = AppConfig::from_env().unwrap_err();
+        assert!(
+            err.contains("JWT_SECRET"),
+            "error should name the failing variable: {err}"
+        );
+        assert!(
+            err.contains("32"),
+            "error should mention the 32-character minimum: {err}"
+        );
+        assert!(
+            err.contains("openssl rand -hex 32"),
+            "error should include the generation hint: {err}"
+        );
+    }
+
+    #[test]
+    fn webhook_secret_too_short_is_rejected() {
+        let _env = set_valid_env();
+        std::env::set_var("WEBHOOK_SECRET", "tooshort");
+
+        let err = AppConfig::from_env().unwrap_err();
+        assert!(
+            err.contains("WEBHOOK_SECRET"),
+            "error should name the failing variable: {err}"
+        );
+        assert!(
+            err.contains("32"),
+            "error should mention the 32-character minimum: {err}"
+        );
+        assert!(
+            err.contains("openssl rand -hex 32"),
+            "error should include the generation hint: {err}"
+        );
+    }
+
+    #[test]
+    fn secret_exactly_32_chars_is_accepted() {
+        let _env = set_valid_env();
+        // Exactly 32 characters — right at the boundary, must pass.
+        std::env::set_var("JWT_SECRET", "a".repeat(32));
+        std::env::set_var("WEBHOOK_SECRET", "b".repeat(32));
+
+        let result = AppConfig::from_env();
+        assert!(
+            result.is_ok(),
+            "32-character secrets should be accepted: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn jwt_secret_31_chars_is_rejected() {
+        let _env = set_valid_env();
+        // 31 characters — one below the boundary, must fail.
+        std::env::set_var("JWT_SECRET", "a".repeat(31));
+
+        let err = AppConfig::from_env().unwrap_err();
+        assert!(
+            err.contains("JWT_SECRET"),
+            "error must identify the variable: {err}"
+        );
+        assert!(
+            err.contains("31"),
+            "error should report the actual length: {err}"
+        );
+    }
+
     #[test]
     fn app_config_debug_redacts_secrets() {
         let config_debug = format!(
             "{:?}",
             AppConfig {
                 database_url: "postgres://localhost".to_string(),
+                database_max_connections: 10,
+                database_min_connections: 2,
+                database_acquire_timeout_secs: 30,
                 bind_addr: "127.0.0.1:3000".to_string(),
                 jwt_secret: SecretString::new("jwt-secret-value".to_string()),
                 webhook_secret: SecretString::new("webhook-secret-value".to_string()),
                 stellar_system_wallet: Arc::new("GXXXXXXX".to_string()),
                 stellar_horizon_url: "https://horizon.stellar.org".to_string(),
                 stellar_poll_interval_secs: 60,
+                max_single_deposit_stroops: 100_000_000_000,
+                max_hourly_deposit_stroops: 500_000_000_000,
+                stellar_poll_concurrency: 50,
+                stellar_min_confirmations: 1,
                 wallet_encryption_key: SecretString::new("encryption-key".to_string()),
                 paystack_secret_key: SecretString::new("paystack-key".to_string()),
                 otp_hmac_secret: SecretString::new("otp-hmac-secret-value".to_string()),
                 otp_provider: OtpProviderKind::Termii,
                 termii_api_key: Some(SecretString::new("termii-key".to_string())),
                 termii_sender_id: Some("Aframp".to_string()),
+                termii_webhook_secret: Some(SecretString::new("termii-webhook-secret".to_string())),
+                cngn_issuer_address: None,
+                trust_proxy_headers: false,
+                webhook_allow_private_targets: false,
                 cors_allowed_origins: vec!["http://localhost:3001".to_string()],
                 cookie: CookieConfig {
                     secure: true,
                     same_site: SameSite::Lax,
                 },
+                max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+                daily_withdrawal_limit_stroops: None,
             }
         );
         assert!(!config_debug.contains("jwt-secret-value"));
@@ -214,5 +693,122 @@ mod tests {
         assert!(!config_debug.contains("paystack-key"));
         assert!(!config_debug.contains("otp-hmac-secret-value"));
         assert!(!config_debug.contains("termii-key"));
+        assert!(!config_debug.contains("termii-webhook-secret"));
+    }
+
+    #[test]
+    fn stellar_poll_concurrency_defaults_to_50() {
+        // The env var is unset in the test process, so the default applies.
+        let concurrency = std::env::var("STELLAR_POLL_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(50);
+        assert_eq!(concurrency, 50);
+    }
+
+    #[test]
+    fn max_request_body_bytes_defaults_to_64_kib() {
+        assert_eq!(DEFAULT_MAX_REQUEST_BODY_BYTES, 64 * 1024);
+    }
+
+    // --- Secret minimum-length enforcement (issue #1099) ---
+
+    /// A 32-character secret is exactly at the threshold and must be accepted.
+    #[test]
+    fn secret_fn_accepts_exactly_32_chars() {
+        let name = "TEST_SECRET_EXACTLY_32";
+        // exactly 32 ASCII characters
+        let value = "a".repeat(MIN_SECRET_LEN);
+        std::env::set_var(name, &value);
+        let result = super::secret(name);
+        std::env::remove_var(name);
+        assert!(
+            result.is_ok(),
+            "expected Ok for a {MIN_SECRET_LEN}-char secret"
+        );
+    }
+
+    /// A 64-character secret (typical `openssl rand -hex 32` output) must be accepted.
+    #[test]
+    fn secret_fn_accepts_64_char_hex_secret() {
+        let name = "TEST_SECRET_64";
+        let value = "a".repeat(64);
+        std::env::set_var(name, &value);
+        let result = super::secret(name);
+        std::env::remove_var(name);
+        assert!(result.is_ok(), "expected Ok for a 64-char secret");
+    }
+
+    /// A secret shorter than 32 characters must be rejected with a descriptive error.
+    #[test]
+    fn secret_fn_rejects_short_otp_hmac_secret() {
+        let name = "OTP_HMAC_SECRET_TEST_SHORT";
+        std::env::set_var(name, "tooshort");
+        let result = super::secret(name);
+        std::env::remove_var(name);
+        let err = result.expect_err("expected Err for a short secret");
+        assert!(
+            err.contains("too short"),
+            "error message should mention 'too short', got: {err}"
+        );
+        assert!(
+            err.contains("openssl rand -hex 32"),
+            "error message should include generation hint, got: {err}"
+        );
+    }
+
+    /// jwt_secret shorter than 32 chars must be rejected.
+    #[test]
+    fn secret_fn_rejects_short_jwt_secret() {
+        let name = "JWT_SECRET_TEST_SHORT";
+        std::env::set_var(name, "weak");
+        let result = super::secret(name);
+        std::env::remove_var(name);
+        assert!(
+            result.is_err(),
+            "expected Err for JWT_SECRET shorter than {MIN_SECRET_LEN} chars"
+        );
+    }
+
+    /// webhook_secret shorter than 32 chars must be rejected.
+    #[test]
+    fn secret_fn_rejects_short_webhook_secret() {
+        let name = "WEBHOOK_SECRET_TEST_SHORT";
+        std::env::set_var(name, "test");
+        let result = super::secret(name);
+        std::env::remove_var(name);
+        assert!(
+            result.is_err(),
+            "expected Err for WEBHOOK_SECRET shorter than {MIN_SECRET_LEN} chars"
+        );
+    }
+
+    /// A missing secret must still return a "required" error, not a length error.
+    #[test]
+    fn secret_fn_returns_required_error_when_missing() {
+        let name = "DEFINITELY_UNSET_SECRET_XYZ";
+        std::env::remove_var(name);
+        let result = super::secret(name);
+        let err = result.expect_err("expected Err for missing secret");
+        assert!(
+            err.contains("required"),
+            "error message should say 'required' for a missing var, got: {err}"
+        );
+    }
+
+    /// Boundary: a 31-character value is one short of the minimum and must be rejected.
+    #[test]
+    fn secret_fn_rejects_31_char_secret() {
+        let name = "TEST_SECRET_31_CHARS";
+        let value = "b".repeat(MIN_SECRET_LEN - 1);
+        std::env::set_var(name, &value);
+        let result = super::secret(name);
+        std::env::remove_var(name);
+        assert!(
+            result.is_err(),
+            "expected Err for a {}-char secret (one below minimum)",
+            MIN_SECRET_LEN - 1
+        );
     }
 }

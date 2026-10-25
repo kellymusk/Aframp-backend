@@ -1,0 +1,9 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "must be a valid email address",
+  "code": "INVALID_PARAMETERS",
+  "field": "email"
+}

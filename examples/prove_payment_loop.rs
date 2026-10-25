@@ -65,7 +65,10 @@ async fn main() -> Result<(), Err> {
         .await?
         .json()
         .await?;
-    let merchant_address = wallet["address"].as_str().ok_or("wallet create failed")?.to_string();
+    let merchant_address = wallet["address"]
+        .as_str()
+        .ok_or("wallet create failed")?
+        .to_string();
     println!("[1/6] merchant wallet: {merchant_address}");
 
     // 2. payment request ---------------------------------------------------
@@ -77,7 +80,10 @@ async fn main() -> Result<(), Err> {
         .await?
         .json()
         .await?;
-    let pr_id = pr["id"].as_str().ok_or("payment request failed")?.to_string();
+    let pr_id = pr["id"]
+        .as_str()
+        .ok_or("payment request failed")?
+        .to_string();
     let memo = pr["memo"].as_str().ok_or("no memo")?.to_string();
     println!("[2/6] payment request {pr_id}");
     println!("      memo:     {memo}");
@@ -102,14 +108,10 @@ async fn main() -> Result<(), Err> {
         .with_asset(Asset::new_native())
         .build()?;
 
-    let mut tx = Transaction::builder(
-        customer.public_key(),
-        sequence + 1,
-        MIN_BASE_FEE,
-    )
-    .with_memo(Memo::new_text(memo.clone())?)
-    .add_operation(payment)
-    .into_transaction()?;
+    let mut tx = Transaction::builder(customer.public_key(), sequence + 1, MIN_BASE_FEE)
+        .with_memo(Memo::new_text(memo.clone())?)
+        .add_operation(payment)
+        .into_transaction()?;
 
     tx.sign(customer.as_ref(), &Network::new_test())?;
     let envelope = tx.into_envelope().xdr_base64()?;
@@ -125,7 +127,10 @@ async fn main() -> Result<(), Err> {
     match submit["hash"].as_str() {
         Some(hash) => println!("[5/6] payment submitted, tx {hash}"),
         None => {
-            println!("[5/6] SUBMIT FAILED:\n{}", serde_json::to_string_pretty(&submit)?);
+            println!(
+                "[5/6] SUBMIT FAILED:\n{}",
+                serde_json::to_string_pretty(&submit)?
+            );
             return Err("transaction submission failed".into());
         }
     }
