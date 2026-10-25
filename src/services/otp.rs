@@ -17,14 +17,19 @@ const CODE_TTL_SECS: i64 = 600;
 const RESEND_COOLDOWN_SECS: i64 = 60;
 /// Spam cap: at most this many fresh challenges per phone+purpose per hour.
 /// A refreshed (cooldown-respecting) resend of an existing challenge doesn't
-/// count against this — only brand-new challenges do.
+/// count against this — only brand-new challenges do. Verified (consumed)
+/// challenges are excluded, so someone who completes each code isn't locked
+/// out by their own past successes.
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OtpError {
     #[error("too many requests, please try again shortly")]
-    RateLimited,
+    RateLimited {
+        /// Seconds until a new code may be requested.
+        retry_after_secs: u64,
+    },
     #[error("otp challenge not found or already used")]
     ChallengeNotFound,
     #[error("otp code has expired")]
@@ -46,6 +51,9 @@ pub enum OtpError {
 pub enum VerifiedOutcome {
     Login(User),
     Signup(User, Merchant),
+    /// A `phone_change` challenge was verified; the user's phone number has
+    /// been switched to the newly verified one.
+    PhoneChanged(User),
 }
 
 pub async fn start_signup_challenge(
@@ -57,17 +65,19 @@ pub async fn start_signup_challenge(
     name: &str,
     phone_number: &str,
 ) -> Result<OtpChallengeResponse, OtpError> {
-    let email_taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
-        .bind(email)
-        .fetch_one(db)
-        .await?;
+    let email_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+            .bind(email)
+            .fetch_one(db)
+            .await?;
     if email_taken {
         return Err(OtpError::EmailTaken);
     }
-    let phone_taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1)")
-        .bind(phone_number)
-        .fetch_one(db)
-        .await?;
+    let phone_taken: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1)")
+            .bind(phone_number)
+            .fetch_one(db)
+            .await?;
     if phone_taken {
         return Err(OtpError::PhoneTaken);
     }
@@ -87,7 +97,52 @@ pub async fn start_signup_challenge(
     .await?;
 
     send_code(otp, phone_number, &code).await?;
-    Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
+    Ok(OtpChallengeResponse {
+        challenge_id,
+        expires_in_secs: CODE_TTL_SECS,
+    })
+}
+
+/// Sends a code to `new_phone` to prove the user controls it before
+/// `PATCH /me` switches their number (the same OTP flow as signup). The
+/// number isn't changed until the challenge is verified via `/verify-otp`.
+pub async fn start_phone_change_challenge(
+    db: &PgPool,
+    otp: &dyn OtpProvider,
+    hmac_secret: &str,
+    user_id: Uuid,
+    new_phone: &str,
+) -> Result<OtpChallengeResponse, OtpError> {
+    let phone_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE phone_number = $1 AND id <> $2)",
+    )
+    .bind(new_phone)
+    .bind(user_id)
+    .fetch_one(db)
+    .await?;
+    if phone_taken {
+        return Err(OtpError::PhoneTaken);
+    }
+
+    let (challenge_id, code) = upsert_challenge(
+        db,
+        hmac_secret,
+        NewChallenge {
+            purpose: "phone_change",
+            user_id: Some(user_id),
+            pending_email: None,
+            pending_password_hash: None,
+            pending_name: None,
+            phone_number: new_phone,
+        },
+    )
+    .await?;
+
+    send_code(otp, new_phone, &code).await?;
+    Ok(OtpChallengeResponse {
+        challenge_id,
+        expires_in_secs: CODE_TTL_SECS,
+    })
 }
 
 pub async fn start_login_challenge(
@@ -116,7 +171,10 @@ pub async fn start_login_challenge(
     .await?;
 
     send_code(otp, phone_number, &code).await?;
-    Ok(OtpChallengeResponse { challenge_id, expires_in_secs: CODE_TTL_SECS })
+    Ok(OtpChallengeResponse {
+        challenge_id,
+        expires_in_secs: CODE_TTL_SECS,
+    })
 }
 
 pub async fn verify(
@@ -152,19 +210,49 @@ pub async fn verify(
         return Err(OtpError::InvalidCode);
     }
 
-    sqlx::query("UPDATE otp_challenges SET consumed_at = now() WHERE id = $1")
+    // Delete the challenge as soon as the code checks out: a signup row holds
+    // the pending password hash, which must not outlive its purpose. The
+    // DELETE is also the atomic claim — if a concurrent verify already took
+    // this challenge, nothing is deleted and this attempt fails.
+    let claimed = sqlx::query("DELETE FROM otp_challenges WHERE id = $1")
         .bind(challenge_id)
         .execute(db)
-        .await?;
+        .await?
+        .rows_affected();
+    if claimed == 0 {
+        return Err(OtpError::ChallengeNotFound);
+    }
 
     if challenge.purpose == "login" {
-        let user_id = challenge
-            .user_id
-            .expect("login challenge always carries user_id — enforced by the migration's CHECK constraint");
+        let user_id = challenge.user_id.expect(
+            "login challenge always carries user_id — enforced by the migration's CHECK constraint",
+        );
         let user = users::user_by_id(db, user_id)
             .await?
             .ok_or(OtpError::ChallengeNotFound)?;
         return Ok(VerifiedOutcome::Login(user));
+    }
+
+    if challenge.purpose == "phone_change" {
+        let user_id = challenge
+            .user_id
+            .expect("phone_change challenge always carries user_id — enforced by the migration's CHECK constraint");
+        let user = sqlx::query_as::<_, User>(&format!(
+            "UPDATE users SET phone_number = $2, phone_verified = true, updated_at = now()
+              WHERE id = $1
+              RETURNING {}",
+            users::USER_COLS
+        ))
+        .bind(user_id)
+        .bind(&challenge.phone_number)
+        .fetch_optional(db)
+        .await
+        .map_err(|err| match users::unique_violation_field(&err) {
+            Some("users_phone_number_key") => OtpError::PhoneTaken,
+            _ => OtpError::Database(err),
+        })?
+        .ok_or(OtpError::ChallengeNotFound)?;
+        return Ok(VerifiedOutcome::PhoneChanged(user));
     }
 
     // purpose == "signup": this is the only place a signup ever actually
@@ -183,13 +271,22 @@ pub async fn verify(
         .as_deref()
         .expect("signup challenge always carries pending_name");
 
-    let (user, merchant) = users::create_verified(db, email, password_hash, name, &challenge.phone_number)
-        .await
-        .map_err(|err| match users::unique_violation_field(&err) {
-            Some("users_email_key") => OtpError::EmailTaken,
-            Some("users_phone_number_key") => OtpError::PhoneTaken,
-            _ => OtpError::Database(err),
-        })?;
+    let (user, merchant) =
+        users::create_verified(db, email, password_hash, name, &challenge.phone_number)
+            .await
+            .map_err(|err| match users::unique_violation_field(&err) {
+                Some("users_email_key") => OtpError::EmailTaken,
+                Some("users_phone_number_key") => OtpError::PhoneTaken,
+                _ => OtpError::Database(err),
+            })?;
+
+    // Account is materialized; now kick off email verification. A delivery
+    // failure must not fail signup (the merchant can resend), so errors are
+    // logged but swallowed.
+    match crate::services::email_verification::issue_token(db, user.id).await {
+        Ok(token) => crate::services::email_verification::send_verification_email(email, &token),
+        Err(err) => tracing::warn!(error = %err, "failed to issue email verification token"),
+    }
 
     Ok(VerifiedOutcome::Signup(user, merchant))
 }
@@ -203,6 +300,20 @@ struct NewChallenge<'a> {
     phone_number: &'a str,
 }
 
+/// Hard-deletes challenges that were consumed or expired more than 24 hours
+/// ago, so abandoned signups don't keep a pending password hash around.
+/// Rows younger than that are kept because the hourly send cap counts them.
+pub async fn purge_stale_challenges(db: &PgPool) -> Result<u64, sqlx::Error> {
+    Ok(sqlx::query(
+        "DELETE FROM otp_challenges
+          WHERE (consumed_at IS NOT NULL OR expires_at < now())
+            AND created_at < now() - interval '24 hours'",
+    )
+    .execute(db)
+    .await?
+    .rows_affected())
+}
+
 /// Refreshes a still-live challenge for this phone+purpose in place if one
 /// exists (respecting the resend cooldown), otherwise inserts a fresh one
 /// (respecting the hourly spam cap). Returns the challenge id and the plain
@@ -212,6 +323,12 @@ async fn upsert_challenge(
     hmac_secret: &str,
     new: NewChallenge<'_>,
 ) -> Result<(Uuid, String), OtpError> {
+    // There's no scheduler in this service, so stale rows are purged each
+    // time a challenge is issued. Best-effort: never block sending a code.
+    if let Err(err) = purge_stale_challenges(db).await {
+        tracing::warn!(error = %err, "failed to purge stale OTP challenges");
+    }
+
     let existing: Option<(Uuid, chrono::DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, last_sent_at FROM otp_challenges
           WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL AND expires_at > now()
@@ -223,12 +340,27 @@ async fn upsert_challenge(
     .await?;
 
     if let Some((id, last_sent_at)) = existing {
-        if Utc::now() - last_sent_at < Duration::seconds(RESEND_COOLDOWN_SECS) {
-            return Err(OtpError::RateLimited);
+        let since_last = Utc::now() - last_sent_at;
+        if since_last < Duration::seconds(RESEND_COOLDOWN_SECS) {
+            return Err(OtpError::RateLimited {
+                retry_after_secs: (RESEND_COOLDOWN_SECS - since_last.num_seconds()).max(1) as u64,
+            });
         }
         let code = generate_code();
         let code_hash = hash_code(hmac_secret, id, &code);
         let expires_at = Utc::now() + Duration::seconds(CODE_TTL_SECS);
+        // A resend (re-POST to /signup) intentionally overwrites every pending
+        // signup field, not just the code. The signup handler re-hashes the
+        // password the client just sent and passes it in as
+        // `pending_password_hash`, so if the user changed their password
+        // between the original POST and this resend, the *new* hash is stored
+        // and is what `verify` will hand to `create_verified` when it finally
+        // creates the account. That is deliberate: the challenge is still
+        // unverified, no `users` row exists yet, and the password the user most
+        // recently typed is the one that should take effect. It is not a
+        // security concern because account creation still requires the OTP sent
+        // to the phone number on the challenge — updating the pending password
+        // cannot be triggered or observed by anyone who does not hold the code.
         sqlx::query(
             "UPDATE otp_challenges
                 SET code_hash = $2, attempts = 0, expires_at = $3, last_sent_at = now(),
@@ -246,16 +378,21 @@ async fn upsert_challenge(
         return Ok((id, code));
     }
 
-    let recent_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM otp_challenges
-          WHERE phone_number = $1 AND purpose = $2 AND created_at > now() - interval '1 hour'",
+    let (recent_count, oldest_recent): (i64, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+        "SELECT count(*), min(created_at) FROM otp_challenges
+          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
+            AND created_at > now() - interval '1 hour'",
     )
     .bind(new.phone_number)
     .bind(new.purpose)
     .fetch_one(db)
     .await?;
     if recent_count >= MAX_SENDS_PER_HOUR {
-        return Err(OtpError::RateLimited);
+        // A slot frees up once the oldest send in the window ages out.
+        let frees_at = oldest_recent.unwrap_or_else(Utc::now) + Duration::hours(1);
+        return Err(OtpError::RateLimited {
+            retry_after_secs: (frees_at - Utc::now()).num_seconds().max(1) as u64,
+        });
     }
 
     let id = Uuid::new_v4();
@@ -284,8 +421,9 @@ async fn upsert_challenge(
 }
 
 async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
-    let message = format!("Your Aframp verification code is {code}. It expires in 10 minutes.");
-    otp.send_sms(phone, &message).await.map_err(OtpError::SendFailed)
+    crate::otp::send_code(otp, phone, code)
+        .await
+        .map_err(|err| OtpError::SendFailed(err.to_string()))
 }
 
 fn generate_code() -> String {

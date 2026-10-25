@@ -7,13 +7,13 @@ use crate::models::Balance;
 use crate::services::balances;
 use crate::AppState;
 
-pub async fn get(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> ApiResult<Json<Vec<Balance>>> {
-    let merchant_id = auth
-        .merchant_id
-        .ok_or_else(|| bad_request(ErrorCode::MerchantNotFound, "no merchant associated with this account"))?;
+pub async fn get(State(state): State<AppState>, auth: AuthUser) -> ApiResult<Json<Vec<Balance>>> {
+    let merchant_id = auth.merchant_id.ok_or_else(|| {
+        bad_request(
+            ErrorCode::MerchantNotFound,
+            "no merchant associated with this account",
+        )
+    })?;
     let balances = balances::get_balances(&state.db, merchant_id)
         .await
         .map_err(internal)?;

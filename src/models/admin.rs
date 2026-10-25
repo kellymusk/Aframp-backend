@@ -48,6 +48,7 @@ pub struct AdminTransactionRow {
     pub confirmations: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub flagged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]

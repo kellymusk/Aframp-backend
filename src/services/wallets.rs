@@ -2,23 +2,65 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::blockchain::{keypair, wallet_crypto};
-use crate::models::{NewWallet, Wallet};
+use crate::models::{NewWallet, Wallet, WalletSecretRow};
+
+/// Purpose recorded in `wallet_secret_access_log` for decryptions done by
+/// [`rotate_encryption_key`].
+pub const PURPOSE_KEY_ROTATION: &str = "key_rotation";
 
 #[derive(Debug, thiserror::Error)]
-pub enum CreateWalletError {
-    #[error("failed to encrypt wallet secret: {0}")]
-    Encryption(String),
+pub enum WalletSecretError {
+    #[error("wallet not found")]
+    NotFound,
+    #[error("failed to decrypt wallet secret: {0}")]
+    Decryption(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum CreateWalletError {
+    #[error("failed to generate wallet keypair: {0}")]
+    Keygen(#[from] keypair::KeypairError),
+    #[error("failed to encrypt wallet secret: {0}")]
+    Encryption(String),
+    #[error("merchant already has a wallet for network '{0}'")]
+    DuplicateNetwork(String),
+    /// The merchant already has a wallet — the `wallets_merchant_id_unique`
+    /// constraint rejected the INSERT.  The API layer maps this to 409 Conflict
+    /// rather than a 500, so the client can tell the merchant to use their
+    /// existing wallet instead of retrying.
+    #[error("a wallet already exists for this merchant")]
+    AlreadyExists,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DecryptWalletError {
+    #[error("wallet not found")]
+    NotFound,
+    #[error("failed to decrypt wallet secret: {0}")]
+    Decryption(String),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id))]
 pub async fn create_wallet(
     db: &PgPool,
     merchant_id: Uuid,
     network: &str,
     encryption_key: &[u8; 32],
 ) -> Result<Wallet, CreateWalletError> {
-    let generated = keypair::generate_keypair();
+    if wallet_by_merchant(db, merchant_id, network)
+        .await?
+        .is_some()
+    {
+        return Err(CreateWalletError::DuplicateNetwork(network.to_string()));
+    }
+
+    let generated = keypair::generate_keypair()?;
     let secret_key_encrypted = wallet_crypto::encrypt(encryption_key, &generated.secret_seed)
         .map_err(CreateWalletError::Encryption)?;
 
@@ -31,7 +73,7 @@ pub async fn create_wallet(
     sqlx::query_as::<_, Wallet>(
         "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
          VALUES ($1, $2, $3, $4)
-         RETURNING id, merchant_id, address, network, created_at",
+         RETURNING id, merchant_id, address, network, created_at, last_polled_cursor",
     )
     .bind(wallet.merchant_id)
     .bind(&wallet.address)
@@ -39,47 +81,217 @@ pub async fn create_wallet(
     .bind(&wallet.secret_key_encrypted)
     .fetch_one(db)
     .await
-    .map_err(CreateWalletError::from)
+    .map_err(|err| {
+        // Postgres error code 23505 = unique_violation.  The
+        // `wallets_merchant_id_network_unique` constraint means the merchant already
+        // has a wallet; surface this as a distinct variant so the handler can
+        // return 409 instead of 500.
+        if let sqlx::Error::Database(ref db_err) = err {
+            if db_err.code().as_deref() == Some("23505") {
+                return CreateWalletError::AlreadyExists;
+            }
+        }
+        CreateWalletError::Database(err)
+    })
 }
 
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id))]
 pub async fn wallet_by_merchant(
     db: &PgPool,
     merchant_id: Uuid,
+    network: &str,
 ) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor
            FROM wallets
-          WHERE merchant_id = $1
+          WHERE merchant_id = $1 AND network = $2
           ORDER BY created_at DESC
           LIMIT 1",
     )
     .bind(merchant_id)
+    .bind(network)
     .fetch_optional(db)
     .await
 }
 
+#[tracing::instrument(skip_all, err)]
 pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE network = 'stellar'",
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE network = 'stellar'",
     )
     .fetch_all(db)
     .await
 }
 
+/// Stellar wallets to poll this cycle, leaving out addresses the listener is
+/// currently backing off so they are not loaded at all.
+pub async fn pollable_wallets(db: &PgPool, skip: &[String]) -> Result<Vec<Wallet>, sqlx::Error> {
+    sqlx::query_as::<_, Wallet>(
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets
+          WHERE network = 'stellar' AND NOT (address = ANY($1))",
+    )
+    .bind(skip)
+    .fetch_all(db)
+    .await
+}
+
+#[tracing::instrument(skip_all, err, fields(wallet_id = %id))]
 pub async fn wallet_by_id(db: &PgPool, id: Uuid) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE id = $1",
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db)
     .await
 }
 
+#[tracing::instrument(skip_all, err)]
 pub async fn wallet_by_address(db: &PgPool, address: &str) -> Result<Option<Wallet>, sqlx::Error> {
     sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at FROM wallets WHERE address = $1",
+        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE address = $1",
     )
     .bind(address)
     .fetch_optional(db)
     .await
+}
+
+pub async fn update_last_polled_cursor(
+    db: &PgPool,
+    wallet_id: Uuid,
+    cursor: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE wallets SET last_polled_cursor = $1 WHERE id = $2")
+        .bind(cursor)
+        .bind(wallet_id)
+        .execute(db)
+        .await
+        .map(|_| ())
+}
+
+/// Loads a wallet's row including its encrypted secret seed. The only
+/// function that should select `secret_key_encrypted` — everything else uses
+/// the [`Wallet`] shape, which has no such field. For the blockchain module
+/// (signing outbound transactions); an API handler must never call this.
+pub async fn wallet_secret_by_id(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<WalletSecretRow>, sqlx::Error> {
+    sqlx::query_as::<_, WalletSecretRow>(
+        "SELECT id, merchant_id, address, network, secret_key_encrypted FROM wallets WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+}
+
+/// Decrypt a wallet's Stellar secret seed. Every call is recorded in
+/// `wallet_secret_access_log` with `purpose` (e.g. `"sweep"`) before the
+/// secret is decrypted, so each use of the encryption key leaves a trail.
+pub async fn decrypt_secret(
+    db: &PgPool,
+    wallet_id: Uuid,
+    encryption_key: &[u8; 32],
+    purpose: &str,
+) -> Result<String, WalletSecretError> {
+    let encrypted = wallet_secret_by_id(db, wallet_id)
+        .await?
+        .ok_or(WalletSecretError::NotFound)?
+        .secret_key_encrypted;
+
+    log_secret_access(db, wallet_id, purpose).await?;
+    tracing::info!(%wallet_id, purpose, "wallet secret decrypted");
+
+    wallet_crypto::decrypt(encryption_key, &encrypted).map_err(WalletSecretError::Decryption)
+}
+
+async fn log_secret_access<'e, E>(
+    executor: E,
+    wallet_id: Uuid,
+    purpose: &str,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query("INSERT INTO wallet_secret_access_log (wallet_id, purpose) VALUES ($1, $2)")
+        .bind(wallet_id)
+        .bind(purpose)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Re-encrypt every wallet secret from `old_key` to `new_key` in one
+/// transaction: if any secret fails to decrypt under `old_key`, nothing is
+/// changed. Each decryption is audit-logged as [`PURPOSE_KEY_ROTATION`].
+/// Returns the number of wallets re-encrypted.
+pub async fn rotate_encryption_key(
+    db: &PgPool,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<usize, WalletSecretError> {
+    let mut tx = db.begin().await?;
+    let rows: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, secret_key_encrypted FROM wallets ORDER BY id FOR UPDATE")
+            .fetch_all(&mut *tx)
+            .await?;
+
+    for (wallet_id, encrypted) in &rows {
+        log_secret_access(&mut *tx, *wallet_id, PURPOSE_KEY_ROTATION).await?;
+        let rotated = wallet_crypto::reencrypt(old_key, new_key, encrypted)
+            .map_err(|e| WalletSecretError::Decryption(format!("wallet {wallet_id}: {e}")))?;
+        sqlx::query("UPDATE wallets SET secret_key_encrypted = $1 WHERE id = $2")
+            .bind(&rotated)
+            .bind(wallet_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    Ok(rows.len())
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::blockchain::wallet_crypto;
+
+    /// Verifies that a secret encrypted with `wallet_crypto::encrypt` can be
+    /// recovered by `wallet_crypto::decrypt` using the same key — the exact
+    /// round-trip that `decrypt_wallet_secret` performs once the DB row is
+    /// fetched.
+    #[test]
+    fn encrypt_decrypt_round_trips() {
+        let key = [42u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ"; // fake Stellar seed
+
+        let encrypted = wallet_crypto::encrypt(&key, plaintext).expect("encryption should succeed");
+        let decrypted =
+            wallet_crypto::decrypt(&key, &encrypted).expect("decryption should succeed");
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// Nonces are random, so two encryptions of the same plaintext must
+    /// produce different ciphertext blobs.
+    #[test]
+    fn encrypt_is_nonce_randomised() {
+        let key = [7u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
+
+        let a = wallet_crypto::encrypt(&key, plaintext).unwrap();
+        let b = wallet_crypto::encrypt(&key, plaintext).unwrap();
+        assert_ne!(a, b, "each encryption should use a fresh random nonce");
+    }
+
+    /// Decryption must fail if the key is wrong.
+    #[test]
+    fn decrypt_rejects_wrong_key() {
+        let key_a = [1u8; 32];
+        let key_b = [2u8; 32];
+        let plaintext = "SCZANGBA5YHTNYVSKZF6V4YJLPGQZBTF7JGGZZZ5ZZZ";
+
+        let encrypted = wallet_crypto::encrypt(&key_a, plaintext).unwrap();
+        let result = wallet_crypto::decrypt(&key_b, &encrypted);
+        assert!(result.is_err(), "wrong key should fail to decrypt");
+    }
 }

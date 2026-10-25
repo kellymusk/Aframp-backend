@@ -1,0 +1,53 @@
+# #1130 — alert if the deployed /health keep-alive target stops responding
+# within a 10-minute window. The Worker cron pings every 5 minutes; this
+# monitor runs every 10 minutes and fails the job (which can page via
+# GitHub Actions email / required checks / external watchers) when the
+# endpoint is down.
+#
+# Configure repository variable `HEALTH_CHECK_URL` to the public base URL
+# of the deployment, e.g. `https://aframp-backend.<account>.workers.dev`.
+# When unset, the job skips (forks / local clones without a deploy).
+
+name: Health keep-alive monitor
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping-health:
+    name: "GET /health within 10 minutes"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe HEALTH_CHECK_URL/health
+        env:
+          HEALTH_CHECK_URL: ${{ vars.HEALTH_CHECK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HEALTH_CHECK_URL:-}" ]; then
+            echo "HEALTH_CHECK_URL repo variable is unset — skipping monitor."
+            exit 0
+          fi
+
+          # Strip trailing slash; always hit the canonical keep-alive path.
+          BASE="${HEALTH_CHECK_URL%/}"
+          URL="${BASE}/health"
+          echo "Probing ${URL}"
+
+          # Retry briefly so a single cold-start blip doesn't false-alarm;
+          # overall wall clock stays well under the 10-minute alert window.
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 "$URL" || echo "000")
+            echo "attempt ${i}: HTTP ${CODE}"
+            # 204 is the contract; accept 200 too if a proxy normalizes it.
+            if [ "$CODE" = "204" ] || [ "$CODE" = "200" ]; then
+              echo "✅ /health responding (${CODE})"
+              exit 0
+            fi
+            sleep 15
+          done
+
+          echo "❌ /health did not respond successfully within the 10-minute alert window"
+          echo "Keep-alive depends on GET /health (see scripts/health_path.ts + README)."
+          exit 1

@@ -1,0 +1,8 @@
+---
+source: src/error.rs
+expression: body_json(&resp)
+---
+{
+  "error": "unsupported content type",
+  "code": "INVALID_PARAMETERS"
+}

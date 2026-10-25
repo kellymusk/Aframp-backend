@@ -1,5 +1,44 @@
 //! Shared field-level input validators for API request bodies.
 
+use serde_json::Value;
+
+/// Parse a JSON field as a strict `i64` (rejects floats, strings, null, bools).
+/// Used so clients get `{ code: INVALID_PARAMETERS, field }` instead of axum's
+/// default 422 body when they send `2.5` or `"100"` for an integer amount.
+pub fn require_i64(body: &Value, field: &str) -> Result<i64, &'static str> {
+    let Some(value) = body.get(field) else {
+        return Err("is required");
+    };
+    parse_i64_value(value)
+}
+
+/// Like [`require_i64`], but treats a missing field as `Ok(None)`.
+pub fn optional_i64(body: &Value, field: &str) -> Result<Option<i64>, &'static str> {
+    match body.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => parse_i64_value(value).map(Some),
+    }
+}
+
+fn parse_i64_value(value: &Value) -> Result<i64, &'static str> {
+    match value {
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i)
+            } else if n.as_u64().is_some() {
+                Err("must be a 64-bit signed integer")
+            } else {
+                // Floating-point (e.g. 2.5) or out-of-range integer.
+                Err("must be an integer (int64), not a float")
+            }
+        }
+        Value::String(_) => Err("must be an integer (int64), not a string"),
+        Value::Bool(_) => Err("must be an integer (int64), not a boolean"),
+        Value::Null => Err("must be an integer (int64)"),
+        Value::Array(_) | Value::Object(_) => Err("must be an integer (int64)"),
+    }
+}
+
 /// Practical RFC 5322 validation: local-part @ domain, with a conservative
 /// character set and structural checks (no consecutive/leading/trailing dots,
 /// domain must contain at least one dot).
@@ -65,13 +104,30 @@ pub fn normalize_ng_phone_number(input: &str) -> Result<String, &'static str> {
     };
 
     if local.len() != 10 || !local.chars().all(|c| c.is_ascii_digit()) {
-        return Err("phone_number must be a 10-digit Nigerian mobile number (e.g. 0801..., +234801...)");
+        return Err(
+            "phone_number must be a 10-digit Nigerian mobile number (e.g. 0801..., +234801...)",
+        );
     }
 
     Ok(format!("+234{local}"))
 }
 
 pub const MAX_NAME_LEN: usize = 100;
+
+/// A client-generated idempotency key is arbitrary but bounded — 255 covers
+/// a UUID, a ULID, or a descriptive client request id, while capping how much
+/// an unbounded header value could cost to store and index.
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
+
+/// Well above any real password, but small enough that Argon2 hashing it
+/// costs about the same as a normal one — the point is bounding the cost of
+/// an oversized input, not accommodating longer passphrases.
+///
+/// The `RequestBodyLimitLayer` in `main.rs` (MAX_REQUEST_BODY_BYTES) is the primary
+/// defence against a huge request body; this is defence in depth against the
+/// `password` field specifically, which is the one field whose cost to
+/// process scales with its size regardless of body limits.
+pub const MAX_PASSWORD_LEN: usize = 1024;
 
 /// Trims the name and validates it is non-empty and within the max length.
 pub fn validate_name(name: &str) -> Result<String, &'static str> {
@@ -85,14 +141,109 @@ pub fn validate_name(name: &str) -> Result<String, &'static str> {
     Ok(trimmed.to_string())
 }
 
+/// Validates password complexity requirements:
+/// - At least 8 characters (improved from 1Password's minimum)
+/// - At least one uppercase letter
+/// - At least one digit
+/// - At least one special character
+///
+/// Returns Ok(()) if valid, or Err with a Vec of specific requirement messages.
+pub fn validate_password(password: &str) -> Result<(), Vec<&'static str>> {
+    let mut errors = Vec::new();
+
+    if password.len() < 8 {
+        errors.push("must be at least 8 characters");
+    }
+
+    if !password.chars().any(|c| c.is_ascii_uppercase()) {
+        errors.push("must contain at least one uppercase letter");
+    }
+
+    if !password.chars().any(|c| c.is_ascii_digit()) {
+        errors.push("must contain at least one digit");
+    }
+
+    if !password.chars().any(|c| !c.is_alphanumeric()) {
+        errors.push("must contain at least one special character");
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn password_complexity_lists_each_missing_requirement() {
+        assert!(validate_password("Password123!").is_ok());
+        assert_eq!(
+            validate_password("password").unwrap_err(),
+            vec![
+                "must contain at least one uppercase letter",
+                "must contain at least one digit",
+                "must contain at least one special character",
+            ]
+        );
+        assert!(validate_password("Sh0rt!")
+            .unwrap_err()
+            .contains(&"must be at least 8 characters"));
+    }
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    #[test]
+    fn require_i64_accepts_integers_rejects_float_string() {
+        let body = json!({ "amount_stroops": 25_000_000 });
+        assert_eq!(require_i64(&body, "amount_stroops").unwrap(), 25_000_000);
+
+        let float = json!({ "amount_stroops": 2.5 });
+        assert_eq!(
+            require_i64(&float, "amount_stroops").unwrap_err(),
+            "must be an integer (int64), not a float"
+        );
+
+        let string = json!({ "amount_stroops": "100" });
+        assert_eq!(
+            require_i64(&string, "amount_stroops").unwrap_err(),
+            "must be an integer (int64), not a string"
+        );
+
+        let missing = json!({});
+        assert_eq!(
+            require_i64(&missing, "amount_stroops").unwrap_err(),
+            "is required"
+        );
+    }
+
+    #[test]
+    fn optional_i64_allows_absent_rejects_float() {
+        assert_eq!(optional_i64(&json!({}), "expires_in_secs").unwrap(), None);
+        assert_eq!(
+            optional_i64(&json!({ "expires_in_secs": 900 }), "expires_in_secs").unwrap(),
+            Some(900)
+        );
+        assert!(optional_i64(&json!({ "expires_in_secs": 1.5 }), "expires_in_secs").is_err());
+    }
+
+    #[test]
     fn normalizes_every_common_input_shape_to_e164() {
-        for input in ["08011122233", "8011122233", "+2348011122233", "2348011122233", "0801-112-2233"] {
-            assert_eq!(normalize_ng_phone_number(input).unwrap(), "+2348011122233", "input: {input}");
+        for input in [
+            "08011122233",
+            "8011122233",
+            "+2348011122233",
+            "2348011122233",
+            "0801-112-2233",
+        ] {
+            assert_eq!(
+                normalize_ng_phone_number(input).unwrap(),
+                "+2348011122233",
+                "input: {input}"
+            );
         }
     }
 
@@ -102,5 +253,137 @@ mod tests {
         assert!(normalize_ng_phone_number("080111222333").is_err()); // too long
         assert!(normalize_ng_phone_number("not-a-phone").is_err());
         assert!(normalize_ng_phone_number("").is_err());
+    }
+
+    #[test]
+    fn rejects_double_country_code_after_normalization() {
+        // `+234` followed by a local `0...` leaves an 11-digit subscriber
+        // number once the country code is stripped, so it must not pass.
+        assert!(normalize_ng_phone_number("+23408011122233").is_err());
+        assert!(normalize_ng_phone_number("23408011122233").is_err());
+    }
+
+    #[test]
+    fn normalizes_234_without_leading_plus() {
+        assert_eq!(
+            normalize_ng_phone_number("2348011122233").unwrap(),
+            "+2348011122233"
+        );
+    }
+
+    #[test]
+    fn normalizes_numbers_with_mid_digit_spaces() {
+        for input in [
+            "080 1112 2233",
+            "080 111 22 233",
+            "0801 112 2233",
+            "080 1112-2233",
+        ] {
+            assert_eq!(
+                normalize_ng_phone_number(input).unwrap(),
+                "+2348011122233",
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn documents_lenient_acceptance_of_unprefixed_ten_digit_numbers() {
+        // The normalizer is length-only: any 10-digit subscriber number is
+        // accepted regardless of network prefix. Nigerian prefixes (07x/08x/
+        // 09x) are intentionally *not* enforced here yet, so a foreign 10-digit
+        // number is currently normalized as if it were Nigerian. This test
+        // pins the current behaviour; tightening it is a separate change.
+        assert_eq!(
+            normalize_ng_phone_number("1234567890").unwrap(),
+            "+2341234567890"
+        );
+        assert_eq!(
+            normalize_ng_phone_number("+1234567890").unwrap(),
+            "+2341234567890"
+        );
+    }
+
+    #[test]
+    fn rejects_international_numbers_with_non_nigerian_lengths() {
+        assert!(normalize_ng_phone_number("+447911123456").is_err()); // UK, 12 digits
+        assert!(normalize_ng_phone_number("+15551234567").is_err()); // US, 11 digits
+        assert!(normalize_ng_phone_number("+8613800138000").is_err()); // CN, 13 digits
+    }
+
+    /// A 10-digit Nigerian subscriber number (the part after the country code).
+    /// A 10-digit Nigerian mobile subscriber number. Mobile numbers start with
+    /// 7, 8 or 9 (070x, 080x, 081x, 090x, 091x); a leading 0 would collide
+    /// with the national trunk prefix.
+    fn subscriber_number() -> impl Strategy<Value = String> {
+        (7u8..10, proptest::collection::vec(0u8..10, 9)).prop_map(|(first, rest)| {
+            std::iter::once(first)
+                .chain(rest)
+                .map(|d| (b'0' + d) as char)
+                .collect()
+        })
+    }
+
+    /// Wraps a subscriber number in one of the supported input shapes, with
+    /// arbitrary separators (spaces and/or dashes) inserted between digits.
+    fn any_supported_format() -> impl Strategy<Value = String> {
+        (subscriber_number(), 0usize..4, any::<bool>(), any::<bool>()).prop_map(
+            |(local, shape, use_dash, spaced)| {
+                let sep = if use_dash { '-' } else { ' ' };
+                let body: String = if spaced {
+                    local
+                        .chars()
+                        .enumerate()
+                        .flat_map(|(i, c)| if i == 0 { vec![c] } else { vec![sep, c] })
+                        .collect()
+                } else {
+                    local.clone()
+                };
+                match shape {
+                    0 => format!("0{body}"),
+                    1 => body,
+                    2 => format!("+234{body}"),
+                    _ => format!("234{body}"),
+                }
+            },
+        )
+    }
+
+    proptest! {
+        /// Any valid Nigerian number, in any supported format, normalizes to
+        /// the same E.164 result.
+        #[test]
+        fn any_format_normalizes_to_same_e164(input in any_supported_format()) {
+            let normalized = normalize_ng_phone_number(&input)
+                .expect("valid Nigerian number should normalize");
+            prop_assert!(normalized.starts_with("+234"));
+            prop_assert_eq!(normalized.len(), 14);
+            let local = &normalized[4..];
+            prop_assert!(local.chars().all(|c| c.is_ascii_digit()));
+            prop_assert_eq!(local.len(), 10);
+        }
+
+        /// All valid E.164 Nigerian numbers round-trip through normalization
+        /// unchanged.
+        #[test]
+        fn e164_round_trips_unchanged(local in subscriber_number()) {
+            let e164 = format!("+234{local}");
+            prop_assert_eq!(normalize_ng_phone_number(&e164).unwrap(), e164);
+        }
+
+        /// The same subscriber number expressed in different shapes always
+        /// yields the identical E.164 output.
+        #[test]
+        fn equivalent_shapes_agree(local in subscriber_number()) {
+            let expected = format!("+234{local}");
+            for input in [
+                format!("0{local}"),
+                local.clone(),
+                format!("+234{local}"),
+                format!("234{local}"),
+            ] {
+                prop_assert_eq!(normalize_ng_phone_number(&input).unwrap(), expected.clone());
+            }
+        }
     }
 }

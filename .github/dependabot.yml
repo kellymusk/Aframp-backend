@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    assignees:
+      - "handsoff"
+    groups:
+      non-breaking:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

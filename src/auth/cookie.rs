@@ -83,7 +83,10 @@ mod tests {
 
     #[test]
     fn session_cookie_is_http_only_and_scoped_to_the_whole_site() {
-        let config = CookieConfig { secure: true, same_site: SameSite::Lax };
+        let config = CookieConfig {
+            secure: true,
+            same_site: SameSite::Lax,
+        };
         let value = config.session("jwt.goes.here").unwrap();
         let value = value.to_str().unwrap();
         assert!(value.starts_with("aframp_session=jwt.goes.here;"));
@@ -96,14 +99,20 @@ mod tests {
 
     #[test]
     fn secure_is_omitted_when_disabled_for_plain_http_dev() {
-        let config = CookieConfig { secure: false, same_site: SameSite::Lax };
+        let config = CookieConfig {
+            secure: false,
+            same_site: SameSite::Lax,
+        };
         let value = config.session("t").unwrap();
         assert!(!value.to_str().unwrap().contains("Secure"));
     }
 
     #[test]
     fn clearing_expires_the_cookie_immediately() {
-        let config = CookieConfig { secure: true, same_site: SameSite::Lax };
+        let config = CookieConfig {
+            secure: true,
+            same_site: SameSite::Lax,
+        };
         let value = config.clear().unwrap();
         assert!(value.to_str().unwrap().contains("; Max-Age=0"));
     }
