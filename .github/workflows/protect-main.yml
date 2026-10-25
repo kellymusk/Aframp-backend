@@ -15,6 +15,9 @@ jobs:
   guard-source-integrity:
     name: "Guard — no touches to main backend source"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,6 +27,8 @@ jobs:
       - name: Check for forbidden file changes
         env:
           AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # PRs opened by the repo owner, org members or collaborators are
@@ -35,6 +40,15 @@ jobs:
             esac
             BASE="${{ github.event.pull_request.base.sha }}"
           else
+            # The push a maintainer PR's merge creates on master: skip when
+            # the commit came from a merged PR opened by a maintainer.
+            MAINTAINER_PRS=$(gh api "repos/$REPO/commits/${{ github.sha }}/pulls" \
+              --jq '[.[] | select(.merged_at != null) | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")] | length' \
+              2>/dev/null || echo 0)
+            if [ "${MAINTAINER_PRS:-0}" -gt 0 ]; then
+              echo "✅  Commit is a merged maintainer PR. Guard skipped."
+              exit 0
+            fi
             BASE="${{ github.event.before }}"
           fi
 
