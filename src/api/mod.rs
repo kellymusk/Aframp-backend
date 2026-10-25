@@ -1,9 +1,11 @@
 pub mod admin;
+pub mod api_keys;
 pub mod auth;
 pub mod balances;
+pub mod kyc;
 pub mod health;
 pub mod me;
-pub mod merchant_webhooks;
+pub mod merchants;
 pub mod payment_requests;
 pub mod transactions;
 pub mod wallets;

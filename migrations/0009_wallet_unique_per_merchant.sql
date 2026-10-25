@@ -1,0 +1,12 @@
+-- #1042: Prevent a merchant from accumulating multiple wallets.
+--
+-- Previously, POST /wallet/create would unconditionally insert a new keypair,
+-- and wallet_by_merchant returned only the newest one (ORDER BY created_at DESC
+-- LIMIT 1), silently abandoning any prior wallet — including any funds in it.
+--
+-- This constraint makes the duplicate prevention explicit at the database level
+-- rather than relying on application-layer checks.  The INSERT in
+-- services::wallets::create_wallet will now return a unique-constraint error on
+-- a second call for the same merchant, letting the API return a clear 409
+-- instead of creating a new unreachable wallet.
+ALTER TABLE wallets ADD CONSTRAINT wallets_merchant_id_unique UNIQUE (merchant_id);

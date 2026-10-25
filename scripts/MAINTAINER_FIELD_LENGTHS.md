@@ -1,0 +1,14 @@
+-- Maintainer patch notes for #1131 (protected `src/` / `migrations/`).
+--
+-- 1. In `src/validation.rs::is_valid_email`, reject overall length > 254
+--    (RFC 5321) before the local/domain split checks:
+--
+--      if email.len() > 254 {
+--          return false;
+--      }
+--
+-- 2. `validate_name` already enforces max 100 and runs before password
+--    hashing in `src/api/auth.rs::signup` — no change required there.
+--
+-- 3. Apply `scripts/proposed_0009_field_length_checks.sql` as a real
+--    migration once reviewed.

@@ -1,27 +1,49 @@
+// Cloudflare deployment config for the Aframp backend.
+// Full guide: DEPLOY.md. Secrets are NOT set here — use `npx wrangler secret put <NAME>`.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
+  // Worker name; also the *.workers.dev subdomain.
   "name": "aframp-backend",
+  // The Worker is the public HTTPS edge: it proxies every request to the
+  // container and runs the cron keepalive (`scheduled()` there).
   "main": "cloudflare/worker.ts",
   "compatibility_date": "2026-08-21",
+  // Required by @cloudflare/containers.
   "compatibility_flags": ["nodejs_compat"],
+  // Plain-text (non-secret) env vars. They reach the Rust process only via
+  // `AframpContainer.envVars` in cloudflare/worker.ts.
   "vars": {
+    // Must listen on all interfaces inside the container (local default is 127.0.0.1).
     "APP_BIND_ADDR": "0.0.0.0:3000",
+    // Testnet. Use https://horizon.stellar.org for mainnet.
     "STELLAR_HORIZON_URL": "https://horizon-testnet.stellar.org",
+    // Deposit-detection polling cadence, in seconds.
     "STELLAR_POLL_INTERVAL_SECS": "60",
+    // REPLACE with the exact HTTPS origin(s) of the frontend, comma-separated.
     "CORS_ALLOWED_ORIGINS": "https://replace-with-your-frontend.example",
+    // Keep true in production; the Worker serves HTTPS.
     "COOKIE_SECURE": "true",
+    // `lax` for a same-origin frontend; `none` only if the frontend is cross-origin.
     "COOKIE_SAME_SITE": "lax"
   },
   "triggers": {
+    // Health-check keepalive: every 5 minutes the Worker fetches /health so the
+    // container (which sleeps after 10m idle) stays awake and keeps polling Stellar.
     "crons": ["*/5 * * * *"]
   },
   "containers": [
     {
       "class_name": "AframpContainer",
+      // Built and pushed by `npx wrangler deploy` (Docker must be running).
       "image": "./Dockerfile",
+      // MUST stay 1: every instance runs its own Stellar polling loop, so more
+      // than one duplicates Horizon traffic and races on deposit records.
+      // See "The single-instance constraint" in DEPLOY.md.
       "max_instances": 1
     }
   ],
+  // The container is addressed through a Durable Object; worker.ts always
+  // uses the single named instance "primary".
   "durable_objects": {
     "bindings": [
       {
@@ -30,6 +52,7 @@
       }
     ]
   },
+  // Durable Object class migrations — append new tags, never edit existing ones.
   "migrations": [
     {
       "tag": "v1",
