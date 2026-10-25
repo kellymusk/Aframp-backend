@@ -4,6 +4,20 @@ use uuid::Uuid;
 use crate::blockchain::{keypair, wallet_crypto};
 use crate::models::{NewWallet, Wallet};
 
+/// Purpose recorded in `wallet_secret_access_log` for decryptions done by
+/// [`rotate_encryption_key`].
+pub const PURPOSE_KEY_ROTATION: &str = "key_rotation";
+
+#[derive(Debug, thiserror::Error)]
+pub enum WalletSecretError {
+    #[error("wallet not found")]
+    NotFound,
+    #[error("failed to decrypt wallet secret: {0}")]
+    Decryption(String),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CreateWalletError {
     #[error("failed to generate wallet keypair: {0}")]

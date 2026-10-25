@@ -83,6 +83,7 @@ pub async fn try_state() -> Result<AppState, TestDbError> {
             secure: true,
             same_site: aframp::SameSite::Lax,
         },
+        cngn_issuer: None,
     })
 }
 

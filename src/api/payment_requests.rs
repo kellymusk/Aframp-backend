@@ -41,8 +41,8 @@ pub struct PaymentRequestView {
     /// Optional merchant-defined description (e.g. "Table 5 order").
     pub description: Option<String>,
     /// SEP-0007 payment URI a Stellar wallet can open directly to pay this
-    /// request. `None` for credit assets we don't have a real issuer address
-    /// configured for yet (see PRD §9.4) — we don't guess one.
+    /// request. `None` for cNGN when `CNGNX_ISSUER_ADDRESS` isn't configured
+    /// (see PRD §9.4) — we don't guess an issuer.
     pub sep7_uri: Option<String>,
 }
 
@@ -95,8 +95,8 @@ pub async fn create(
             )
         })?;
 
-    // Defaults to XLM, not cNGN like withdrawals: XLM is what's actually
-    // scannable/testable today (no cNGN issuer address configured yet).
+    // Defaults to XLM, not cNGN like withdrawals: cNGN is only scannable
+    // once CNGNX_ISSUER_ADDRESS is configured.
     let asset = req.asset.unwrap_or_else(|| "XLM".into());
 
     let description = match req.description {
@@ -128,7 +128,7 @@ pub async fn create(
     )
     .await?;
 
-    Ok(Json(to_view(&pr, &wallet.address, &wallet.network)))
+    Ok(Json(to_view(&pr, &wallet.address, &wallet.network, state.cngn_issuer.as_deref().map(String::as_str))))
 }
 
 pub async fn get(
@@ -503,7 +503,7 @@ fn effective_status(
     }
 }
 
-fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestView {
+fn to_view(pr: &PaymentRequest, address: &str, network: &str, cngn_issuer: Option<&str>) -> PaymentRequestView {
     PaymentRequestView {
         id: pr.id,
         merchant_id: pr.merchant_id,
@@ -521,7 +521,7 @@ fn to_view(pr: &PaymentRequest, address: &str, network: &str) -> PaymentRequestV
     }
 }
 
-fn row_to_view(row: &payment_requests::PaymentRequestWithWallet) -> PaymentRequestView {
+fn row_to_view(row: &payment_requests::PaymentRequestWithWallet, cngn_issuer: Option<&str>) -> PaymentRequestView {
     PaymentRequestView {
         id: row.id,
         merchant_id: row.merchant_id,

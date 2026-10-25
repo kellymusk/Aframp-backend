@@ -173,6 +173,19 @@ impl AppConfig {
             "mock" => OtpProviderKind::Mock,
             other => return Err(format!("OTP_PROVIDER must be `termii` or `mock`, got `{other}`")),
         };
+        let cngn_issuer_address = match std::env::var("CNGNX_ISSUER_ADDRESS") {
+            Ok(value) if !value.trim().is_empty() => {
+                let value = value.trim().to_string();
+                if stellar_strkey::ed25519::PublicKey::from_string(&value).is_err() {
+                    return Err(format!(
+                        "CNGNX_ISSUER_ADDRESS must be a Stellar account ID (G...), got `{value}`"
+                    ));
+                }
+                Some(value)
+            }
+            _ => None,
+        };
+
         let (termii_api_key, termii_sender_id) = if otp_provider == OtpProviderKind::Termii {
             (
                 Some(SecretString::new(env("TERMII_API_KEY")?)),
