@@ -22,8 +22,17 @@ jobs:
           fetch-depth: 0
 
       - name: Check for forbidden file changes
+        env:
+          AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PRs opened by the repo owner, org members or collaborators are
+            # maintainer releases; fork contributors are still guarded.
+            case "$AUTHOR_ASSOC" in
+              OWNER|MEMBER|COLLABORATOR)
+                echo "✅  PR by a maintainer ($AUTHOR_ASSOC). Guard skipped."
+                exit 0 ;;
+            esac
             BASE="${{ github.event.pull_request.base.sha }}"
           else
             BASE="${{ github.event.before }}"
