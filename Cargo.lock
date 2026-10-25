@@ -74,7 +74,7 @@ dependencies = [
  "sqlx",
  "stellar-base",
  "stellar-strkey 0.0.18",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tokio",
  "tokio-stream",
  "tower",
