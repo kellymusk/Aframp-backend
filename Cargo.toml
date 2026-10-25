@@ -18,7 +18,7 @@ dotenvy = "=0.15.7"
 ed25519-dalek = "=3.0.0"
 hex = "=0.4.3"
 futures-util = "=0.3.33"
-hmac = "=0.12.1"
+hmac = "=0.13.0"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 http = "=1.5.0"
 jsonwebtoken = "=9.3.1"
