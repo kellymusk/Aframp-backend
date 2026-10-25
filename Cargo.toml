@@ -41,7 +41,7 @@ uuid = { version = "=1.24.0", features = ["v4", "serde"] }
 zeroize = { version = "=1.9.0", features = ["derive"] }
 
 [dev-dependencies]
-httpmock = "=0.7.0"
+httpmock = "=0.9.0"
 proptest = "=1.11.0"
 insta = { version = "=1.49.0", features = ["json"] }
 stellar-base = "=0.7.0"
