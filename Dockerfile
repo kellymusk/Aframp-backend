@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# Pin the Rust toolchain for reproducible builds. Bump deliberately.
-FROM rust:1.82-slim-bookworm AS builder
+# Pin the Rust toolchain for reproducible builds. Bump deliberately: it must
+# be at least `rust-version` in Cargo.toml (locked dependencies need 1.88).
+FROM rust:1.88-slim-bookworm AS builder
 WORKDIR /app
 
 # Copy manifests first so dependency compilation can be cached between builds.
