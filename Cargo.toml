@@ -2,6 +2,7 @@
 name = "aframp"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 
 [package.metadata.cargo-audit]
 # RUSTSEC advisories accepted as low-risk. The CI `cargo audit` job fails on
