@@ -1,0 +1,108 @@
+name: Guard — Protect main backend from contributor edits
+
+# This CI job enforces the contributor sandbox rule:
+# on `dev-backend`, contributors may ONLY change files under:
+#   tests/        – new and updated integration/unit tests
+#   docs/         – documentation, ADRs, proposals
+#   scripts/      – helper scripts and benchmarks
+#   API.md        – public API documentation
+#   openapi.yaml  – OpenAPI spec
+#   README.md     – project README
+#   CHANGELOG.md  – changelog entries
+#
+# Any change to protected production paths (src/, migrations/, Cargo.toml,
+# Cargo.lock, Dockerfile, .github/workflows/, etc.) causes this job to FAIL,
+# keeping the main backend untouched.
+#
+# This job only runs on the `dev-backend` branch. PRs targeting `main` are
+# governed by CODEOWNERS and normal review; this guard is not needed there.
+
+on:
+  push:
+    branches:
+      - dev-backend
+  pull_request:
+    branches:
+      - dev-backend
+
+jobs:
+  guard:
+    name: Contributor sandbox guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files against main
+        id: diff
+        run: |
+          # Compare this branch against origin/main to get the full diff,
+          # not just the last commit — catches squashed and force-pushed history.
+          git fetch origin main --depth=1
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo "changed_files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGED"          >> "$GITHUB_OUTPUT"
+          echo "EOF"               >> "$GITHUB_OUTPUT"
+
+      - name: Enforce contributor sandbox
+        env:
+          CHANGED: ${{ steps.diff.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+
+          # Paths contributors are allowed to touch on dev-backend.
+          ALLOWED_PREFIXES=(
+            "tests/"
+            "docs/"
+            "scripts/"
+            "API.md"
+            "openapi.yaml"
+            "README.md"
+            "CHANGELOG.md"
+          )
+
+          VIOLATIONS=()
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            allowed=false
+            for prefix in "${ALLOWED_PREFIXES[@]}"; do
+              if [[ "$file" == "$prefix"* || "$file" == "$prefix" ]]; then
+                allowed=true
+                break
+              fi
+            done
+            if [[ "$allowed" == "false" ]]; then
+              VIOLATIONS+=("$file")
+            fi
+          done <<< "$CHANGED"
+
+          if [[ ${#VIOLATIONS[@]} -gt 0 ]]; then
+            echo ""
+            echo "🚫 GUARD FAILED — the following files are outside the contributor sandbox:"
+            echo ""
+            for v in "${VIOLATIONS[@]}"; do
+              echo "   ❌  $v"
+            done
+            echo ""
+            echo "On the dev-backend branch, contributors may only edit:"
+            echo "   ✅  tests/        — integration and unit tests"
+            echo "   ✅  docs/         — documentation, ADRs, proposals"
+            echo "   ✅  scripts/      — helper scripts and benchmarks"
+            echo "   ✅  API.md        — public API documentation"
+            echo "   ✅  openapi.yaml  — OpenAPI specification"
+            echo "   ✅  README.md     — project README"
+            echo "   ✅  CHANGELOG.md  — changelog entries"
+            echo ""
+            echo "Changes to src/, migrations/, Cargo.toml, Cargo.lock,"
+            echo "Dockerfile, .github/workflows/, and all other paths"
+            echo "require a maintainer PR against the main branch."
+            echo ""
+            exit 1
+          fi
+
+          echo "✅ All changed files are within the contributor sandbox."
