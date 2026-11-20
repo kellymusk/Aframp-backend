@@ -307,11 +307,197 @@ pub async fn verify(
     }
 
     Err(OtpError::ChallengeNotFound)
+    // Signup: create the user + merchant now that the phone is proven.
+    let email = challenge
+        .pending_email
+        .as_deref()
+        .expect("signup challenge always carries pending_email");
+    let password_hash = challenge
+        .pending_password_hash
+        .as_deref()
+        .expect("signup challenge always carries pending_password_hash");
+    let name = challenge
+        .pending_name
+        .as_deref()
+        .expect("signup challenge always carries pending_name");
+
+    let (user, merchant) = users::create_user_with_merchant(
+        db,
+        email,
+        password_hash,
+        name,
+        &challenge.phone_number,
+    )
+    .await
+    .map_err(|err| match users::unique_violation_field(&err) {
+        Some("users_email_key") => OtpError::EmailTaken,
+        Some("users_phone_number_key") => OtpError::PhoneTaken,
+        _ => OtpError::Database(err),
+    })?;
+
+    Ok(VerifiedOutcome::Signup(user, merchant))
+}
+
+/// Deletes challenges that are both terminal (consumed or expired) and older
+/// than 24 hours. This is the only mechanism preventing accumulated PII
+/// (pending password hashes) from persisting indefinitely.
+pub async fn purge_stale_challenges(db: &PgPool) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM otp_challenges
+          WHERE (consumed_at IS NOT NULL OR expires_at < now())
+            AND created_at < now() - interval '24 hours'",
+    )
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+struct NewChallenge<'a> {
+    purpose: &'a str,
+    user_id: Option<Uuid>,
+    pending_email: Option<&'a str>,
+    pending_password_hash: Option<&'a str>,
+    pending_name: Option<&'a str>,
+    phone_number: &'a str,
+}
+
+async fn upsert_challenge(
+    db: &PgPool,
+    hmac_secret: &str,
+    new: NewChallenge<'_>,
+) -> Result<(Uuid, String), OtpError> {
+    let now = Utc::now();
+
+    // Reuse an existing, still-valid challenge for this phone+purpose instead
+    // of creating a new row, so a resend doesn't multiply rows.
+    let existing = sqlx::query_as::<_, OtpChallenge>(
+        "SELECT id, purpose, user_id, pending_email, pending_password_hash, pending_name,
+                phone_number, code_hash, attempts, max_attempts, expires_at, consumed_at,
+                last_sent_at, created_at
+           FROM otp_challenges
+          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
+            AND expires_at > now()
+          ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(new.phone_number)
+    .bind(new.purpose)
+    .fetch_optional(db)
+    .await?;
+
+    if let Some(existing) = existing {
+        let elapsed = now.signed_duration_since(existing.last_sent_at);
+        if elapsed < Duration::seconds(RESEND_COOLDOWN_SECS) {
+            let retry_after_secs = (RESEND_COOLDOWN_SECS - elapsed.num_seconds()).max(0) as u64;
+            return Err(OtpError::RateLimited { retry_after_secs });
+        }
+
+        let code = generate_code();
+        let code_hash = hash_code(hmac_secret, existing.id, &code);
+        sqlx::query(
+            "UPDATE otp_challenges
+                SET code_hash = $2, attempts = 0, expires_at = $3, last_sent_at = now()
+              WHERE id = $1",
+        )
+        .bind(existing.id)
+        .bind(&code_hash)
+        .bind(now + Duration::seconds(CODE_TTL_SECS))
+        .execute(db)
+        .await?;
+        return Ok((existing.id, code));
+    }
+
+    // Spam cap: count fresh challenges created in the last hour for this
+    // phone+purpose. Consumed rows are excluded so completed flows don't
+    // count against the user.
+    let recent_sends: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM otp_challenges
+          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
+            AND created_at > now() - interval '1 hour'",
+    )
+    .bind(new.phone_number)
+    .bind(new.purpose)
+    .fetch_one(db)
+    .await?;
+    if recent_sends >= MAX_SENDS_PER_HOUR {
+        return Err(OtpError::RateLimited {
+            retry_after_secs: 3600,
+        });
+    }
+
+    let challenge_id = Uuid::new_v4();
+    let code = generate_code();
+    let code_hash = hash_code(hmac_secret, challenge_id, &code);
+
+    sqlx::query(
+        "INSERT INTO otp_challenges
+            (id, purpose, user_id, pending_email, pending_password_hash, pending_name,
+             phone_number, code_hash, attempts, max_attempts, expires_at, last_sent_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, now())",
+    )
+    .bind(challenge_id)
+    .bind(new.purpose)
+    .bind(new.user_id)
+    .bind(new.pending_email)
+    .bind(new.pending_password_hash)
+    .bind(new.pending_name)
+    .bind(new.phone_number)
+    .bind(&code_hash)
+    .bind(MAX_ATTEMPTS)
+    .bind(now + Duration::seconds(CODE_TTL_SECS))
+    .execute(db)
+    .await?;
+
+    Ok((challenge_id, code))
+}
+
+async fn send_code(otp: &dyn OtpProvider, phone_number: &str, code: &str) -> Result<(), OtpError> {
+    otp.send(phone_number, code)
+        .await
+        .map_err(|err| OtpError::SendFailed(err.to_string()))
+}
+
+fn generate_code() -> String {
+    let mut bytes = [0u8; 4];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let n = u32::from_be_bytes(bytes) % 1_000_000;
+    format!("{n:06}")
+}
+
+fn hash_code(hmac_secret: &str, challenge_id: Uuid, code: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(challenge_id.as_bytes());
+    mac.update(code.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, expected: &str) -> bool {
+    let actual = hash_code(hmac_secret, challenge_id, code);
+    // Constant-time comparison to avoid leaking the hash via timing.
+    actual.len() == expected.len()
+        && actual
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    /// Connects to the test database from `DATABASE_URL`. Returns `None` when
+    /// the variable is unset so the suite is skipped in environments without
+    /// a database (e.g. plain `cargo test` on a laptop).
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()
+    }
 
     /// Regression test for #1411: if `create_verified` fails mid-signup, the
     /// challenge DELETE must roll back so the user can retry with the same
@@ -386,5 +572,101 @@ mod tests {
             .bind(&email)
             .execute(&db)
             .await;
+    /// Inserts a challenge row with explicit `created_at`, `expires_at` and
+    /// `consumed_at` so the purge predicate can be exercised directly.
+    async fn insert_challenge(
+        db: &PgPool,
+        phone_number: &str,
+        created_at: chrono::DateTime<Utc>,
+        expires_at: chrono::DateTime<Utc>,
+        consumed_at: Option<chrono::DateTime<Utc>>,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO otp_challenges
+                (id, purpose, phone_number, code_hash, attempts, max_attempts,
+                 expires_at, consumed_at, last_sent_at, created_at)
+             VALUES ($1, 'login', $2, 'test-hash', 0, 5, $3, $4, $5, $5)",
+        )
+        .bind(id)
+        .bind(phone_number)
+        .bind(expires_at)
+        .bind(consumed_at)
+        .bind(created_at)
+        .execute(db)
+        .await
+        .expect("insert test challenge");
+        id
+    }
+
+    async fn row_exists(db: &PgPool, id: Uuid) -> bool {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM otp_challenges WHERE id = $1)")
+            .bind(id)
+            .fetch_one(db)
+            .await
+            .expect("check row existence")
+    }
+
+    #[tokio::test]
+    async fn purge_removes_consumed_challenge_older_than_24h() {
+        let Some(db) = test_pool().await else {
+            return;
+        };
+        let now = Utc::now();
+        let id = insert_challenge(
+            &db,
+            "+15550000001",
+            now - Duration::hours(25),
+            now - Duration::hours(24),
+            Some(now - Duration::hours(24)),
+        )
+        .await;
+
+        purge_stale_challenges(&db).await.expect("purge");
+
+        assert!(!row_exists(&db, id).await, "consumed stale row should be purged");
+    }
+
+    #[tokio::test]
+    async fn purge_keeps_unconsumed_unexpired_challenge_older_than_24h() {
+        let Some(db) = test_pool().await else {
+            return;
+        };
+        let now = Utc::now();
+        let id = insert_challenge(
+            &db,
+            "+15550000002",
+            now - Duration::hours(25),
+            now + Duration::hours(1),
+            None,
+        )
+        .await;
+
+        purge_stale_challenges(&db).await.expect("purge");
+
+        assert!(
+            row_exists(&db, id).await,
+            "unconsumed, non-expired row must not be purged"
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_removes_challenge_expired_older_than_24h() {
+        let Some(db) = test_pool().await else {
+            return;
+        };
+        let now = Utc::now();
+        let id = insert_challenge(
+            &db,
+            "+15550000003",
+            now - Duration::hours(26),
+            now - Duration::hours(25),
+            None,
+        )
+        .await;
+
+        purge_stale_challenges(&db).await.expect("purge");
+
+        assert!(!row_exists(&db, id).await, "expired stale row should be purged");
     }
 }
