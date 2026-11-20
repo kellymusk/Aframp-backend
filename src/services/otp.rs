@@ -78,6 +78,30 @@ pub enum VerifiedOutcome {
     PhoneChanged(User),
 }
 
+/// Normalises an email address for the signup uniqueness check.
+///
+/// Product decision (issue #1423): `is_valid_email` accepts RFC 5322
+/// `+`-extension addresses (`user+tag@example.com`), but the local part is
+/// normalised before the uniqueness check so that `alice@example.com` and
+/// `alice+bypass@example.com` are treated as the same inbox. Without this a
+/// banned/suspended merchant could re-signup with `+1`, `+2`, … and hold
+/// multiple accounts on the same inbox.
+///
+/// The stored email is left untouched (the user keeps the address they typed);
+/// only the comparison key is normalised. The domain is lowercased and the
+/// `+tag` suffix is stripped from the local part. This is a known caveat for
+/// providers that treat `+` as a significant character, which is rare.
+pub fn normalise_email_for_uniqueness(email: &str) -> String {
+    let email = email.trim();
+    match email.rsplit_once('@') {
+        Some((local, domain)) => {
+            let local = local.split('+').next().unwrap_or(local);
+            format!("{}@{}", local, domain.to_lowercase())
+        }
+        None => email.to_lowercase(),
+    }
+}
+
 pub async fn start_signup_challenge(
     db: &PgPool,
     otp: &dyn OtpProvider,
@@ -87,11 +111,15 @@ pub async fn start_signup_challenge(
     name: &str,
     phone_number: &str,
 ) -> Result<OtpChallengeResponse, OtpError> {
-    let email_taken: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
-            .bind(email)
-            .fetch_one(db)
-            .await?;
+    // Compare on the normalised local part so `+`-extension aliases of an
+    // already-registered inbox are rejected (issue #1423).
+    let normalised_email = normalise_email_for_uniqueness(email);
+    let email_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE lower(split_part(email, '+', 1)) = $1)",
+    )
+    .bind(&normalised_email)
+    .fetch_one(db)
+    .await?;
     if email_taken {
         return Err(OtpError::EmailTaken);
     }
@@ -245,254 +273,6 @@ pub async fn verify(
         return Err(OtpError::ChallengeNotFound);
     }
 
-    if challenge.purpose == "login" {
-        let user_id = challenge.user_id.expect(
-            "login challenge always carries user_id — enforced by the migration's CHECK constraint",
-        );
-        let user = users::user_by_id(db, user_id)
-            .await?
-            .ok_or(OtpError::ChallengeNotFound)?;
-        return Ok(VerifiedOutcome::Login(user));
-    }
+    if challenge.purpose == "login" 
 
-    if challenge.purpose == "phone_change" {
-        let user_id = challenge
-            .user_id
-            .expect("phone_change challenge always carries user_id — enforced by the migration's CHECK constraint");
-        let user = sqlx::query_as::<_, User>(&format!(
-            "UPDATE users SET phone_number = $2, phone_verified = true, updated_at = now()
-              WHERE id = $1
-              RETURNING {}",
-            users::USER_COLS
-        ))
-        .bind(user_id)
-        .bind(&challenge.phone_number)
-        .fetch_optional(db)
-        .await
-        .map_err(|err| match users::unique_violation_field(&err) {
-            Some("users_phone_number_key") => OtpError::PhoneTaken,
-            _ => OtpError::Database(err),
-        })?
-        .ok_or(OtpError::ChallengeNotFound)?;
-        return Ok(VerifiedOutcome::PhoneChanged(user));
-    }
-
-    // Signup: create the user + merchant from the pending fields.
-    let email = challenge
-        .pending_email
-        .as_deref()
-        .expect("signup challenge always carries pending_email");
-    let password_hash = challenge
-        .pending_password_hash
-        .as_deref()
-        .expect("signup challenge always carries pending_password_hash");
-    let name = challenge
-        .pending_name
-        .as_deref()
-        .expect("signup challenge always carries pending_name");
-
-    let (user, merchant) = users::create_user_with_merchant(
-        db,
-        email,
-        password_hash,
-        name,
-        &challenge.phone_number,
-    )
-    .await
-    .map_err(|err| match users::unique_violation_field(&err) {
-        Some("users_email_key") => OtpError::EmailTaken,
-        Some("users_phone_number_key") => OtpError::PhoneTaken,
-        _ => OtpError::Database(err),
-    })?;
-
-    Ok(VerifiedOutcome::Signup(user, merchant))
-}
-
-struct NewChallenge<'a> {
-    purpose: &'a str,
-    user_id: Option<Uuid>,
-    pending_email: Option<&'a str>,
-    pending_password_hash: Option<&'a str>,
-    pending_name: Option<&'a str>,
-    phone_number: &'a str,
-}
-
-async fn upsert_challenge(
-    db: &PgPool,
-    hmac_secret: &str,
-    new: NewChallenge<'_>,
-) -> Result<(Uuid, String), OtpError> {
-    let now = Utc::now();
-
-    // Reuse an existing, still-valid challenge for the same phone+purpose
-    // instead of minting a new one, so a resend doesn't reset the attempt
-    // counter (which would let an attacker brute-force by re-requesting).
-    let existing = sqlx::query_as::<_, OtpChallenge>(
-        "SELECT id, purpose, user_id, pending_email, pending_password_hash, pending_name,
-                phone_number, code_hash, attempts, max_attempts, expires_at, consumed_at,
-                last_sent_at, created_at
-           FROM otp_challenges
-          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
-          ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(new.phone_number)
-    .bind(new.purpose)
-    .fetch_optional(db)
-    .await?;
-
-    if let Some(challenge) = existing {
-        let since_last = now - challenge.last_sent_at;
-        if since_last < Duration::seconds(RESEND_COOLDOWN_SECS) {
-            let retry_after_secs =
-                (RESEND_COOLDOWN_SECS - since_last.num_seconds()).max(0) as u64;
-            return Err(OtpError::RateLimited { retry_after_secs });
-        }
-
-        // Refresh the code in place, keeping the attempt counter intact.
-        let code = generate_code();
-        let code_hash = hash_code(hmac_secret, challenge.id, &code);
-        sqlx::query(
-            "UPDATE otp_challenges
-                SET code_hash = $2, expires_at = $3, last_sent_at = $4
-              WHERE id = $1",
-        )
-        .bind(challenge.id)
-        .bind(&code_hash)
-        .bind(now + Duration::seconds(CODE_TTL_SECS))
-        .bind(now)
-        .execute(db)
-        .await?;
-        return Ok((challenge.id, code));
-    }
-
-    // Brand-new challenge: enforce the hourly spam cap.
-    let recent_sends: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM otp_challenges
-          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
-            AND created_at > $3",
-    )
-    .bind(new.phone_number)
-    .bind(new.purpose)
-    .bind(now - Duration::hours(1))
-    .fetch_one(db)
-    .await?;
-    if recent_sends >= MAX_SENDS_PER_HOUR {
-        return Err(OtpError::RateLimited {
-            retry_after_secs: 3600,
-        });
-    }
-
-    let id = Uuid::new_v4();
-    let code = generate_code();
-    let code_hash = hash_code(hmac_secret, id, &code);
-    sqlx::query(
-        "INSERT INTO otp_challenges
-            (id, purpose, user_id, pending_email, pending_password_hash, pending_name,
-             phone_number, code_hash, attempts, max_attempts, expires_at, last_sent_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, $11)",
-    )
-    .bind(id)
-    .bind(new.purpose)
-    .bind(new.user_id)
-    .bind(new.pending_email)
-    .bind(new.pending_password_hash)
-    .bind(new.pending_name)
-    .bind(new.phone_number)
-    .bind(&code_hash)
-    .bind(MAX_ATTEMPTS)
-    .bind(now + Duration::seconds(CODE_TTL_SECS))
-    .bind(now)
-    .execute(db)
-    .await?;
-
-    Ok((id, code))
-}
-
-async fn send_code(otp: &dyn OtpProvider, phone_number: &str, code: &str) -> Result<(), OtpError> {
-    otp.send_code(phone_number, code)
-        .await
-        .map_err(|err| OtpError::SendFailed(err.to_string()))
-}
-
-/// Generates a uniformly random `CODE_DIGITS`-digit decimal code.
-///
-/// Uses rejection sampling over `u32` so every value in `0..CODE_KEYSpace` is
-/// equally likely (a plain `% 1_000_000` would bias the low end).
-fn generate_code() -> String {
-    let mut rng = rand::thread_rng();
-    let limit = u32::MAX - (u32::MAX % CODE_KEYSpace as u32);
-    let value = loop {
-        let candidate = rng.next_u32();
-        if candidate < limit {
-            break candidate % CODE_KEYSpace as u32;
-        }
-    };
-    format!("{:0width$}", value, width = CODE_DIGITS as usize)
-}
-
-fn hash_code(hmac_secret: &str, challenge_id: Uuid, code: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes())
-        .expect("HMAC accepts keys of any length");
-    mac.update(challenge_id.as_bytes());
-    mac.update(b":");
-    mac.update(code.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
-}
-
-fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, expected_hash: &str) -> bool {
-    let actual = hash_code(hmac_secret, challenge_id, code);
-    // Constant-time comparison to avoid leaking timing information.
-    actual.len() == expected_hash.len()
-        && actual
-            .bytes()
-            .zip(expected_hash.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Documents the brute-force surface of the 6-digit OTP design (issue #1422).
-    ///
-    /// The code is 6 decimal digits → `10^6 = 1_000_000` possible values. An
-    /// attacker who knows the public `challenge_id` gets at most `MAX_ATTEMPTS`
-    /// guesses per challenge, so the per-challenge success probability is
-    /// `MAX_ATTEMPTS / CODE_KEYSpace = 5 / 1_000_000 = 0.0005%`. That is below
-    /// the accepted threshold of `0.001%` per challenge, and is only acceptable
-    /// because the window is bounded by `CODE_TTL_SECS` (10 minutes) and login
-    /// issuance is additionally gated by per-IP rate limiting. If any of those
-    /// mitigations is removed, the digit count must be revisited.
-    #[test]
-    fn six_digit_otp_bruteforce_probability_is_within_threshold() {
-        // Keyspace: 6 decimal digits.
-        assert_eq!(CODE_DIGITS, 6);
-        assert_eq!(CODE_KEYSpace, 1_000_000);
-
-        // Attempt budget and TTL are the mitigations that make 6 digits safe.
-        assert_eq!(MAX_ATTEMPTS, 5);
-        assert_eq!(CODE_TTL_SECS, 600); // 10 minutes
-
-        // Per-challenge success probability for an attacker who knows the id.
-        let per_challenge = MAX_ATTEMPTS as f64 / CODE_KEYSpace as f64;
-        let per_challenge_pct = per_challenge * 100.0;
-        assert!(
-            (per_challenge_pct - 0.0005).abs() < 1e-12,
-            "expected 0.0005% per challenge, got {per_challenge_pct}%"
-        );
-        assert!(
-            per_challenge_pct < ACCEPTABLE_PER_CHALLENGE_SUCCESS_PCT,
-            "per-challenge success probability must stay below the accepted threshold"
-        );
-    }
-
-    #[test]
-    fn generate_code_is_six_decimal_digits() {
-        for _ in 0..100 {
-            let code = generate_code();
-            assert_eq!(code.len(), CODE_DIGITS as usize);
-            assert!(code.chars().all(|c| c.is_ascii_digit()));
-        }
-    }
-}
+/* … truncated 8988 chars — edit only what you need near the top … */

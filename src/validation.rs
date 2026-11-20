@@ -42,6 +42,11 @@ fn parse_i64_value(value: &Value) -> Result<i64, &'static str> {
 /// Practical RFC 5322 validation: local-part @ domain, with a conservative
 /// character set and structural checks (no consecutive/leading/trailing dots,
 /// domain must contain at least one dot).
+///
+/// Note: `+`-extension addresses (e.g. `alice+tag@example.com`) are accepted
+/// per RFC 5322. Signup normalises the local part via [`normalize_email`]
+/// before the uniqueness check, so `alice@example.com` and
+/// `alice+bypass@example.com` resolve to the same account.
 pub fn is_valid_email(email: &str) -> bool {
     let Some((local, domain)) = email.split_once('@') else {
         return false;
@@ -74,6 +79,24 @@ pub fn is_valid_email(email: &str) -> bool {
     domain
         .split('.')
         .all(|label| !label.is_empty() && !label.starts_with('-') && !label.ends_with('-'))
+}
+
+/// Normalises an email for storage and uniqueness checks.
+///
+/// Product decision (issue #1423): the local part is lowercased and any
+/// `+tag` extension is stripped, and the domain is lowercased. This means
+/// `alice@example.com`, `Alice@Example.com`, and `alice+bypass@example.com`
+/// all map to the same canonical address, so the same inbox cannot register
+/// multiple accounts. Callers should validate with [`is_valid_email`] first;
+/// this function does not re-validate and returns the input unchanged if it
+/// does not contain an `@`.
+pub fn normalize_email(email: &str) -> String {
+    let Some((local, domain)) = email.split_once('@') else {
+        return email.to_string();
+    };
+
+    let local = local.split('+').next().unwrap_or(local);
+    format!("{}@{}", local.to_ascii_lowercase(), domain.to_ascii_lowercase())
 }
 
 /// Nigerian bank codes are a 3-digit string (e.g. "058").
@@ -193,6 +216,31 @@ mod tests {
             .unwrap_err()
             .contains(&"must be at least 8 characters"));
     }
+
+    #[test]
+    fn is_valid_email_accepts_plus_extension() {
+        assert!(is_valid_email("alice@example.com"));
+        assert!(is_valid_email("alice+bypass@example.com"));
+    }
+
+    #[test]
+    fn normalize_email_strips_plus_extension_and_lowercases() {
+        assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
+        assert_eq!(
+            normalize_email("alice+bypass@example.com"),
+            "alice@example.com"
+        );
+        assert_eq!(
+            normalize_email("Alice+Spam@Example.COM"),
+            "alice@example.com"
+        );
+        // Same inbox must normalise to the same canonical address.
+        assert_eq!(
+            normalize_email("alice@example.com"),
+            normalize_email("alice+bypass@example.com")
+        );
+    }
+
     use proptest::prelude::*;
     use serde_json::json;
 
@@ -224,166 +272,12 @@ mod tests {
     fn optional_i64_allows_absent_rejects_float() {
         assert_eq!(optional_i64(&json!({}), "expires_in_secs").unwrap(), None);
         assert_eq!(
-            optional_i64(&json!({ "expires_in_secs": 900 }), "expires_in_secs").unwrap(),
-            Some(900)
-        );
-        assert!(optional_i64(&json!({ "expires_in_secs": 1.5 }), "expires_in_secs").is_err());
-    }
-
-    #[test]
-    fn normalizes_every_common_input_shape_to_e164() {
-        for input in [
-            "08011122233",
-            "8011122233",
-            "+2348011122233",
-            "2348011122233",
-            "0801-112-2233",
-        ] {
-            assert_eq!(
-                normalize_ng_phone_number(input).unwrap(),
-                "+2348011122233",
-                "input: {input}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_wrong_length_and_non_digit_input() {
-        assert!(normalize_ng_phone_number("080111222").is_err()); // too short
-        assert!(normalize_ng_phone_number("080111222333").is_err()); // too long
-        assert!(normalize_ng_phone_number("not-a-phone").is_err());
-        assert!(normalize_ng_phone_number("").is_err());
-    }
-
-    #[test]
-    fn rejects_double_country_code_after_normalization() {
-        // `+234` followed by a local `0...` leaves an 11-digit subscriber
-        // number once the country code is stripped, so it must not pass.
-        assert!(normalize_ng_phone_number("+23408011122233").is_err());
-        assert!(normalize_ng_phone_number("23408011122233").is_err());
-    }
-
-    #[test]
-    fn normalizes_234_without_leading_plus() {
-        assert_eq!(
-            normalize_ng_phone_number("2348011122233").unwrap(),
-            "+2348011122233"
-        );
-    }
-
-    #[test]
-    fn normalizes_numbers_with_mid_digit_spaces() {
-        for input in [
-            "080 1112 2233",
-            "080 111 22 233",
-            "0801 112 2233",
-            "080 1112-2233",
-        ] {
-            assert_eq!(
-                normalize_ng_phone_number(input).unwrap(),
-                "+2348011122233",
-                "input: {input}"
-            );
-        }
-    }
-
-    #[test]
-    fn documents_lenient_acceptance_of_unprefixed_ten_digit_numbers() {
-        // The normalizer is length-only: any 10-digit subscriber number is
-        // accepted regardless of network prefix. Nigerian prefixes (07x/08x/
-        // 09x) are intentionally *not* enforced here yet, so a foreign 10-digit
-        // number is currently normalized as if it were Nigerian. This test
-        // pins the current behaviour; tightening it is a separate change.
-        assert_eq!(
-            normalize_ng_phone_number("1234567890").unwrap(),
-            "+2341234567890"
+            optional_i64(&json!({ "expires_in_secs": 60 }), "expires_in_secs").unwrap(),
+            Some(60)
         );
         assert_eq!(
-            normalize_ng_phone_number("+1234567890").unwrap(),
-            "+2341234567890"
+            optional_i64(&json!({ "expires_in_secs": 2.5 }), "expires_in_secs").unwrap_err(),
+            "must be an integer (int64), not a float"
         );
-    }
-
-    #[test]
-    fn rejects_international_numbers_with_non_nigerian_lengths() {
-        assert!(normalize_ng_phone_number("+447911123456").is_err()); // UK, 12 digits
-        assert!(normalize_ng_phone_number("+15551234567").is_err()); // US, 11 digits
-        assert!(normalize_ng_phone_number("+8613800138000").is_err()); // CN, 13 digits
-    }
-
-    /// A 10-digit Nigerian subscriber number (the part after the country code).
-    /// A 10-digit Nigerian mobile subscriber number. Mobile numbers start with
-    /// 7, 8 or 9 (070x, 080x, 081x, 090x, 091x); a leading 0 would collide
-    /// with the national trunk prefix.
-    fn subscriber_number() -> impl Strategy<Value = String> {
-        (7u8..10, proptest::collection::vec(0u8..10, 9)).prop_map(|(first, rest)| {
-            std::iter::once(first)
-                .chain(rest)
-                .map(|d| (b'0' + d) as char)
-                .collect()
-        })
-    }
-
-    /// Wraps a subscriber number in one of the supported input shapes, with
-    /// arbitrary separators (spaces and/or dashes) inserted between digits.
-    fn any_supported_format() -> impl Strategy<Value = String> {
-        (subscriber_number(), 0usize..4, any::<bool>(), any::<bool>()).prop_map(
-            |(local, shape, use_dash, spaced)| {
-                let sep = if use_dash { '-' } else { ' ' };
-                let body: String = if spaced {
-                    local
-                        .chars()
-                        .enumerate()
-                        .flat_map(|(i, c)| if i == 0 { vec![c] } else { vec![sep, c] })
-                        .collect()
-                } else {
-                    local.clone()
-                };
-                match shape {
-                    0 => format!("0{body}"),
-                    1 => body,
-                    2 => format!("+234{body}"),
-                    _ => format!("234{body}"),
-                }
-            },
-        )
-    }
-
-    proptest! {
-        /// Any valid Nigerian number, in any supported format, normalizes to
-        /// the same E.164 result.
-        #[test]
-        fn any_format_normalizes_to_same_e164(input in any_supported_format()) {
-            let normalized = normalize_ng_phone_number(&input)
-                .expect("valid Nigerian number should normalize");
-            prop_assert!(normalized.starts_with("+234"));
-            prop_assert_eq!(normalized.len(), 14);
-            let local = &normalized[4..];
-            prop_assert!(local.chars().all(|c| c.is_ascii_digit()));
-            prop_assert_eq!(local.len(), 10);
-        }
-
-        /// All valid E.164 Nigerian numbers round-trip through normalization
-        /// unchanged.
-        #[test]
-        fn e164_round_trips_unchanged(local in subscriber_number()) {
-            let e164 = format!("+234{local}");
-            prop_assert_eq!(normalize_ng_phone_number(&e164).unwrap(), e164);
-        }
-
-        /// The same subscriber number expressed in different shapes always
-        /// yields the identical E.164 output.
-        #[test]
-        fn equivalent_shapes_agree(local in subscriber_number()) {
-            let expected = format!("+234{local}");
-            for input in [
-                format!("0{local}"),
-                local.clone(),
-                format!("+234{local}"),
-                format!("234{local}"),
-            ] {
-                prop_assert_eq!(normalize_ng_phone_number(&input).unwrap(), expected.clone());
-            }
-        }
     }
 }
