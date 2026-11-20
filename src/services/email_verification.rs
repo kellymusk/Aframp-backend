@@ -66,8 +66,90 @@ pub async fn verify_token(db: &PgPool, token: &str) -> Result<bool, sqlx::Error>
 
 /// Delivers a verification email. No transactional email provider is wired
 /// into the backend yet, so for now this only records that a link was issued.
-/// The token itself is never logged: it is a single-use credential, and logs
-/// are readable by far more people than the account owner.
+/// Neither the token nor the recipient address is logged: the token is a
+/// single-use credential and the email is PII, and logs are readable by far
+/// more people than the account owner.
 pub fn send_verification_email(to: &str, _token: &str) {
-    tracing::info!(email = %to, "email verification link issued (no email provider configured)");
+    // `to` is intentionally not logged — it is PII (#1420).
+    let _ = to;
+    tracing::info!("email verification link issued (no email provider configured)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Metadata, Subscriber};
+
+    /// Minimal subscriber that captures the rendered `message` field of every
+    /// event so tests can assert on what actually reaches the log stream.
+    #[derive(Clone, Default)]
+    struct CaptureSubscriber {
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct MessageVisitor<'a>(&'a mut String);
+
+    impl<'a> Visit for MessageVisitor<'a> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                *self.0 = format!("{:?}", value);
+            }
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                *self.0 = value.to_string();
+            }
+        }
+    }
+
+    impl Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut message = String::new();
+            event.record(&mut MessageVisitor(&mut message));
+            self.messages.lock().unwrap().push(message);
+        }
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+
+    #[test]
+    fn send_verification_email_does_not_log_recipient_address() {
+        let subscriber = CaptureSubscriber::default();
+        let messages = subscriber.messages.clone();
+
+        tracing::subscriber::with_default(subscriber, || {
+            send_verification_email("merchant@example.com", "secret-token");
+        });
+
+        let captured = messages.lock().unwrap();
+        assert!(!captured.is_empty(), "expected a log line to be emitted");
+        for line in captured.iter() {
+            assert!(
+                !line.contains("merchant@example.com"),
+                "log line leaked recipient email: {line}"
+            );
+            assert!(
+                !line.contains("secret-token"),
+                "log line leaked verification token: {line}"
+            );
+        }
+    }
 }
