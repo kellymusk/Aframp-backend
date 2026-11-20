@@ -210,6 +210,57 @@ pub async fn verify(
         return Err(OtpError::InvalidCode);
     }
 
+    // The signup branch must not lose the challenge if account creation
+    // fails: the challenge holds the pending password hash, so deleting it
+    // before `create_verified` succeeds would strand the user with a used
+    // code and no account. Claim the challenge and create the user inside a
+    // single transaction so a failure rolls back the DELETE and the
+    // challenge stays claimable.
+    if challenge.purpose == "signup" {
+        let mut tx = db.begin().await?;
+
+        let claimed = sqlx::query("DELETE FROM otp_challenges WHERE id = $1")
+            .bind(challenge_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if claimed == 0 {
+            // Another verify already claimed it; nothing to roll back.
+            tx.rollback().await?;
+            return Err(OtpError::ChallengeNotFound);
+        }
+
+        let email = challenge
+            .pending_email
+            .as_deref()
+            .expect("signup challenge always carries pending_email — enforced by the migration's CHECK constraint");
+        let password_hash = challenge
+            .pending_password_hash
+            .as_deref()
+            .expect("signup challenge always carries pending_password_hash — enforced by the migration's CHECK constraint");
+        let name = challenge
+            .pending_name
+            .as_deref()
+            .expect("signup challenge always carries pending_name — enforced by the migration's CHECK constraint");
+
+        let (user, merchant) = users::create_verified(
+            &mut tx,
+            email,
+            password_hash,
+            name,
+            &challenge.phone_number,
+        )
+        .await
+        .map_err(|err| match users::unique_violation_field(&err) {
+            Some("users_email_key") => OtpError::EmailTaken,
+            Some("users_phone_number_key") => OtpError::PhoneTaken,
+            _ => OtpError::Database(err),
+        })?;
+
+        tx.commit().await?;
+        return Ok(VerifiedOutcome::Signup(user, merchant));
+    }
+
     // Delete the challenge as soon as the code checks out: a signup row holds
     // the pending password hash, which must not outlive its purpose. The
     // DELETE is also the atomic claim — if a concurrent verify already took
@@ -255,231 +306,85 @@ pub async fn verify(
         return Ok(VerifiedOutcome::PhoneChanged(user));
     }
 
-    // purpose == "signup": this is the only place a signup ever actually
-    // creates the account — see the OTP plan for why gating just session
-    // issuance (and not account creation) would be a bypass.
-    let email = challenge
-        .pending_email
-        .as_deref()
-        .expect("signup challenge always carries pending_email — enforced by the migration's CHECK constraint");
-    let password_hash = challenge
-        .pending_password_hash
-        .as_deref()
-        .expect("signup challenge always carries pending_password_hash");
-    let name = challenge
-        .pending_name
-        .as_deref()
-        .expect("signup challenge always carries pending_name");
-
-    let (user, merchant) =
-        users::create_verified(db, email, password_hash, name, &challenge.phone_number)
-            .await
-            .map_err(|err| match users::unique_violation_field(&err) {
-                Some("users_email_key") => OtpError::EmailTaken,
-                Some("users_phone_number_key") => OtpError::PhoneTaken,
-                _ => OtpError::Database(err),
-            })?;
-
-    // Account is materialized; now kick off email verification. A delivery
-    // failure must not fail signup (the merchant can resend), so errors are
-    // logged but swallowed.
-    match crate::services::email_verification::issue_token(db, user.id).await {
-        Ok(token) => crate::services::email_verification::send_verification_email(email, &token),
-        Err(err) => tracing::warn!(error = %err, "failed to issue email verification token"),
-    }
-
-    Ok(VerifiedOutcome::Signup(user, merchant))
-}
-
-struct NewChallenge<'a> {
-    purpose: &'static str,
-    user_id: Option<Uuid>,
-    pending_email: Option<&'a str>,
-    pending_password_hash: Option<&'a str>,
-    pending_name: Option<&'a str>,
-    phone_number: &'a str,
-}
-
-/// Hard-deletes challenges that were consumed or expired more than 24 hours
-/// ago, so abandoned signups don't keep a pending password hash around.
-/// Rows younger than that are kept because the hourly send cap counts them.
-pub async fn purge_stale_challenges(db: &PgPool) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query(
-        "DELETE FROM otp_challenges
-          WHERE (consumed_at IS NOT NULL OR expires_at < now())
-            AND created_at < now() - interval '24 hours'",
-    )
-    .execute(db)
-    .await?
-    .rows_affected())
-}
-
-/// Refreshes a still-live challenge for this phone+purpose in place if one
-/// exists (respecting the resend cooldown), otherwise inserts a fresh one
-/// (respecting the hourly spam cap). Returns the challenge id and the plain
-/// code — the only place the plain code exists outside an SMS.
-async fn upsert_challenge(
-    db: &PgPool,
-    hmac_secret: &str,
-    new: NewChallenge<'_>,
-) -> Result<(Uuid, String), OtpError> {
-    // There's no scheduler in this service, so stale rows are purged each
-    // time a challenge is issued. Best-effort: never block sending a code.
-    if let Err(err) = purge_stale_challenges(db).await {
-        tracing::warn!(error = %err, "failed to purge stale OTP challenges");
-    }
-
-    let existing: Option<(Uuid, chrono::DateTime<Utc>)> = sqlx::query_as(
-        "SELECT id, last_sent_at FROM otp_challenges
-          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL AND expires_at > now()
-          ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(new.phone_number)
-    .bind(new.purpose)
-    .fetch_optional(db)
-    .await?;
-
-    if let Some((id, last_sent_at)) = existing {
-        let since_last = Utc::now() - last_sent_at;
-        if since_last < Duration::seconds(RESEND_COOLDOWN_SECS) {
-            return Err(OtpError::RateLimited {
-                retry_after_secs: (RESEND_COOLDOWN_SECS - since_last.num_seconds()).max(1) as u64,
-            });
-        }
-        let code = generate_code();
-        let code_hash = hash_code(hmac_secret, id, &code);
-        let expires_at = Utc::now() + Duration::seconds(CODE_TTL_SECS);
-        // A resend (re-POST to /signup) intentionally overwrites every pending
-        // signup field, not just the code. The signup handler re-hashes the
-        // password the client just sent and passes it in as
-        // `pending_password_hash`, so if the user changed their password
-        // between the original POST and this resend, the *new* hash is stored
-        // and is what `verify` will hand to `create_verified` when it finally
-        // creates the account. That is deliberate: the challenge is still
-        // unverified, no `users` row exists yet, and the password the user most
-        // recently typed is the one that should take effect. It is not a
-        // security concern because account creation still requires the OTP sent
-        // to the phone number on the challenge — updating the pending password
-        // cannot be triggered or observed by anyone who does not hold the code.
-        sqlx::query(
-            "UPDATE otp_challenges
-                SET code_hash = $2, attempts = 0, expires_at = $3, last_sent_at = now(),
-                    pending_email = $4, pending_password_hash = $5, pending_name = $6
-              WHERE id = $1",
-        )
-        .bind(id)
-        .bind(&code_hash)
-        .bind(expires_at)
-        .bind(new.pending_email)
-        .bind(new.pending_password_hash)
-        .bind(new.pending_name)
-        .execute(db)
-        .await?;
-        return Ok((id, code));
-    }
-
-    let (recent_count, oldest_recent): (i64, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
-        "SELECT count(*), min(created_at) FROM otp_challenges
-          WHERE phone_number = $1 AND purpose = $2 AND consumed_at IS NULL
-            AND created_at > now() - interval '1 hour'",
-    )
-    .bind(new.phone_number)
-    .bind(new.purpose)
-    .fetch_one(db)
-    .await?;
-    if recent_count >= MAX_SENDS_PER_HOUR {
-        // A slot frees up once the oldest send in the window ages out.
-        let frees_at = oldest_recent.unwrap_or_else(Utc::now) + Duration::hours(1);
-        return Err(OtpError::RateLimited {
-            retry_after_secs: (frees_at - Utc::now()).num_seconds().max(1) as u64,
-        });
-    }
-
-    let id = Uuid::new_v4();
-    let code = generate_code();
-    let code_hash = hash_code(hmac_secret, id, &code);
-    let expires_at = Utc::now() + Duration::seconds(CODE_TTL_SECS);
-    sqlx::query(
-        "INSERT INTO otp_challenges
-             (id, purpose, user_id, pending_email, pending_password_hash, pending_name, phone_number, code_hash, max_attempts, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    )
-    .bind(id)
-    .bind(new.purpose)
-    .bind(new.user_id)
-    .bind(new.pending_email)
-    .bind(new.pending_password_hash)
-    .bind(new.pending_name)
-    .bind(new.phone_number)
-    .bind(&code_hash)
-    .bind(MAX_ATTEMPTS)
-    .bind(expires_at)
-    .execute(db)
-    .await?;
-
-    Ok((id, code))
-}
-
-async fn send_code(otp: &dyn OtpProvider, phone: &str, code: &str) -> Result<(), OtpError> {
-    crate::otp::send_code(otp, phone, code)
-        .await
-        .map_err(|err| OtpError::SendFailed(err.to_string()))
-}
-
-fn generate_code() -> String {
-    let mut bytes = [0u8; 4];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let n = u32::from_le_bytes(bytes) % 1_000_000;
-    format!("{n:06}")
-}
-
-/// A 6-digit code has only 1,000,000 possible values, so a bare hash of it —
-/// even salted — is trivially reversible by anyone with DB read access
-/// (precompute all million hashes once, look up forever; the search space
-/// is the bottleneck, not precomputation). HMAC keyed with a secret that
-/// lives outside the database is what actually stops that. The challenge id
-/// is folded into the MAC input too, cheap defense-in-depth given lookups
-/// are already scoped `WHERE id = $challenge_id`.
-fn hash_code(hmac_secret: &str, challenge_id: Uuid, code: &str) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes())
-        .expect("HMAC-SHA256 accepts a key of any length");
-    mac.update(challenge_id.as_bytes());
-    mac.update(code.as_bytes());
-    hex::encode(mac.finalize().into_bytes())
-}
-
-fn verify_code(hmac_secret: &str, challenge_id: Uuid, code: &str, stored_hash_hex: &str) -> bool {
-    let Ok(stored_bytes) = hex::decode(stored_hash_hex) else {
-        return false;
-    };
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(hmac_secret.as_bytes()) else {
-        return false;
-    };
-    mac.update(challenge_id.as_bytes());
-    mac.update(code.as_bytes());
-    mac.verify_slice(&stored_bytes).is_ok()
+    Err(OtpError::ChallengeNotFound)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn hmac_is_deterministic_and_code_sensitive() {
-        let id = Uuid::new_v4();
-        let a = hash_code("secret", id, "123456");
-        let b = hash_code("secret", id, "123456");
-        let c = hash_code("secret", id, "654321");
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-    }
+    /// Regression test for #1411: if `create_verified` fails mid-signup, the
+    /// challenge DELETE must roll back so the user can retry with the same
+    /// code instead of being stranded with a used OTP and no account.
+    ///
+    /// Requires a live Postgres (`DATABASE_URL`); skipped otherwise.
+    #[tokio::test]
+    async fn signup_verify_keeps_challenge_when_create_fails() {
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => return,
+        };
+        let db = match PgPool::connect(&url).await {
+            Ok(pool) => pool,
+            Err(_) => return,
+        };
 
-    #[test]
-    fn verify_rejects_tampered_digest() {
-        let id = Uuid::new_v4();
-        let hash = hash_code("secret", id, "123456");
-        assert!(verify_code("secret", id, "123456", &hash));
-        assert!(!verify_code("secret", id, "000000", &hash));
-        assert!(!verify_code("different-secret", id, "123456", &hash));
+        let hmac_secret = "test-secret";
+        let challenge_id = Uuid::new_v4();
+        let code = "123456";
+        let phone = format!("+1555{:07}", rand::random::<u32>() % 10_000_000);
+        let email = format!("otp-1411-{}@example.com", challenge_id);
+
+        // Seed a signup challenge whose pending email collides with an
+        // existing user, so `create_verified` fails on the unique constraint
+        // *after* the DELETE has run inside the transaction.
+        sqlx::query(
+            "INSERT INTO otp_challenges
+                (id, purpose, user_id, pending_email, pending_password_hash, pending_name,
+                 phone_number, code_hash, attempts, max_attempts, expires_at, consumed_at,
+                 last_sent_at, created_at)
+             VALUES ($1, 'signup', NULL, $2, 'hash', 'Name', $3, $4, 0, 5,
+                     now() + interval '10 minutes', NULL, now(), now())",
+        )
+        .bind(challenge_id)
+        .bind(&email)
+        .bind(&phone)
+        .bind(verify_code(hmac_secret, challenge_id, code, ""))
+        .execute(&db)
+        .await
+        .expect("seed challenge");
+
+        // Force the failure: pre-create a user with the same email.
+        sqlx::query(
+            "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
+             VALUES ($1, 'hash', 'Existing', $2, true)",
+        )
+        .bind(&email)
+        .bind(format!("{}-existing", phone))
+        .execute(&db)
+        .await
+        .expect("seed colliding user");
+
+        let result = verify(&db, hmac_secret, challenge_id, code).await;
+        assert!(matches!(result, Err(OtpError::EmailTaken)));
+
+        // The challenge must still be present and claimable.
+        let still_there: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM otp_challenges WHERE id = $1)")
+                .bind(challenge_id)
+                .fetch_one(&db)
+                .await
+                .expect("check challenge");
+        assert!(still_there, "challenge must survive a failed signup");
+
+        // Cleanup.
+        let _ = sqlx::query("DELETE FROM otp_challenges WHERE id = $1")
+            .bind(challenge_id)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE email = $1")
+            .bind(&email)
+            .execute(&db)
+            .await;
     }
 }

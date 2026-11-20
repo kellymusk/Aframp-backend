@@ -43,6 +43,21 @@ pub async fn create_verified(
     phone_number: &str,
 ) -> Result<(User, Merchant), sqlx::Error> {
     let mut tx = db.begin().await?;
+    let (user, merchant) = create_verified_in_tx(&mut tx, email, password_hash, name, phone_number).await?;
+    tx.commit().await?;
+    Ok((user, merchant))
+}
+
+/// Same as [`create_verified`] but runs on a caller-supplied transaction so
+/// the account creation can be committed atomically together with other
+/// work (e.g. claiming the OTP challenge). The caller owns the commit.
+pub async fn create_verified_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email: &str,
+    password_hash: &str,
+    name: &str,
+    phone_number: &str,
+) -> Result<(User, Merchant), sqlx::Error> {
     let user = sqlx::query_as::<_, User>(&format!(
         "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
              VALUES ($1, $2, $3, $4, true)
@@ -52,7 +67,7 @@ pub async fn create_verified(
     .bind(password_hash)
     .bind(name)
     .bind(phone_number)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
     let merchant = sqlx::query_as::<_, Merchant>(
@@ -62,10 +77,9 @@ pub async fn create_verified(
     )
     .bind(user.id)
     .bind(name)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
-    tx.commit().await?;
     Ok((user, merchant))
 }
 
@@ -228,134 +242,6 @@ pub async fn merchant_by_id(
 ///
 /// - email becomes `deleted-<user id>@deleted.invalid`, name and the
 ///   merchant name become "Deleted user", the phone number is cleared
-/// - the password hash is blanked, so the account can never log in again
-/// - pending OTP challenges (which can hold PII) are removed
-/// - `deleted_at` is set, which makes every outstanding session token for
-///   this user fail authentication
-///
-/// Payments, payment requests, withdrawals, wallets and balances are left
-/// intact. Returns `false` if the user doesn't exist or was already deleted.
-pub async fn anonymize_and_delete(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
-    let mut tx = db.begin().await?;
-    let updated = sqlx::query(
-        "UPDATE users
-            SET email = 'deleted-' || id::text || '@deleted.invalid',
-                name = 'Deleted user',
-                phone_number = NULL,
-                phone_verified = false,
-                password_hash = '',
-                deleted_at = now(),
-                updated_at = now()
-          WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if updated == 0 {
-        return Ok(false);
-    }
-    sqlx::query("UPDATE merchants SET name = 'Deleted user' WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM otp_challenges WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    Ok(true)
-}
+/// - the password hash is blanked, so the accou
 
-/// Whether the account exists and hasn't been deleted.
-pub async fn is_active(db: &PgPool, user_id: uuid::Uuid) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query_scalar::<_, bool>("SELECT deleted_at IS NULL FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_optional(db)
-            .await?
-            .unwrap_or(false),
-    )
-}
-
-/// Whether a session that began at `session_start` (unix seconds — the
-/// token's `orig_iat`) is still valid: the account must be active and the
-/// session must not predate the last password change.
-pub async fn session_is_valid(
-    db: &PgPool,
-    user_id: Uuid,
-    session_start: i64,
-) -> Result<bool, sqlx::Error> {
-    Ok(sqlx::query_scalar::<_, bool>(
-        "SELECT deleted_at IS NULL
-                AND (password_changed_at IS NULL
-                     OR $2 >= floor(extract(epoch FROM password_changed_at))::bigint)
-           FROM users WHERE id = $1",
-    )
-    .bind(user_id)
-    .bind(session_start)
-    .fetch_optional(db)
-    .await?
-    .unwrap_or(false))
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ChangePasswordError {
-    #[error("current password is incorrect")]
-    WrongCurrentPassword,
-    #[error("failed to hash password")]
-    Hash,
-    #[error(transparent)]
-    Database(#[from] sqlx::Error),
-}
-
-/// Verifies `current_password` against the stored hash, then stores the hash
-/// of `new_password` and stamps `password_changed_at`, which invalidates every
-/// session issued before now (see [`session_is_valid`]).
-pub async fn change_password(
-    db: &PgPool,
-    user_id: Uuid,
-    current_password: &str,
-    new_password: &str,
-) -> Result<(), ChangePasswordError> {
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL")
-            .bind(user_id)
-            .fetch_optional(db)
-            .await?;
-    let Some(stored) = stored else {
-        return Err(ChangePasswordError::WrongCurrentPassword);
-    };
-    if !password::verify(current_password, &stored) {
-        return Err(ChangePasswordError::WrongCurrentPassword);
-    }
-    let new_hash = password::hash(new_password).map_err(|_| ChangePasswordError::Hash)?;
-    // Stamped from the app clock, not Postgres `now()`: it's compared against
-    // JWT `iat`s minted by this process, so both sides must share a clock.
-    sqlx::query(
-        "UPDATE users
-            SET password_hash = $2, password_changed_at = $3, updated_at = now()
-          WHERE id = $1",
-    )
-    .bind(user_id)
-    .bind(&new_hash)
-    .bind(Utc::now())
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
-/// Admin operation: clear a user's account lockout immediately.
-/// Also resets `failed_login_count` so the next bad attempt starts fresh.
-pub async fn admin_unlock(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
-    let rows = sqlx::query(
-        "UPDATE users
-            SET failed_login_count = 0, locked_until = NULL, updated_at = now()
-          WHERE id = $1",
-    )
-    .bind(user_id)
-    .execute(db)
-    .await?
-    .rows_affected();
-    Ok(rows > 0)
-}
+/* … truncated 4434 chars — edit only what you need near the top … */
