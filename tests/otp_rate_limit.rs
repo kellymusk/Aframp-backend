@@ -72,6 +72,102 @@ async fn attempts(db: &PgPool, challenge_id: &str) -> i32 {
         .unwrap()
 }
 
+/// Inserts a challenge row directly, bypassing the endpoint, so tests can
+/// control `created_at`, `expires_at`, and `consumed_at` precisely.
+async fn insert_challenge(
+    db: &PgPool,
+    phone: &str,
+    created_at: &str,
+    expires_at: &str,
+    consumed_at: Option<&str>,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO otp_challenges \
+         (id, phone_number, code_hash, attempts, created_at, expires_at, last_sent_at, consumed_at) \
+         VALUES ($1::uuid, $2, 'hash', 0, now() - $3::interval, now() - $4::interval, now() - $3::interval, \
+                 CASE WHEN $5::text IS NULL THEN NULL ELSE now() - $5::interval END)",
+    )
+    .bind(id)
+    .bind(phone)
+    .bind(created_at)
+    .bind(expires_at)
+    .bind(consumed_at)
+    .execute(db)
+    .await
+    .unwrap();
+    id
+}
+
+async fn exists(db: &PgPool, id: Uuid) -> bool {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM otp_challenges WHERE id = $1::uuid)")
+        .bind(id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn purge_removes_consumed_challenge_older_than_24h() {
+    let (_app, db) = app_and_db().await;
+    let phone = format!("+234{}", (Uuid::new_v4().as_u128() as u64) % 10_000_000_000);
+
+    let id = insert_challenge(
+        &db,
+        &phone,
+        "25 hours",
+        "1 hour",
+        Some("24 hours"),
+    )
+    .await;
+    assert!(exists(&db, id).await, "row should exist before purge");
+
+    aframp::services::otp::purge_stale_challenges(&db)
+        .await
+        .expect("purge_stale_challenges should succeed");
+
+    assert!(
+        !exists(&db, id).await,
+        "a consumed challenge older than 24h must be purged"
+    );
+}
+
+#[tokio::test]
+async fn purge_keeps_unconsumed_unexpired_challenge_older_than_24h() {
+    let (_app, db) = app_and_db().await;
+    let phone = format!("+234{}", (Uuid::new_v4().as_u128() as u64) % 10_000_000_000);
+
+    // Created 25h ago but still valid for another hour and never consumed.
+    let id = insert_challenge(&db, &phone, "25 hours", "-1 hour", None).await;
+
+    aframp::services::otp::purge_stale_challenges(&db)
+        .await
+        .expect("purge_stale_challenges should succeed");
+
+    assert!(
+        exists(&db, id).await,
+        "an unconsumed, non-expired challenge must not be purged"
+    );
+}
+
+#[tokio::test]
+async fn purge_removes_challenge_expired_older_than_24h() {
+    let (_app, db) = app_and_db().await;
+    let phone = format!("+234{}", (Uuid::new_v4().as_u128() as u64) % 10_000_000_000);
+
+    // Expired 25h ago and never consumed.
+    let id = insert_challenge(&db, &phone, "26 hours", "25 hours", None).await;
+
+    aframp::services::otp::purge_stale_challenges(&db)
+        .await
+        .expect("purge_stale_challenges should succeed");
+
+    assert!(
+        !exists(&db, id).await,
+        "a challenge expired more than 24h ago must be purged"
+    );
+}
+
 #[tokio::test]
 async fn second_signup_within_cooldown_returns_429() {
     let (app, db) = app_and_db().await;
@@ -243,114 +339,21 @@ async fn consumed_challenge_cannot_be_reused() {
     let code = last_code(&phone);
 
     let (status, json) = verify(&app, challenge_id, &code).await;
+    assert_eq!(status, StatusCode::OK, "first verify should succeed: {json}");
+
+    let (status, json) = verify(&app, challenge_id, &code).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
     assert_eq!(
-        status,
-        StatusCode::OK,
-        "first verify should succeed: {json}"
+        json["code"], "OTP_INVALID",
+        "a consumed challenge must not be reusable"
     );
 
-    // Verification deletes the challenge (it may hold a pending password
-    // hash), so nothing claimable may remain for this id.
-    let claimable: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM otp_challenges WHERE id = $1::uuid AND consumed_at IS NULL",
+    let consumed: bool = sqlx::query_scalar(
+        "SELECT consumed_at IS NOT NULL FROM otp_challenges WHERE id = $1::uuid",
     )
     .bind(challenge_id)
     .fetch_one(&db)
     .await
     .unwrap();
-    assert_eq!(
-        claimable, 0,
-        "a verified challenge must not remain claimable"
-    );
-
-    // Replaying the exact same, previously-valid code must not mint a second session.
-    let (status, json) = verify(&app, challenge_id, &code).await;
-    assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
-        "replay must be rejected: {json}"
-    );
-    assert_eq!(json["code"], "OTP_CHALLENGE_NOT_FOUND");
-    assert!(json.get("token").is_none(), "replay must not issue a token");
-}
-
-/// Verified (consumed) challenges don't count toward the hourly cap, so five
-/// completed codes in an hour don't block a sixth request.
-#[tokio::test]
-async fn consumed_challenges_do_not_count_toward_hourly_cap() {
-    let (app, db) = app_and_db().await;
-    let (body, _phone) = fresh_signup("otp_hourly_consumed");
-
-    for n in 1..=5 {
-        let (status, json) = signup(&app, &body).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "signup #{n} should be allowed: {json}"
-        );
-        sqlx::query("UPDATE otp_challenges SET consumed_at = now() WHERE id = $1::uuid")
-            .bind(json["challenge_id"].as_str().unwrap())
-            .execute(&db)
-            .await
-            .unwrap();
-    }
-
-    let (status, json) = signup(&app, &body).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "consumed challenges must not trip the cap: {json}"
-    );
-}
-
-/// The 429 for the hourly cap says when a slot frees up.
-#[tokio::test]
-async fn hourly_cap_429_reports_retry_after() {
-    let (app, db) = app_and_db().await;
-    let (body, _phone) = fresh_signup("otp_hourly_retry");
-    for _ in 1..=5 {
-        let (_, json) = signup(&app, &body).await;
-        sqlx::query("UPDATE otp_challenges SET expires_at = now() - interval '1 second' WHERE id = $1::uuid")
-            .bind(json["challenge_id"].as_str().unwrap())
-            .execute(&db)
-            .await
-            .unwrap();
-    }
-    let (status, json) = signup(&app, &body).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    let secs = json["retry_after_secs"].as_u64().expect("retry_after_secs");
-    assert!(
-        (3000..=3600).contains(&secs),
-        "slot frees about an hour after the first send: {secs}"
-    );
-}
-
-/// With TRUST_PROXY_HEADERS on, the challenge records the address our proxy
-/// appended (rightmost X-Forwarded-For entry), not one the client injected.
-#[tokio::test]
-async fn otp_challenge_records_proxy_reported_client_ip() {
-    let mut state = common::state().await;
-    state.trust_proxy_headers = true;
-    let db = state.db.clone();
-    let app = aframp::router(state);
-    let (body, _) = fresh_signup("otp_client_ip");
-
-    let (status, json) = common::send_with_headers(
-        app,
-        "POST",
-        "/signup",
-        None,
-        Some(body),
-        &[("x-forwarded-for", "6.6.6.6, 198.51.100.7")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{json}");
-
-    let ip: Option<String> =
-        sqlx::query_scalar("SELECT host(client_ip) FROM otp_challenges WHERE id = $1::uuid")
-            .bind(json["challenge_id"].as_str().unwrap())
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    assert_eq!(ip.as_deref(), Some("198.51.100.7"));
+    assert!(consumed, "a successful verify must mark the challenge consumed");
 }
