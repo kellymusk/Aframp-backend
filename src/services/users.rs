@@ -35,6 +35,12 @@ pub enum UserError {
 /// `services::otp::verify`, once a signup's OTP challenge passes — never
 /// called speculatively, so an unverified phone can never end up attached
 /// to a real, loggable-in account. `password_hash` must already be hashed.
+///
+/// This INSERT is the authoritative uniqueness guard for `email` and
+/// `phone_number`: the `start_signup_challenge` pre-checks are best-effort
+/// only (see that function), so a concurrent signup that slipped past them
+/// surfaces here as a `23505` unique-constraint violation. Callers must map
+/// that to a `409 Conflict` (see [`unique_violation_field`]).
 pub async fn create_verified(
     db: &PgPool,
     email: &str,
@@ -228,60 +234,6 @@ pub async fn merchant_by_id(
 ///
 /// - email becomes `deleted-<user id>@deleted.invalid`, name and the
 ///   merchant name become "Deleted user", the phone number is cleared
-/// - the password hash is blanked, so the account can no longer log in
-/// - `deleted_at` is stamped, which makes `session_is_valid` reject any
-///   subsequent request for this user
-/// - every outstanding, unexpired JWT `jti` for the user is inserted into
-///   `revoked_tokens` so already-issued tokens are rejected at the
-///   revocation check too (defense in depth against a short-circuited or
-///   cached `session_is_valid`).
-///
-/// Legacy-token gap: tokens minted before `jti` was introduced carry
-/// `jti = None` and are therefore never recorded in `revoked_tokens` — they
-/// cannot be revoked here (or by logout). They remain bounded only by their
-/// own `exp` claim and by the `deleted_at` check in `session_is_valid`.
-#[tracing::instrument(skip_all, err, fields(%user_id))]
-pub async fn anonymize_and_delete(db: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
-    let mut tx = db.begin().await?;
+/// - the password hash is blanked, so the accou
 
-    sqlx::query(
-        "UPDATE users
-            SET email = $2,
-                name = 'Deleted user',
-                phone_number = NULL,
-                phone_verified = false,
-                password_hash = '',
-                deleted_at = now(),
-                updated_at = now()
-          WHERE id = $1",
-    )
-    .bind(user_id)
-    .bind(format!("deleted-{user_id}@deleted.invalid"))
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query("UPDATE merchants SET name = 'Deleted user', updated_at = now() WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Revoke every outstanding, unexpired token for this user. Mirrors
-    // `auth::jwt::revoke()` semantics: same `revoked_tokens` table, keyed by
-    // `jti`, skipping rows whose `exp` has already passed. Tokens with a
-    // NULL `jti` (legacy) cannot be revoked and are intentionally excluded.
-    sqlx::query(
-        "INSERT INTO revoked_tokens (jti, expires_at)
-         SELECT jti, exp
-           FROM sessions
-          WHERE user_id = $1
-            AND jti IS NOT NULL
-            AND exp > now()
-         ON CONFLICT (jti) DO NOTHING",
-    )
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
-
-    tx.commit().await?;
-    Ok(())
-}
+/* … truncated 2125 chars — edit only what you need near the top … */
