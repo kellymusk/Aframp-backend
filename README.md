@@ -595,3 +595,8 @@ This project is under active MVP development — expect the API and schema to ch
 Before opening a PR, read **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the dev
 setup, the `dev-backend` contribution branch, protected paths, commit/PR
 conventions, and the checklist reviewers expect.
+
+## Handsoff notes
+
+<!-- handsoff-issue-1417 -->
+- #1417: Bug: `verify_bank_account` in-process cache uses `Instant` — cache entries survive process restarts with wrong TTL on first access
