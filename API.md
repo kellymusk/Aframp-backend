@@ -50,6 +50,15 @@ The supported deployment is **same-origin**: serve the frontend and this API beh
 
 ---
 
+### `AuthUser` vs `AuthMerchant`
+
+- **`AuthUser`** — any authenticated session. Used by account-level routes
+  (e.g. `/me`).
+- **`AuthMerchant`** — an authenticated session whose user has an associated
+  merchant. Merchant-scoped routes (withdrawals, payment requests, wallets,
+  transactions) require this; a user with no merchant gets `400
+  MERCHANT_NOT_FOUND`.
+
 ## Authentication Flow
 
 Sessions are **always two-step** for any account with a verified phone number. Neither `/signup` nor `/login` issues a session — they only fire an OTP. The session is issued exclusively by `POST /verify-otp`.
@@ -307,6 +316,10 @@ next page, repeat the request with `?cursor=<next_cursor>` (same `limit`);
 `next_cursor` is `null` on the last page. The cursor is an opaque token — don't
 parse or build it. Pages are keyed on `(created_at, id)`, so rows created while
 you page never shift or repeat later pages. A malformed cursor returns `400`.
+
+Cursor handling is identical on every list endpoint: omit `cursor` for the
+first page; a present but malformed or tampered cursor is always rejected with
+the same `400` error body, regardless of endpoint.
 
 ## Endpoints
 
