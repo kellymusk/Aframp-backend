@@ -18,6 +18,14 @@ first — it applies to both.
 
 ---
 
+## Prerequisites
+
+- **PostgreSQL 14 or newer.** Migrations use `date_trunc` with a timezone
+  argument (added in 14). Older versions fail with cryptic migration errors.
+- **Extensions:** none required on 14+. `gen_random_uuid()` is built in since
+  PostgreSQL 13; on older versions it needs `CREATE EXTENSION pgcrypto;`, but
+  those versions are unsupported anyway.
+
 ## The single-instance constraint
 
 **Run exactly one instance of the backend.** Each process spawns the Stellar

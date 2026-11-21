@@ -215,6 +215,25 @@ Every `ErrorCode` variant defined in `src/error.rs` is listed below, with the HT
 
 ---
 
+## Rate Limiting
+
+`429 Too Many Requests` (rate limit / cooldown) and `423 Locked` (temporary
+lockout) responses carry a `retry_after_secs` field in the JSON body, and the
+server mirrors it as a `Retry-After` header (seconds).
+
+Recommended client behaviour: wait `Retry-After` seconds before retrying; if the
+header is missing, fall back to `retry_after_secs`; if both are missing, use
+exponential backoff with jitter.
+
+```js
+const res = await fetch(url, opts);
+if (res.status === 429 || res.status === 423) {
+  let wait = Number(res.headers.get("Retry-After"));
+  if (!wait) wait = (await res.json()).retry_after_secs ?? 1;
+  await new Promise(r => setTimeout(r, wait * 1000));
+}
+```
+
 ## Conventions
 
 **Money is always integer stroops** (`i64`), never a float. 1 unit = `10_000_000` stroops.
