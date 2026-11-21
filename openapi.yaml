@@ -310,6 +310,44 @@ paths:
               description: aframp_session with Max-Age=0
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /me/sessions:
+    get:
+      tags: [Auth]
+      summary: List active sessions (proposed)
+      description: Proposed in docs/proposals/1438-me-sessions.md. Lists non-revoked, non-expired sessions for the caller.
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [jti, issued_at, expires_at, current]
+                  properties:
+                    jti: { type: string }
+                    issued_at: { type: string, format: date-time }
+                    expires_at: { type: string, format: date-time }
+                    user_agent: { type: string, nullable: true }
+                    ip: { type: string, nullable: true }
+                    current: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /me/sessions/{jti}:
+    delete:
+      tags: [Auth]
+      summary: Revoke a session (proposed)
+      parameters:
+        - name: jti
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Session revoked; later requests with that token return 401
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No active session with this jti for the caller
   /api-keys:
     post:
       tags: [API keys]
@@ -1850,6 +1888,11 @@ components:
         suspended_at: { type: string, format: date-time, nullable: true, description: Set when the merchant account is suspended. }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        confirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the payment moved to `confirmed` (proposed, see docs/proposals/1437-payment-confirmed-at.md). Null until confirmed.
 
     CreateWalletRequest:
       type: object
