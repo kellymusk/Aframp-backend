@@ -595,3 +595,8 @@ This project is under active MVP development — expect the API and schema to ch
 Before opening a PR, read **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the dev
 setup, the `dev-backend` contribution branch, protected paths, commit/PR
 conventions, and the checklist reviewers expect.
+
+## Handsoff notes
+
+<!-- handsoff-issue-1425 -->
+- #1425: Enhancement: add integration test for concurrent withdrawal requests exhausting daily limit
