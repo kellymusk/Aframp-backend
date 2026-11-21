@@ -115,6 +115,80 @@ async fn change_password_replaces_the_password_and_revokes_older_sessions() {
     );
 }
 
+/// #1426 — a token issued *before* the password change must be rejected on a
+/// protected route, and a token obtained *after* the change (with the new
+/// password) must be accepted.
+async fn login_and_obtain_token(app: &axum::Router, email: &str, password: &str) -> String {
+    let (status, challenge) = send(
+        app.clone(),
+        "POST",
+        "/login",
+        None,
+        Some(json!({ "email": email, "password": password })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {challenge}");
+    let code = extract_otp_code(
+        &aframp::otp::mock::last_message_for(challenge["phone_number"].as_str().unwrap()).unwrap(),
+    );
+    let (status, verified) = send(
+        app.clone(),
+        "POST",
+        "/verify-otp",
+        None,
+        Some(json!({ "challenge_id": challenge["challenge_id"], "code": code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify-otp failed: {verified}");
+    verified["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn change_password_invalidates_all_prior_sessions() {
+    let app = app().await;
+    let (email, _signup_token) = signup_and_verify(&app, "pwsessions").await;
+
+    // Obtain token A via a fresh login with the original password.
+    let token_a = login_and_obtain_token(&app, &email, "Password123!").await;
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&token_a), None).await;
+    assert_eq!(status, StatusCode::OK, "token A must work before the change");
+
+    // Session validity has one-second (JWT `iat`) resolution; make sure token A
+    // clearly predates the password change.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    let (status, body) = send(
+        app.clone(),
+        "POST",
+        "/auth/change-password",
+        Some(&token_a),
+        Some(json!({ "current_password": "Password123!", "new_password": "Brand-New-Pass9" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "change-password failed: {body}");
+
+    // Token A is now rejected on the protected route...
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&token_a), None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "token A must be rejected after the password change"
+    );
+    // ...and cannot be refreshed either.
+    let (status, _) = send(app.clone(), "POST", "/auth/refresh", Some(&token_a), None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "token A must not be refreshable after the password change"
+    );
+
+    // Obtain token B with the new password; it must be accepted.
+    let token_b = login_and_obtain_token(&app, &email, "Brand-New-Pass9").await;
+    let (status, me) = send(app.clone(), "GET", "/me", Some(&token_b), None).await;
+    assert_eq!(status, StatusCode::OK, "token B must work: {me}");
+    assert_eq!(me["email"], email);
+}
+
 #[tokio::test]
 async fn change_password_rejects_a_wrong_current_password() {
     let app = app().await;

@@ -87,6 +87,7 @@ pub struct WithdrawalFeeResponse {
 }
 
 pub async fn withdrawal_fee(
+    _auth: AuthUser,
     Query(params): Query<WithdrawalFeeParams>,
 ) -> ApiResult<Json<WithdrawalFeeResponse>> {
     if params.amount_stroops <= 0 {
@@ -244,17 +245,6 @@ fn to_view(withdrawal: &Withdrawal) -> WithdrawalView {
         provider_reference: withdrawal.provider_reference.clone(),
         bank_code: withdrawal.bank_code.clone(),
         account_number: withdrawal
-            .account_number
-            .as_deref()
-            .map(mask_account_number),
-        failure_reason: withdrawal.failure_reason.clone(),
-        created_at: withdrawal.created_at,
-        updated_at: withdrawal.updated_at,
-    }
-}
+            .accoun
 
-fn mask_account_number(account_number: &str) -> String {
-    let last4_start = account_number.len().saturating_sub(4);
-    let last4 = &account_number[last4_start..];
-    format!("****{last4}")
-}
+/* … truncated 422 chars — edit only what you need near the top … */
