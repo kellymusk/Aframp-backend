@@ -248,3 +248,20 @@ async fn preflight_allows_idempotency_key_and_conditional_headers() {
         "{exposed}"
     );
 }
+
+/// #1452 — a simple GET from an unlisted origin must not get ACAC either.
+#[tokio::test]
+async fn get_from_unlisted_origin_has_no_credentials_header() {
+    let app = cors_app(state().await, &[ALLOWED_ORIGIN]);
+    let (_, headers) = cross_origin_get(app, "/health", "https://evil.example.com", None).await;
+    assert!(headers.get("access-control-allow-origin").is_none());
+    assert!(headers.get("access-control-allow-credentials").is_none());
+}
+
+/// #1452 — preflight from https://evil.example.com gets no ACAO header.
+#[tokio::test]
+async fn preflight_from_evil_https_origin_has_no_acao_header() {
+    let app = cors_app(state().await, &[ALLOWED_ORIGIN]);
+    let (_, headers) = preflight(app, "/me", "https://evil.example.com", "GET").await;
+    assert!(headers.get("access-control-allow-origin").is_none());
+}
