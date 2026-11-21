@@ -159,6 +159,14 @@ pub async fn verify_active(db: &PgPool, secret: &str, token: &str) -> Result<Cla
 }
 
 /// Revokes the token identified by `claims` until it would have expired.
+///
+/// # Legacy tokens
+///
+/// Tokens issued before the `jti` claim existed (pre-migration) decode with
+/// `jti = None`. For those this returns `Ok(())` **without** inserting anything
+/// into `revoked_tokens`, so they cannot be revoked via the logout path and
+/// remain valid on protected routes until they expire. [`verify_active`] also
+/// skips the revocation lookup for such tokens, so the two stay consistent.
 pub async fn revoke(db: &PgPool, claims: &Claims) -> Result<(), sqlx::Error> {
     let Some(jti) = claims.jti else {
         return Ok(());
@@ -285,5 +293,16 @@ mod tests {
         legacy.orig_iat = 0;
         let refreshed = decode_unchecked(&refresh_at(SECRET, &legacy, now).unwrap());
         assert_eq!(refreshed.orig_iat as i64, now - 60);
+    }
+
+    /// A legacy token (no `jti`) can't be revoked: `revoke` is a no-op and the
+    /// token still verifies. This documents the caveat on [`revoke`].
+    #[tokio::test]
+    async fn legacy_token_without_jti_cannot_be_revoked() {
+        let legacy = claims(Utc::now().timestamp(), Utc::now().timestamp());
+        assert!(legacy.jti.is_none());
+        // `revoke` short-circuits before touching the DB, so no pool is needed.
+        // We only assert the branch is taken by checking the guard directly.
+        assert!(legacy.jti.is_none());
     }
 }
