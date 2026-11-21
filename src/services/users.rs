@@ -35,6 +35,12 @@ pub enum UserError {
 /// `services::otp::verify`, once a signup's OTP challenge passes — never
 /// called speculatively, so an unverified phone can never end up attached
 /// to a real, loggable-in account. `password_hash` must already be hashed.
+///
+/// This INSERT is the authoritative uniqueness guard for `email` and
+/// `phone_number`: the `start_signup_challenge` pre-checks are best-effort
+/// only (see that function), so a concurrent signup that slipped past them
+/// surfaces here as a `23505` unique-constraint violation. Callers must map
+/// that to a `409 Conflict` (see [`unique_violation_field`]).
 pub async fn create_verified(
     db: &PgPool,
     email: &str,
@@ -252,4 +258,5 @@ pub async fn merchant_by_id(
 ///   merchant name become "Deleted user", the phone number is cleared
 /// - the password hash is blanked, so the accou
 
+/* … truncated 2125 chars — edit only what you need near the top … */
 /* … truncated 4434 chars — edit only what you need near the top … */

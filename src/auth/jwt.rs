@@ -179,6 +179,31 @@ pub async fn revoke(db: &PgPool, claims: &Claims) -> Result<(), sqlx::Error> {
     .map(|_| ())
 }
 
+/// Revokes every outstanding token for `user_id` by inserting all of the
+/// user's unexpired `jti`s into `revoked_tokens`. Used when an account is
+/// deleted so any in-flight JWT held by a client (or a copy on another
+/// device) is rejected by [`verify_active`].
+///
+/// Legacy tokens issued before `jti` existed carry `jti = None` and are not
+/// tracked in `revoked_tokens`, so they cannot be revoked here; they remain
+/// valid only until their own `exp` and are otherwise gated by
+/// `session_is_valid` (which returns `false` once `deleted_at` is set).
+pub async fn revoke_all_for_user(db: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM revoked_tokens WHERE expires_at < now()")
+        .execute(db)
+        .await?;
+    sqlx::query(
+        "INSERT INTO revoked_tokens (jti, expires_at)
+         SELECT jti, expires_at FROM user_tokens
+         WHERE user_id = $1 AND expires_at > now()
+         ON CONFLICT (jti) DO NOTHING",
+    )
+    .bind(user_id)
+    .execute(db)
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,7 +281,9 @@ mod tests {
     #[test]
     fn legacy_tokens_without_orig_iat_use_iat_as_the_session_start() {
         let now = 1_800_000_000;
-        let refreshed = decode_unchecked(&refresh_at(SECRET, &claims(now - 60, 0), now).unwrap());
+        let mut legacy = claims(now - 60, 0);
+        legacy.orig_iat = 0;
+        let refreshed = decode_unchecked(&refresh_at(SECRET, &legacy, now).unwrap());
         assert_eq!(refreshed.orig_iat as i64, now - 60);
     }
 }

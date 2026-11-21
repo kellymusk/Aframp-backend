@@ -598,5 +598,7 @@ conventions, and the checklist reviewers expect.
 
 ## Handsoff notes
 
+<!-- handsoff-issue-1417 -->
+- #1417: Bug: `verify_bank_account` in-process cache uses `Instant` — cache entries survive process restarts with wrong TTL on first access
 <!-- handsoff-issue-1425 -->
 - #1425: Enhancement: add integration test for concurrent withdrawal requests exhausting daily limit
