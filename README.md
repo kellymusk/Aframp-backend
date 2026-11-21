@@ -600,3 +600,7 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1424 -->
 - #1424: Enhancement: add `GET /withdrawals/{id}` test for IDOR — another merchant's withdrawal must return 404 not 403
+<!-- handsoff-issue-1417 -->
+- #1417: Bug: `verify_bank_account` in-process cache uses `Instant` — cache entries survive process restarts with wrong TTL on first access
+<!-- handsoff-issue-1425 -->
+- #1425: Enhancement: add integration test for concurrent withdrawal requests exhausting daily limit

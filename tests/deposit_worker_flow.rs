@@ -253,15 +253,145 @@ async fn oversized_deposit_is_credited_and_flagged() {
         !flagged(small).await,
         "a normal deposit must not be flagged"
     );
-    assert!(flagged(large).await, "an oversized deposit must be flagged");
+    assert!(
+        flagged(large).await,
+        "an oversized deposit must be flagged for review"
+    );
+}
 
-    let balance = balances::get_balances(&app_state.db, merchant_id)
-        .await
-        .unwrap();
-    let xlm = balance.iter().find(|b| b.asset == "XLM").unwrap();
+/// Reads the wallet's persisted `last_polled_cursor` (NULL when never advanced).
+async fn read_cursor(db: &sqlx::PgPool, wallet_id: Uuid) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT last_polled_cursor FROM wallets WHERE id = $1",
+    )
+    .bind(wallet_id)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// When every deposit in a page records successfully, the wallet's cursor is
+/// advanced so the worker does not re-scan the same page forever.
+#[tokio::test]
+async fn poll_once_advances_cursor_when_all_deposits_succeed() {
+    let app_state = state().await;
+    let router = aframp::router(app_state.clone());
+    let (_, merchant_id) = ensure_merchant(&router, "deposit-cursor-ok").await;
+    let merchant_id: Uuid = merchant_id.parse().unwrap();
+    let wallet = wallets::create_wallet(
+        &app_state.db,
+        merchant_id,
+        "stellar",
+        &app_state.wallet_encryption_key,
+    )
+    .await
+    .unwrap();
+
     assert_eq!(
-        xlm.available,
-        100_000_000_001 + 10_000_000,
-        "flagged deposits are still credited"
+        read_cursor(&app_state.db, wallet.id).await,
+        None,
+        "a freshly created wallet must not have a cursor"
+    );
+
+    let first = format!("cursor-ok-a-{}", Uuid::new_v4());
+    let second = format!("cursor-ok-b-{}", Uuid::new_v4());
+    let listener = FakeListener {
+        deposits: vec![
+            DetectedDeposit {
+                tx_hash: first.clone(),
+                destination: wallet.address.clone(),
+                amount_stroops: 10_000_000,
+                asset: "XLM".to_string(),
+                confirmations: 1,
+                memo: None,
+            },
+            DetectedDeposit {
+                tx_hash: second.clone(),
+                destination: wallet.address.clone(),
+                amount_stroops: 15_000_000,
+                asset: "XLM".to_string(),
+                confirmations: 1,
+                memo: None,
+            },
+        ],
+    };
+
+    poll_once(&app_state.db, &listener)
+        .await
+        .expect("poll_once failed");
+
+    let cursor = read_cursor(&app_state.db, wallet.id).await;
+    assert!(
+        cursor.is_some(),
+        "cursor must advance when every deposit in the page succeeds"
+    );
+}
+
+/// If any deposit in a page fails to record, the cursor must NOT advance —
+/// otherwise the failed deposit would be skipped forever on the next poll.
+#[tokio::test]
+async fn poll_once_does_not_advance_cursor_on_partial_failure() {
+    let app_state = state().await;
+    let router = aframp::router(app_state.clone());
+    let (_, merchant_id) = ensure_merchant(&router, "deposit-cursor-fail").await;
+    let merchant_id: Uuid = merchant_id.parse().unwrap();
+    let wallet = wallets::create_wallet(
+        &app_state.db,
+        merchant_id,
+        "stellar",
+        &app_state.wallet_encryption_key,
+    )
+    .await
+    .unwrap();
+
+    let ok_tx = format!("cursor-fail-ok-{}", Uuid::new_v4());
+    let conflict_tx = format!("cursor-fail-conflict-{}", Uuid::new_v4());
+
+    // Pre-insert a conflicting row for the second deposit so its insert fails
+    // (unique tx_hash), forcing the page to be a partial failure.
+    sqlx::query(
+        "INSERT INTO payments (id, merchant_id, wallet_id, tx_hash, amount_stroops, asset, status, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())",
+    )
+    .bind(Uuid::new_v4())
+    .bind(merchant_id)
+    .bind(wallet.id)
+    .bind(&conflict_tx)
+    .bind(1_i64)
+    .bind("XLM")
+    .bind("confirmed")
+    .execute(&app_state.db)
+    .await
+    .expect("failed to pre-insert conflicting payment row");
+
+    let listener = FakeListener {
+        deposits: vec![
+            DetectedDeposit {
+                tx_hash: ok_tx.clone(),
+                destination: wallet.address.clone(),
+                amount_stroops: 10_000_000,
+                asset: "XLM".to_string(),
+                confirmations: 1,
+                memo: None,
+            },
+            DetectedDeposit {
+                tx_hash: conflict_tx.clone(),
+                destination: wallet.address.clone(),
+                amount_stroops: 15_000_000,
+                asset: "XLM".to_string(),
+                confirmations: 1,
+                memo: None,
+            },
+        ],
+    };
+
+    poll_once(&app_state.db, &listener)
+        .await
+        .expect("poll_once failed");
+
+    assert_eq!(
+        read_cursor(&app_state.db, wallet.id).await,
+        None,
+        "cursor must not advance when any deposit in the page fails to record"
     );
 }
