@@ -65,6 +65,13 @@ cargo test -- --nocapture
 - Run `cargo clippy` and address all warnings
 - Keep test names descriptive: `test_name_describes_what_it_asserts`
 
+### OpenAPI security declarations
+
+Every new endpoint in `openapi.yaml` must declare its auth. Authenticated
+endpoints inherit the global `security` (cookieAuth / bearerAuth); admin
+endpoints must set `security: [{ adminBearerAuth: [] }]`; public endpoints must
+set `security: []` explicitly.
+
 ## Reporting Issues
 
 Use the GitHub issue tracker. See `.github/ISSUE_TEMPLATE/` for templates covering bugs, feature requests, and security vulnerabilities.

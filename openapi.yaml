@@ -84,6 +84,8 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '429':
           description: OTP resend cooldown or hourly cap hit
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
@@ -118,6 +120,8 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '429':
           description: OTP resend cooldown or hourly cap hit
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
@@ -290,6 +294,8 @@ paths:
               schema: { $ref: '#/components/schemas/ApiError' }
         '429':
           description: Too many OTP sends to that number; try again shortly
+          headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
@@ -1603,6 +1609,9 @@ components:
       schema: { type: string }
 
   headers:
+    RetryAfter:
+      description: Seconds to wait before retrying. Sent on 429 and 423 responses that carry retry_after_secs.
+      schema: { type: integer, minimum: 0 }
     ETag:
       description: Hash of the response payload. Echo it back as If-None-Match to poll cheaply.
       schema: { type: string }

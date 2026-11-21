@@ -321,6 +321,7 @@ pub async fn create_withdrawal_idempotent(
                             transfer_code = %result.provider_reference,
                             provider = %result.provider,
                             error = %e,
+                            runbook = "docs/manual-reconciliation-runbook.md",
                             "payout succeeded but recording it failed; withdrawal needs manual reconciliation"
                         );
                         return Err(WithdrawalError::Database(e));

@@ -160,6 +160,14 @@ flowchart LR
     API -->|on failure: refund via apply_delta| DB
 ```
 
+### Database compatibility
+
+| PostgreSQL | Supported | Notes |
+|---|---|---|
+| 12 and older | No | `gen_random_uuid()` needs `pgcrypto`; `date_trunc` with timezone missing |
+| 13 | No | `date_trunc` with timezone missing |
+| 14+ | Yes | No extensions required |
+
 ## Tech stack
 
 - **Rust** + [Axum](https://github.com/tokio-rs/axum) — HTTP API
