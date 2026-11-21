@@ -598,6 +598,8 @@ conventions, and the checklist reviewers expect.
 
 ## Handsoff notes
 
+<!-- handsoff-issue-1347 -->
+- #1347: auth: account endpoints the dashboard calls are missing (DELETE /me, POST /me/email, POST /me)
 <!-- handsoff-issue-1424 -->
 - #1424: Enhancement: add `GET /withdrawals/{id}` test for IDOR — another merchant's withdrawal must return 404 not 403
 <!-- handsoff-issue-1417 -->
