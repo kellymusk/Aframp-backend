@@ -329,6 +329,8 @@ No auth. **Does not create the account.** Validates the credentials, sends an OT
 |---|---|
 | `email` | Valid address shape; max **254** characters (RFC 5321). Local-part ≤ 64, domain ≤ 255. |
 | `password` | Min 8 characters |
+
+**Password character rules:** length is counted in Unicode characters, not bytes. The uppercase and digit checks are ASCII-only (`A–Z`, `0–9`); `Ä` does not count as uppercase. Any non-alphanumeric character counts as "special", but Unicode letters such as `ñ` or `é` are alphanumeric, so they don't satisfy that rule. Non-ASCII characters are otherwise accepted; note they take more bytes (and Argon2 hashing work) per visible character.
 | `name` | Non-empty after trim; max **100** characters (validated before the password is hashed) |
 | `phone_number` | Nigerian mobile; normalized to E.164 (`+234…`, 13 chars). Oversized / non-NG input is rejected. |
 
@@ -479,6 +481,12 @@ Auth required. Body: `{ "token": string }`. Moves `pending_email` into `email`. 
 Auth required. Deletes the signed-in account (right to erasure under GDPR / NDPA). Returns `204` and clears the session cookie. Every token issued for the account stops working immediately (including for `/auth/refresh`), and the email can't log in again.
 
 **Data retention:** deletion is a soft delete. Personal data on the account is erased in place — email becomes `deleted-<id>@deleted.invalid`, name becomes "Deleted user", the phone number and password hash are cleared — and pending OTP challenges are removed. Financial records (payments, payment requests, withdrawals, wallets, balances) are kept, still linked to the anonymized account, because they're needed for the audit trail; withdrawal records keep the bank details they were paid out to for the same reason.
+### `GET /me/sessions` *(proposed)*
+Auth required. Lists the caller's active (unexpired, unrevoked) sessions: `jti`, `issued_at`, `expires_at`, `user_agent`, `ip`, and `current` (true for the token making the request). See [docs/proposals/1438-me-sessions.md](docs/proposals/1438-me-sessions.md).
+
+### `DELETE /me/sessions/{jti}` *(proposed)*
+Auth required. Revokes one of the caller's sessions by adding its `jti` to `revoked_tokens`. Returns `204`; any later request with that token returns `401`. Returns `404` if the `jti` isn't an active session of the caller.
+
 ## API keys
 
 A JWT expires in 24 hours and has no refresh endpoint — fine for a browser session, useless for a server that has to keep working overnight. API keys are the credential for that: long-lived, merchant-scoped, and revocable one at a time without disturbing anything else.
