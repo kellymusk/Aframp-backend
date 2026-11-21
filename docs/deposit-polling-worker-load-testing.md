@@ -127,3 +127,23 @@ max_wallets (×10 concurrent) = 300 × 10 = 3,000 wallets per cycle
 - There is no circuit breaker: if Horizon is down for a full poll interval,
   the worker silently retries next cycle. A counter of consecutive global
   failures + alerting would improve operational visibility.
+
+## Tuning `STELLAR_POLL_CONCURRENCY`
+
+`STELLAR_POLL_CONCURRENCY` (default `50`, read in `src/config.rs`) caps how many
+Horizon requests the deposit worker issues in parallel per poll cycle. Setting
+it higher than your Horizon node's rate limit produces `429` responses, which
+appear as deposit poll failures in the logs.
+
+| Horizon deployment | Recommended concurrency |
+|--------------------|-------------------------|
+| Public Horizon (mainnet) | 10 |
+| Horizon testnet | 25 |
+| Self-hosted Horizon | 50+ |
+
+Guidelines:
+
+- Start from the table above and lower the value if logs show `429` errors.
+- With many merchants, a lower concurrency lengthens each cycle; keep the cycle
+  shorter than `STELLAR_POLL_INTERVAL_SECS` or increase the interval.
+- Only raise above 50 on self-hosted nodes with no rate limiting.
