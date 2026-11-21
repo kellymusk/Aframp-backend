@@ -939,3 +939,11 @@ Worth knowing before you design around them:
 - **Legacy analytics endpoint** (`GET /analytics?period=7d|30d|90d`) is a proposed contract only and is not currently served. See `GET /analytics/payments` for the implemented contract.
 - **cNGN QR codes**, pending a real issuer address.
 - **Completed payouts**, pending funding (see `PRD.md` §9.1).
+
+## Caching (`GET /payment-requests`)
+
+Responses carry an `ETag`. Send it back as `If-None-Match`; if the page is unchanged the server returns `304 Not Modified` with no body. Today the ETag is a hash of the full page, so the database query still runs on a `304` — it saves bandwidth, not server work. See `docs/proposals/1446-cheap-etag-payment-requests.md`.
+
+## Webhook delivery timing
+
+Merchant webhooks are retried up to 5 attempts with exponential backoff (1s, 2s, 4s, 8s). Worst-case time from first attempt to final failure is ~15 seconds plus per-request timeouts. Receivers should respond `2xx` quickly and process asynchronously. See `docs/proposals/1447-persistent-webhook-retry-queue.md`.
