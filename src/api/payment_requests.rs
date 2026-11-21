@@ -237,6 +237,11 @@ fn qr_cache() -> &'static QrCache {
 
 fn qr_png_cached(id: Uuid, size: u32, contents: &str) -> ApiResult<Vec<u8>> {
     let key = (id, size);
+    // Deliberate check-then-compute-then-insert: the lock is released before
+    // the (slow) PNG render so concurrent requests for other QR codes are not
+    // blocked. Two concurrent misses for the same key may both render; that
+    // redundant work is acceptable because rendering is deterministic and the
+    // last insert simply overwrites an identical PNG.
     if let Some(cached) = qr_cache().lock().unwrap().get(&key) {
         return Ok(cached.clone());
     }
