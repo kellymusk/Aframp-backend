@@ -49,6 +49,21 @@ pub async fn create_verified(
     phone_number: &str,
 ) -> Result<(User, Merchant), sqlx::Error> {
     let mut tx = db.begin().await?;
+    let (user, merchant) = create_verified_in_tx(&mut tx, email, password_hash, name, phone_number).await?;
+    tx.commit().await?;
+    Ok((user, merchant))
+}
+
+/// Same as [`create_verified`] but runs on a caller-supplied transaction so
+/// the account creation can be committed atomically together with other
+/// work (e.g. claiming the OTP challenge). The caller owns the commit.
+pub async fn create_verified_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email: &str,
+    password_hash: &str,
+    name: &str,
+    phone_number: &str,
+) -> Result<(User, Merchant), sqlx::Error> {
     let user = sqlx::query_as::<_, User>(&format!(
         "INSERT INTO users (email, password_hash, name, phone_number, phone_verified)
              VALUES ($1, $2, $3, $4, true)
@@ -58,7 +73,7 @@ pub async fn create_verified(
     .bind(password_hash)
     .bind(name)
     .bind(phone_number)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
     let merchant = sqlx::query_as::<_, Merchant>(
@@ -68,10 +83,9 @@ pub async fn create_verified(
     )
     .bind(user.id)
     .bind(name)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
-    tx.commit().await?;
     Ok((user, merchant))
 }
 
@@ -89,6 +103,8 @@ pub(crate) fn unique_violation_field(err: &sqlx::Error) -> Option<&str> {
 /// On success: resets `failed_login_count` to 0.
 /// On wrong password: increments `failed_login_count`; locks the account for
 /// [`LOCKOUT_DURATION_MINS`] minutes after [`MAX_FAILED_ATTEMPTS`] failures.
+/// If a previous lock has expired, the counter is reset to 0 first so the
+/// merchant gets a fresh [`MAX_FAILED_ATTEMPTS`]-attempt window.
 /// Returns [`UserError::AccountLocked`] when the account is currently locked,
 /// regardless of whether the supplied password is correct.
 #[tracing::instrument(skip_all, err)]
@@ -118,18 +134,24 @@ pub async fn login(
     };
 
     // Check lockout before verifying the password — avoids leaking timing info
-    // about whether a locked account's password is correct or not.
+    // about whether a locked account's password is correct or not. If the lock
+    // is still active we bail out; if it has expired we fall through and treat
+    // this as a fresh attempt window (the counter is reset below before any
+    // increment), so a single typo after expiry does not immediately re-lock.
+    let mut failed_login_count = user.failed_login_count;
     if let Some(locked_until) = user.locked_until {
         if Utc::now() < locked_until {
             return Err(UserError::AccountLocked {
                 until: locked_until,
             });
         }
+        // Lock has expired — start a fresh attempt window.
+        failed_login_count = 0;
     }
 
     if !password::verify(password_raw, &user.password_hash) {
         // Increment failure counter; lock if threshold reached.
-        let new_count = user.failed_login_count + 1;
+        let new_count = failed_login_count + 1;
         if new_count >= MAX_FAILED_ATTEMPTS {
             let locked_until = Utc::now() + chrono::Duration::minutes(LOCKOUT_DURATION_MINS);
             sqlx::query(
@@ -237,3 +259,4 @@ pub async fn merchant_by_id(
 /// - the password hash is blanked, so the accou
 
 /* … truncated 2125 chars — edit only what you need near the top … */
+/* … truncated 4434 chars — edit only what you need near the top … */

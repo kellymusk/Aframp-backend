@@ -11,3 +11,11 @@ ADRs are append-only — a superseded decision gets a new ADR marked
 | [ADR-002](ADR-002-otp-gated-signup.md) | OTP-gated signup and login (phone-number 2FA) | Accepted |
 | [ADR-003](ADR-003-hmac-otp-storage.md) | HMAC-based OTP code storage (not bcrypt/Argon2) | Accepted |
 | [ADR-004](ADR-004-commit-before-paystack.md) | Commit-before-Paystack withdrawal design | Accepted |
+
+## Operational notes
+
+- **OTP HMAC key rotation:** rotating `OTP_HMAC_SECRET` invalidates all
+  in-flight OTP challenges. See the "Key Rotation" section of
+  [ADR-003](ADR-003-hmac-otp-storage.md#key-rotation) for the impact and safe
+  rotation procedure, and follow the corresponding ops runbook before
+  rotating the secret in any environment.

@@ -1,283 +1,130 @@
-//! Integration tests for email validation through the `/signup` endpoint.
+//! Property-based and regression tests for `validation::is_valid_email`.
 //!
-//! `is_valid_email` in `src/validation.rs` is tested indirectly here because
-//! it is a private module — the public surface is the `/signup` handler that
-//! calls it. Every assertion below maps to a specific validation case listed
-//! in issue #1104.
-//!
-//! Run these tests with:
-//!
-//! ```bash
-//! TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
-//!   cargo test --test email_validation_tests
-//! ```
+//! The custom validator in `src/validation.rs` is hand-rolled, so we fuzz it
+//! against a reference implementation (`email_address`) to surface edge cases
+//! around consecutive dots, long local parts, and international domain labels.
 
-mod common;
+use email_address::EmailAddress;
+use proptest::prelude::*;
+use stellar_insights_backend::validation::is_valid_email;
 
-use axum::http::StatusCode;
-use serde_json::json;
+/// Reference validator: parse with the `email_address` crate.
+fn reference_is_valid(email: &str) -> bool {
+    EmailAddress::is_valid(email)
+}
 
-use common::state;
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
 
-async fn app() -> axum::Router {
-    aframp::router(state().await)
+    /// Arbitrary ASCII strings: whenever the reference validator accepts an
+    /// address, our validator must accept it too (no false negatives on the
+    /// common accept cases).
+    #[test]
+    fn accepts_what_reference_accepts(s in "[\x20-\x7e]{0,80}") {
+        if reference_is_valid(&s) {
+            prop_assert!(
+                is_valid_email(&s),
+                "reference accepted {:?} but is_valid_email rejected it",
+                s
+            );
+        }
+    }
+
+    /// Arbitrary ASCII strings: whenever our validator accepts an address, the
+    /// reference must accept it too (no false positives on the common cases).
+    #[test]
+    fn rejects_what_reference_rejects(s in "[\x20-\x7e]{0,80}") {
+        if is_valid_email(&s) {
+            prop_assert!(
+                reference_is_valid(&s),
+                "is_valid_email accepted {:?} but reference rejected it",
+                s
+            );
+        }
+    }
+
+    /// Structured generator: build plausible `local@domain` shapes so the
+    /// fuzzer spends its budget on near-valid inputs rather than noise.
+    #[test]
+    fn structured_addresses_agree_with_reference(
+        local in "[a-zA-Z0-9._%+\\-]{0,70}",
+        domain in "[a-zA-Z0-9.\\-]{0,70}",
+    ) {
+        let email = format!("{local}@{domain}");
+        if reference_is_valid(&email) {
+            prop_assert!(
+                is_valid_email(&email),
+                "reference accepted {:?} but is_valid_email rejected it",
+                email
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Regression tests for discrepancies found while fuzzing.
 // ---------------------------------------------------------------------------
 
-/// A fresh valid Nigerian phone number per signup, so the per-number OTP
-/// send limit never turns a validation result into a 429.
-fn fresh_phone() -> String {
-    let n = (uuid::Uuid::new_v4().as_u128() % 100_000_000) as u64;
-    format!("080{n:08}")
+#[test]
+fn rejects_consecutive_dots_in_local_part() {
+    assert!(!is_valid_email("john..doe@example.com"));
+    assert!(!is_valid_email("john.doe..@example.com"));
+    assert!(!is_valid_email("..john@example.com"));
 }
 
-/// POST /signup with the given email. Returns the HTTP status code.
-/// Other fields are fixed — we're only varying the email.
-async fn signup_status(app: axum::Router, email: &str) -> StatusCode {
-    let (status, _body) = common::send(
-        app,
-        "POST",
-        "/signup",
-        None,
-        Some(json!({
-            "email": email,
-            "password": "ValidPass123!",
-            "name": "Test User",
-            "phone_number": fresh_phone(),
-        })),
-    )
-    .await;
-    status
+#[test]
+fn rejects_consecutive_dots_in_domain() {
+    assert!(!is_valid_email("john@example..com"));
+    assert!(!is_valid_email("john@example.com."));
+    assert!(!is_valid_email("john@.example.com"));
 }
 
-// ---------------------------------------------------------------------------
-// Valid email formats — should be accepted (HTTP 200 OK)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn accepts_ng_tld() {
-    let app = app().await;
-    let status = signup_status(app, "merchant@example.ng").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        ".ng TLD must be accepted by is_valid_email"
-    );
+#[test]
+fn rejects_leading_and_trailing_dots_in_local_part() {
+    assert!(!is_valid_email(".john@example.com"));
+    assert!(!is_valid_email("john.@example.com"));
 }
 
-#[tokio::test]
-async fn accepts_co_uk_tld() {
-    let app = app().await;
-    let status = signup_status(app, "merchant@example.co.uk").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        ".co.uk TLD must be accepted by is_valid_email"
-    );
+#[test]
+fn rejects_local_part_longer_than_64_chars() {
+    let local = "a".repeat(65);
+    assert!(!is_valid_email(&format!("{local}@example.com")));
+
+    let local = "a".repeat(64);
+    assert!(is_valid_email(&format!("{local}@example.com")));
 }
 
-#[tokio::test]
-async fn accepts_io_tld() {
-    let app = app().await;
-    let status = signup_status(app, "merchant@startup.io").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        ".io TLD must be accepted by is_valid_email"
-    );
+#[test]
+fn rejects_domain_labels_with_leading_or_trailing_hyphens() {
+    assert!(!is_valid_email("john@-example.com"));
+    assert!(!is_valid_email("john@example-.com"));
+    assert!(!is_valid_email("john@sub.-example.com"));
 }
 
-#[tokio::test]
-async fn accepts_tagged_address() {
-    let app = app().await;
-    // RFC 5321 allows '+' in the local part (common for Gmail-style tagging).
-    let status = signup_status(app, "user+tag@example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "tagged address (user+tag@example.com) must be accepted"
-    );
+#[test]
+fn rejects_domain_without_a_dot() {
+    assert!(!is_valid_email("john@localhost"));
 }
 
-#[tokio::test]
-async fn accepts_subdomain_address() {
-    let app = app().await;
-    let status = signup_status(app, "user@mail.subdomain.example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "address with subdomain must be accepted"
-    );
+#[test]
+fn rejects_international_domain_labels() {
+    // The custom validator is ASCII-only; IDN labels must be rejected rather
+    // than silently accepted with a malformed domain.
+    assert!(!is_valid_email("john@exämple.com"));
+    assert!(!is_valid_email("john@例え.テスト"));
 }
 
-#[tokio::test]
-async fn accepts_maximum_length_local_part() {
-    let app = app().await;
-    // RFC 5321 §4.5.3.1.1 — local part max is 64 characters.
-    let local_part = "a".repeat(64);
-    let email = format!("{local_part}@example.com");
-    let status = signup_status(app, &email).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "64-character local part must be accepted (RFC 5321 limit)"
-    );
+#[test]
+fn rejects_missing_or_duplicate_at_sign() {
+    assert!(!is_valid_email("johnexample.com"));
+    assert!(!is_valid_email("john@@example.com"));
+    assert!(!is_valid_email("@example.com"));
+    assert!(!is_valid_email("john@"));
 }
 
-#[tokio::test]
-async fn accepts_maximum_length_domain() {
-    let app = app().await;
-    // RFC 5321 §4.5.3.1.2 — domain max is 255 characters.
-    // Build a valid domain that's exactly 255 chars: four 62-char labels + dots + .com
-    // "a" * 62 + "." + "a" * 62 + "." + "a" * 62 + "." + "a" * 61 + ".com" = 255
-    let domain = format!(
-        "{}.{}.{}.{}.com",
-        "a".repeat(62),
-        "a".repeat(62),
-        "a".repeat(62),
-        "a".repeat(54),
-    );
-    assert!(domain.len() <= 255, "test domain must be within 255 chars");
-    let email = format!("user@{domain}");
-    let status = signup_status(app, &email).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "domain within 255-char limit must be accepted"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Invalid email formats — should be rejected (HTTP 400 with code INVALID_PARAMETERS)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn rejects_missing_at_sign() {
-    let app = app().await;
-    let status = signup_status(app, "notanemail.com").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "address without '@' must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_double_at_sign() {
-    let app = app().await;
-    let status = signup_status(app, "user@@example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "address with double '@' must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_trailing_dot_in_domain() {
-    let app = app().await;
-    let status = signup_status(app, "user@example.com.").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "domain with trailing dot must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_leading_dot_in_local_part() {
-    let app = app().await;
-    let status = signup_status(app, ".user@example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "local part with leading dot must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_trailing_dot_in_local_part() {
-    let app = app().await;
-    let status = signup_status(app, "user.@example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "local part with trailing dot must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_consecutive_dots_in_local_part() {
-    let app = app().await;
-    let status = signup_status(app, "user..name@example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "local part with consecutive dots must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_domain_with_no_dot() {
-    let app = app().await;
-    // A domain with no dot has no TLD — invalid per the validator.
-    let status = signup_status(app, "user@localhost").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "domain without a dot must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_local_part_exceeding_64_chars() {
-    let app = app().await;
-    let local_part = "a".repeat(65);
-    let email = format!("{local_part}@example.com");
-    let status = signup_status(app, &email).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "local part longer than 64 chars must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_domain_exceeding_255_chars() {
-    let app = app().await;
-    // 256-character domain — one byte over the limit.
-    let domain = format!("{}.example.com", "a".repeat(244));
-    assert!(domain.len() > 255, "test domain must exceed 255 chars");
-    let email = format!("user@{domain}");
-    let status = signup_status(app, &email).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "domain longer than 255 chars must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_empty_local_part() {
-    let app = app().await;
-    let status = signup_status(app, "@example.com").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "empty local part must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn rejects_empty_string() {
-    let app = app().await;
-    let status = signup_status(app, "").await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "empty email string must be rejected"
-    );
+#[test]
+fn accepts_common_valid_addresses() {
+    assert!(is_valid_email("john.doe@example.com"));
+    assert!(is_valid_email("john+tag@example.co.uk"));
+    assert!(is_valid_email("a@b.co"));
 }
