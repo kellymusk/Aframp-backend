@@ -60,6 +60,59 @@ Rationale:
 
 ---
 
+## OTP code length and brute-force risk (issue #1422)
+
+`services::otp::generate_code()` produces a **6-digit decimal** code, i.e. a
+keyspace of `10^6 = 1,000,000` values. This length was chosen deliberately:
+
+- **Usability.** 6 digits is the de-facto SMS OTP convention (RFC 4226 / HOTP
+  and most banks use 6). It is short enough to read from a lock-screen
+  notification and retype without errors, which matters for the target market.
+- **SMS cost / length.** A 6-digit code keeps the SMS body within a single
+  segment on Nigerian carriers, minimising delivery cost and failure.
+- **Mitigations carry the security weight.** The keyspace alone is not the
+  defence; the surrounding controls are.
+
+### Current mitigations
+
+| Control | Value | Where |
+| --- | --- | --- |
+| Max verification attempts per challenge | `MAX_ATTEMPTS = 5` | `src/services/otp.rs` |
+| Challenge TTL | `CODE_TTL_SECS = 600` (10 minutes) | `src/services/otp.rs` |
+| Resend cooldown | 60 s between resends, 5/hour per phone per purpose | `src/api/auth.rs` |
+| Login rate limiting | per-IP, applied before a challenge is issued | `src/api/auth.rs` |
+
+### Per-challenge brute-force probability
+
+An attacker who knows the `challenge_id` (a public UUID returned by
+`/signup` and `/login`) can submit at most `MAX_ATTEMPTS = 5` guesses before
+the challenge is locked. The probability of guessing the correct code within
+those 5 attempts is:
+
+```
+P(success) = MAX_ATTEMPTS / keyspace
+           = 5 / 1,000,000
+           = 0.000005
+           = 0.0005%  (1 in 200,000 challenges)
+```
+
+This is documented and asserted by the `brute_force_probability_is_bounded`
+test in `src/services/otp.rs`, which fails if `MAX_ATTEMPTS`, the code length,
+or `CODE_TTL_SECS` drift from the values this analysis assumes.
+
+### Acceptable risk threshold
+
+We accept a per-challenge success probability of **≤ 0.001% (1 in 100,000)**.
+The current `5 / 1,000,000 = 0.0005%` sits comfortably under that threshold.
+The threshold is only meaningful in combination with the attempt cap and TTL:
+without `MAX_ATTEMPTS`, the same keyspace would be trivially exhaustible.
+
+If the attempt cap is ever raised, the code length must be raised in lockstep
+so that `MAX_ATTEMPTS / 10^digits` stays below the threshold — the test above
+enforces this relationship.
+
+---
+
 ## Consequences
 
 **Positive:**
@@ -86,3 +139,7 @@ Rationale:
   requirement.
 - OTP delivery status (Termii webhook) is not yet correlated back to the
   `otp_challenges` row — a delivery failure is visible only in logs.
+- Per-challenge brute-force risk is bounded but non-zero (see the section
+  above). Future hardening could add per-challenge exponential backoff on
+  failed attempts; the current attempt cap plus TTL is considered sufficient
+  for the accepted risk threshold.

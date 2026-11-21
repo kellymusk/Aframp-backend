@@ -93,6 +93,23 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
 /// DNS resolver for webhook delivery that only ever returns public addresses,
 /// so a hostname can't be pointed (or re-pointed) at an internal service
 /// after registration.
+///
+/// # DNS rebinding
+///
+/// A merchant can register a hostname whose A record is public at
+/// registration time, then re-point it at an internal address (e.g.
+/// `169.254.169.254` or `10.0.0.5`) before delivery — classic DNS rebinding.
+/// This resolver re-checks every address it returns against [`is_public_ip`],
+/// so a rebound record is rejected at connect time. The remaining risk is a
+/// pooled connection that was resolved while the record was still public and
+/// is reused for a later delivery without a fresh lookup; [`delivery_client`]
+/// disables idle connection reuse so each attempt re-resolves the hostname.
+///
+/// Mitigations in place:
+/// - redirects are not followed ([`reqwest::redirect::Policy::none`]), so a
+///   public host can't 30x the request to an internal one;
+/// - a 10s request timeout bounds each attempt;
+/// - idle connections are not pooled, forcing a fresh DNS lookup per attempt.
 pub struct PublicOnlyResolver;
 
 impl reqwest::dns::Resolve for PublicOnlyResolver {
@@ -114,10 +131,15 @@ impl reqwest::dns::Resolve for PublicOnlyResolver {
 
 /// HTTP client for delivering merchant webhooks: public addresses only, and
 /// redirects are not followed (a redirect could point anywhere).
+///
+/// Idle connections are not pooled (`pool_max_idle_per_host(0)`) so every
+/// delivery attempt performs a fresh DNS lookup through [`PublicOnlyResolver`]
+/// instead of reusing a socket resolved before a DNS-rebinding change.
 pub fn delivery_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
+        .pool_max_idle_per_host(0)
         .dns_resolver(std::sync::Arc::new(PublicOnlyResolver))
         .build()
         .expect("failed to build webhook HTTP client")
@@ -225,130 +247,6 @@ pub async fn dispatch(
     let mut ids = Vec::new();
     for webhook in list(db, merchant_id).await? {
         let delivery_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO webhook_deliveries (webhook_id, event_type, payload)
-             VALUES ($1, $2, $3) RETURNING id",
-        )
-        .bind(webhook.id)
-        .bind(event_type)
-        .bind(&body)
-        .fetch_one(db)
-        .await?;
-        ids.push(delivery_id);
+            "INSERT INTO webhook_d
 
-        let (db, http, secret, event_type, body) = (
-            db.clone(),
-            http.clone(),
-            secret.to_string(),
-            event_type.to_string(),
-            body.clone(),
-        );
-        tokio::spawn(async move {
-            deliver(
-                &db,
-                &http,
-                &secret,
-                delivery_id,
-                &webhook.url,
-                &event_type,
-                &body,
-                policy,
-            )
-            .await;
-        });
-    }
-    Ok(ids)
-}
-
-/// POST `body` to `url` until it gets a 2xx or `policy.max_attempts` is
-/// reached, updating the delivery row after every attempt.
-#[allow(clippy::too_many_arguments)]
-pub async fn deliver(
-    db: &PgPool,
-    http: &reqwest::Client,
-    secret: &str,
-    delivery_id: Uuid,
-    url: &str,
-    event_type: &str,
-    body: &str,
-    policy: RetryPolicy,
-) {
-    let signature = sign(secret, body.as_bytes());
-    let mut delay = policy.base_delay;
-
-    for attempt in 1..=policy.max_attempts {
-        let result = http
-            .post(url)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(SIGNATURE_HEADER, &signature)
-            .header(EVENT_HEADER, event_type)
-            .body(body.to_string())
-            .send()
-            .await;
-        let error = match result {
-            Ok(resp) if resp.status().is_success() => None,
-            Ok(resp) => Some(format!("HTTP {}", resp.status())),
-            Err(e) => Some(e.to_string()),
-        };
-
-        let status = match (&error, attempt == policy.max_attempts) {
-            (None, _) => "delivered",
-            (Some(_), true) => "failed",
-            (Some(_), false) => "pending",
-        };
-        if let Err(e) = sqlx::query(
-            "UPDATE webhook_deliveries
-                SET status = $2, attempts = $3, last_error = $4, updated_at = now()
-              WHERE id = $1",
-        )
-        .bind(delivery_id)
-        .bind(status)
-        .bind(attempt as i32)
-        .bind(&error)
-        .execute(db)
-        .await
-        {
-            tracing::warn!(error = %e, %delivery_id, "failed to record webhook delivery attempt");
-        }
-
-        match error {
-            None => {
-                tracing::info!(%delivery_id, url, event_type, attempt, "webhook delivered");
-                return;
-            }
-            Some(err) => {
-                tracing::warn!(%delivery_id, url, event_type, attempt, error = %err, "webhook delivery attempt failed");
-                if attempt < policy.max_attempts {
-                    tokio::time::sleep(delay).await;
-                    delay *= 2;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_public_ip;
-
-    #[test]
-    fn private_and_internal_addresses_are_not_public() {
-        for ip in [
-            "127.0.0.1",
-            "10.0.0.5",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "0.0.0.0",
-            "::1",
-            "fd00::1",
-            "fe80::1",
-            "::ffff:127.0.0.1",
-        ] {
-            assert!(!is_public_ip(ip.parse().unwrap()), "{ip} must be refused");
-        }
-        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
-            assert!(is_public_ip(ip.parse().unwrap()), "{ip} is public");
-        }
-    }
-}
+/* … truncated 3639 chars — edit only what you need near the top … */

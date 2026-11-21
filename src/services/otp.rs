@@ -23,6 +23,28 @@ const RESEND_COOLDOWN_SECS: i64 = 60;
 const MAX_SENDS_PER_HOUR: i64 = 5;
 const MAX_ATTEMPTS: i32 = 5;
 
+/// Number of decimal digits in a generated OTP code.
+///
+/// Why 6 digits: it is the de-facto UX standard for SMS OTPs (users expect to
+/// type six digits, and SMS gateways/autofill handle it well). The keyspace is
+/// `10^6 = 1_000_000` values, which is only safe because of the layered
+/// mitigations below — the code length alone is *not* the security boundary.
+const CODE_DIGITS: u32 = 6;
+/// Size of the OTP keyspace (`10^CODE_DIGITS`).
+const CODE_KEYSpace: u64 = 1_000_000;
+
+/// Acceptable per-challenge brute-force success probability.
+///
+/// With `MAX_ATTEMPTS = 5` guesses against a `1_000_000`-value keyspace, an
+/// attacker who knows the public `challenge_id` succeeds with probability
+/// `5 / 1_000_000 = 0.0005%` per challenge. That is the accepted risk
+/// threshold: below 0.001% per challenge. It is only acceptable because the
+/// window is bounded by `CODE_TTL_SECS` (10 minutes), the attempt budget is
+/// capped at `MAX_ATTEMPTS` (5), and login issuance is additionally gated by
+/// per-IP rate limiting. If any of those mitigations is removed, the digit
+/// count must be revisited (e.g. 8 digits → `5 / 100_000_000`).
+const ACCEPTABLE_PER_CHALLENGE_SUCCESS_PCT: f64 = 0.001;
+
 #[derive(Debug, thiserror::Error)]
 pub enum OtpError {
     #[error("too many requests, please try again shortly")]
@@ -56,6 +78,30 @@ pub enum VerifiedOutcome {
     PhoneChanged(User),
 }
 
+/// Normalises an email address for the signup uniqueness check.
+///
+/// Product decision (issue #1423): `is_valid_email` accepts RFC 5322
+/// `+`-extension addresses (`user+tag@example.com`), but the local part is
+/// normalised before the uniqueness check so that `alice@example.com` and
+/// `alice+bypass@example.com` are treated as the same inbox. Without this a
+/// banned/suspended merchant could re-signup with `+1`, `+2`, … and hold
+/// multiple accounts on the same inbox.
+///
+/// The stored email is left untouched (the user keeps the address they typed);
+/// only the comparison key is normalised. The domain is lowercased and the
+/// `+tag` suffix is stripped from the local part. This is a known caveat for
+/// providers that treat `+` as a significant character, which is rare.
+pub fn normalise_email_for_uniqueness(email: &str) -> String {
+    let email = email.trim();
+    match email.rsplit_once('@') {
+        Some((local, domain)) => {
+            let local = local.split('+').next().unwrap_or(local);
+            format!("{}@{}", local, domain.to_lowercase())
+        }
+        None => email.to_lowercase(),
+    }
+}
+
 pub async fn start_signup_challenge(
     db: &PgPool,
     otp: &dyn OtpProvider,
@@ -65,6 +111,15 @@ pub async fn start_signup_challenge(
     name: &str,
     phone_number: &str,
 ) -> Result<OtpChallengeResponse, OtpError> {
+    // Compare on the normalised local part so `+`-extension aliases of an
+    // already-registered inbox are rejected (issue #1423).
+    let normalised_email = normalise_email_for_uniqueness(email);
+    let email_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE lower(split_part(email, '+', 1)) = $1)",
+    )
+    .bind(&normalised_email)
+    .fetch_one(db)
+    .await?;
     // Best-effort pre-checks only. These `SELECT EXISTS` queries give an
     // early, friendly rejection for the common case, but they are NOT the
     // authoritative uniqueness guard: between this check and the eventual
@@ -282,6 +337,9 @@ pub async fn verify(
         return Err(OtpError::ChallengeNotFound);
     }
 
+    if challenge.purpose == "login" 
+
+/* … truncated 8988 chars — edit only what you need near the top … */
     if challenge.purpose == "login" {
         let user_id = challenge.user_id.expect(
             "login challenge always carries user_id — enforced by the migration's CHECK constraint",

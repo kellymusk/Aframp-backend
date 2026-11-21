@@ -149,6 +149,45 @@ procedure.
 
 ---
 
+## Why 6 decimal digits, and the online brute-force risk
+
+Six decimal digits were chosen as a deliberate UX/security trade-off:
+
+- **Keyspace:** `generate_code()` produces a uniformly random value in
+  `0..=999_999`, i.e. **1,000,000 possible codes**.
+- **Usability:** 6 digits is the de-facto standard for SMS/email OTPs — short
+  enough to type on any device, long enough that a single blind guess is
+  hopeless. Longer codes (8+) measurably increase mistyped-entry and
+  abandonment rates for no meaningful gain once online guessing is throttled.
+- **Online guessing is the only realistic attack** (offline attacks are already
+  defeated by the HMAC storage above). The relevant controls are:
+
+| Control | Value | Effect on online guessing |
+| --- | --- | --- |
+| `MAX_ATTEMPTS` | 5 per challenge | Caps guesses per challenge at 5 |
+| `CODE_TTL_SECS` | 600 s (10 min) | Bounds the window a challenge is live |
+| Per-IP login rate limiting | existing middleware | Bounds challenges an attacker can create/attack per IP |
+
+**Per-challenge brute-force probability.** With 5 attempts against a
+1,000,000-value space, the chance a single challenge is guessed is at most
+`5 / 1,000,000 = 0.0005%` (5e-6). This is the figure documented by the test
+`brute_force_probability_is_bounded` in `src/services/otp.rs`.
+
+**Acceptable risk threshold.** We accept a per-challenge success probability of
+**≤ 0.001% (1e-5)**. The current design sits at 5e-6, comfortably under that
+bound. If `MAX_ATTEMPTS` were raised, or the keyspace reduced, the threshold
+would be breached and this ADR must be revisited.
+
+**Residual risk at scale.** An attacker who knows many `challenge_id`s (they are
+public UUIDs returned by signup/login) could spread 5 guesses across many
+challenges. This is why the per-IP login rate limiting matters: it bounds how
+many challenges can be minted and attacked from one source. If abuse is
+observed, the follow-up mitigations are (a) a shorter resend cooldown, and
+(b) per-challenge attempt rate limiting with exponential backoff — both noted
+as open items below.
+
+---
+
 ## Consequences
 
 **Positive:**
@@ -159,6 +198,7 @@ procedure.
 - HMAC-SHA256 is constant-time by construction (via the `hmac` crate's
   `verify_slice`), avoiding timing side-channels.
 - Verification is fast (microseconds) — no UX impact from hash stretching.
+- Online brute-force risk is bounded and documented (≤ 0.001% per challenge).
 
 **Negative / open items:**
 
@@ -170,6 +210,9 @@ procedure.
 - `OTP_HMAC_SECRET` must be distinct from `JWT_SECRET` and
   `WALLET_ENCRYPTION_KEY`. Reusing any secret across multiple purposes
   undermines isolation.
+- **Open item:** consider reducing the resend cooldown further and/or adding
+  per-challenge attempt rate limiting with exponential backoff to harden the
+  multi-challenge attack surface described above.
 - This choice is appropriate for short-lived, single-use codes. **Do not apply
   this pattern to long-lived credentials** (passwords, API keys) — those
   require a memory-hard KDF (Argon2, bcrypt, scrypt).
