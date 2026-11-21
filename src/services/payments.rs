@@ -11,18 +11,27 @@ const PAYMENT_COLUMNS: &str = "id, merchant_id, wallet_id, wallet_address, tx_ha
 pub enum PaymentError {
     #[error("wallet not found")]
     WalletNotFound,
+    #[error("balance row missing for merchant {merchant_id} asset {asset}")]
+    BalanceRowMissing { merchant_id: Uuid, asset: String },
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
 #[tracing::instrument(skip_all, err, fields(merchant_id = %payment.merchant_id, tx_hash = %payment.tx_hash))]
 pub async fn record_deposit(db: &PgPool, payment: NewPayment) -> Result<Payment, PaymentError> {
+    // Dedup on the compound `(tx_hash, wallet_address)` key rather than
+    // `tx_hash` alone. A re-org replay (or memo-replay on a clawback) can
+    // reuse a transaction hash against a *different* destination address;
+    // keying on `tx_hash` only would silently return the original payment
+    // row and credit the wrong merchant. The compound key matches the unique
+    // index added in migration `0015_unique_payment_wallet_tx_hash.sql`.
     let existing = sqlx::query_as::<_, Payment>(&format!(
         "SELECT {PAYMENT_COLUMNS}
            FROM payments
-          WHERE tx_hash = $1",
+          WHERE tx_hash = $1 AND wallet_address = $2",
     ))
     .bind(&payment.tx_hash)
+    .bind(&payment.wallet_address)
     .fetch_optional(db)
     .await?;
 
@@ -246,189 +255,6 @@ pub async fn merchant_notification_prefs(
     db: &PgPool,
     merchant_id: Uuid,
 ) -> Result<Option<MerchantNotificationPrefs>, sqlx::Error> {
-    sqlx::query_as::<_, MerchantNotificationPrefs>(
-        "SELECT merchant_id, email, deposit_email_enabled, unsubscribe_token
-           FROM merchant_notification_prefs
-          WHERE merchant_id = $1",
-    )
-    .bind(merchant_id)
-    .fetch_optional(db)
-    .await
-}
+    sqlx
 
-/// Opts a merchant in (or out) of deposit email notifications. Creates the
-/// preferences row on first call, generating a stable unsubscribe token.
-pub async fn set_deposit_email_enabled(
-    db: &PgPool,
-    merchant_id: Uuid,
-    email: &str,
-    enabled: bool,
-) -> Result<MerchantNotificationPrefs, sqlx::Error> {
-    sqlx::query_as::<_, MerchantNotificationPrefs>(
-        "INSERT INTO merchant_notification_prefs (
-             merchant_id, email, deposit_email_enabled, unsubscribe_token
-         )
-         VALUES ($1, $2, $3, gen_random_uuid())
-         ON CONFLICT (merchant_id) DO UPDATE
-            SET email = EXCLUDED.email,
-                deposit_email_enabled = EXCLUDED.deposit_email_enabled,
-                updated_at = now()
-         RETURNING merchant_id, email, deposit_email_enabled, unsubscribe_token",
-    )
-    .bind(merchant_id)
-    .bind(email)
-    .bind(enabled)
-    .fetch_one(db)
-    .await
-}
-
-/// Disables deposit email notifications using the opaque unsubscribe token
-/// from the email link. Returns `true` when a matching opt-in was disabled.
-/// This is the GDPR-compliant one-click unsubscribe path and requires no
-/// authentication.
-pub async fn unsubscribe_deposit_email(db: &PgPool, token: Uuid) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE merchant_notification_prefs
-            SET deposit_email_enabled = false, updated_at = now()
-          WHERE unsubscribe_token = $1
-            AND deposit_email_enabled = true",
-    )
-    .bind(token)
-    .execute(db)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-/// Adds one confirmation to every deposit still waiting in `verified`. Called
-/// once per poll pass, so `confirmations` counts passes since detection.
-pub async fn age_verified_deposits(db: &PgPool) -> Result<u64, sqlx::Error> {
-    Ok(sqlx::query(
-        "UPDATE payments SET confirmations = confirmations + 1, updated_at = now()
-          WHERE status = 'verified'",
-    )
-    .execute(db)
-    .await?
-    .rows_affected())
-}
-
-/// Records the first confirmation of a newly verified deposit.
-pub async fn bump_confirmations(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE payments SET confirmations = confirmations + 1, updated_at = now()
-          WHERE id = $1 AND status = 'verified'",
-    )
-    .bind(id)
-    .execute(db)
-    .await
-    .map(|_| ())
-}
-
-/// Promotes every verified deposit with at least `min_confirmations` to
-/// `confirmed`, moving its amount from `pending` to `available` in the same
-/// transaction. Returns the promoted payments.
-pub async fn promote_confirmed(
-    db: &PgPool,
-    min_confirmations: i32,
-) -> Result<Vec<Payment>, sqlx::Error> {
-    let ready = sqlx::query_as::<_, Payment>(&format!(
-        "SELECT {PAYMENT_COLUMNS}
-           FROM payments
-          WHERE status = 'verified' AND confirmations >= $1",
-    ))
-    .bind(min_confirmations)
-    .fetch_all(db)
-    .await?;
-
-    let mut promoted = Vec::new();
-    for p in ready {
-        let mut tx = db.begin().await?;
-        // Guarded on status so a concurrent pass can't promote it twice.
-        let updated = sqlx::query(
-            "UPDATE payments SET status = 'confirmed', updated_at = now()
-              WHERE id = $1 AND status = 'verified'",
-        )
-        .bind(p.id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if updated == 0 {
-            tx.rollback().await?;
-            continue;
-        }
-        sqlx::query(
-            "UPDATE balances
-                SET available = available + $3, pending = pending - $3, updated_at = now()
-              WHERE merchant_id = $1 AND asset = $2",
-        )
-        .bind(p.merchant_id)
-        .bind(&p.asset)
-        .bind(p.amount_stroops)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        promoted.push(p);
-    }
-    Ok(promoted)
-}
-
-/// One UTC day's confirmed-payment totals for one asset.
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
-pub struct DailyPaymentAggregate {
-    pub date: chrono::NaiveDate,
-    pub count: i64,
-    pub total_stroops: i64,
-    pub asset: String,
-}
-
-/// Confirmed payments for `merchant_id` created in `[start, end)`, grouped by
-/// UTC calendar day and asset, oldest day first. Days with no payments are
-/// absent rather than zero-filled.
-pub async fn daily_confirmed_totals(
-    db: &PgPool,
-    merchant_id: Uuid,
-    start: chrono::DateTime<chrono::Utc>,
-    end: chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<DailyPaymentAggregate>, sqlx::Error> {
-    sqlx::query_as::<_, DailyPaymentAggregate>(
-        "SELECT (created_at AT TIME ZONE 'UTC')::date AS date,
-                COUNT(*) AS count,
-                SUM(amount_stroops)::bigint AS total_stroops,
-                asset
-           FROM payments
-          WHERE merchant_id = $1 AND status = 'confirmed'
-            AND created_at >= $2 AND created_at < $3
-          GROUP BY 1, asset
-          ORDER BY 1, asset",
-    )
-    .bind(merchant_id)
-    .bind(start)
-    .bind(end)
-    .fetch_all(db)
-    .await
-}
-
-/// Marks a payment as anomalous for admin review.
-pub async fn flag_payment(db: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE payments SET flagged = true, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .execute(db)
-        .await?;
-    Ok(())
-}
-
-/// Total of a merchant's `asset` deposits recorded in the last hour, including
-/// the one just recorded.
-pub async fn deposits_in_last_hour(
-    db: &PgPool,
-    merchant_id: Uuid,
-    asset: &str,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount_stroops), 0)::bigint FROM payments
-          WHERE merchant_id = $1 AND asset = $2 AND created_at > now() - interval '1 hour'",
-    )
-    .bind(merchant_id)
-    .bind(asset)
-    .fetch_one(db)
-    .await
-}
+/* … truncated 3703 chars — edit only what you need near the top … */
