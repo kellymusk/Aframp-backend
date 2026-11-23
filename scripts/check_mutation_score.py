@@ -23,6 +23,10 @@ Exit codes:
 import re
 import sys
 
+# Minimum mutation score (percent) enforced by CI on dev-backend PRs.
+# Keep in sync with docs/mutation-testing.md.
+DEFAULT_THRESHOLD = 85.0
+
 
 def parse_summary(log_path: str) -> tuple[int, int]:
     """
@@ -53,16 +57,19 @@ def parse_summary(log_path: str) -> tuple[int, int]:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <mutants_log_file> <threshold_percent>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print(f"Usage: {sys.argv[0]} <mutants_log_file> [threshold_percent]", file=sys.stderr)
         return 1
 
     log_path = sys.argv[1]
-    try:
-        threshold = float(sys.argv[2])
-    except ValueError:
-        print(f"Error: threshold must be a number, got {sys.argv[2]!r}", file=sys.stderr)
-        return 1
+    if len(sys.argv) == 3:
+        try:
+            threshold = float(sys.argv[2])
+        except ValueError:
+            print(f"Error: threshold must be a number, got {sys.argv[2]!r}", file=sys.stderr)
+            return 1
+    else:
+        threshold = DEFAULT_THRESHOLD
 
     try:
         caught, missed = parse_summary(log_path)
