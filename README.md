@@ -617,3 +617,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1470 -->
 - #1470: Bug: `reconcile_withdrawal_status` can double-refund when called concurrently for the same withdrawal
+
+<!-- handsoff-issue-1478 -->
+- #1478: Bug: `upsert_challenge` hourly count query includes unconsumed AND unexpired rows only — expired-but-unconsumed slots count against the cap incorrectly
