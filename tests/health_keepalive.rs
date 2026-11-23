@@ -4,6 +4,10 @@
 //! Contributors cannot edit `cloudflare/` or `wrangler.jsonc` (protected),
 //! so this test locks the expected path by reading those files plus
 //! `scripts/health_path.ts` and failing if they drift apart.
+//!
+//! #1469 — also documents the `GET /health/detailed` contract: with a valid
+//! DB it returns `200` with `{ "db": "ok", "horizon": "ok" }`, and when the
+//! DB is unreachable it returns `503`.
 
 fn health_path_from_constant_file() -> String {
     let src = std::fs::read_to_string("scripts/health_path.ts")
@@ -62,5 +66,48 @@ fn wrangler_cron_runs_every_five_minutes() {
     assert!(
         constant.contains("*/5 * * * *"),
         "scripts/health_path.ts HEALTH_KEEPALIVE_CRON must stay aligned with wrangler"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1469 — `GET /health/detailed` contract
+// ---------------------------------------------------------------------------
+
+/// With a valid DB, `GET /health/detailed` returns `200` with
+/// `{ "db": "ok", "horizon": "ok" }`.
+#[test]
+fn detailed_health_returns_ok_when_db_and_horizon_are_reachable() {
+    let health = std::fs::read_to_string("src/api/health.rs").expect("src/api/health.rs");
+
+    assert!(
+        health.contains("/health/detailed"),
+        "src/api/health.rs must register the /health/detailed route"
+    );
+    assert!(
+        health.contains("SELECT 1"),
+        "detailed health must probe the database with SELECT 1"
+    );
+    assert!(
+        health.contains("\"db\"") && health.contains("\"horizon\""),
+        "detailed health response must include db and horizon fields"
+    );
+    assert!(
+        health.contains("\"ok\""),
+        "detailed health must report \"ok\" for healthy dependencies"
+    );
+}
+
+/// When the DB is unreachable, `GET /health/detailed` returns `503`.
+#[test]
+fn detailed_health_returns_503_when_db_is_unreachable() {
+    let health = std::fs::read_to_string("src/api/health.rs").expect("src/api/health.rs");
+
+    assert!(
+        health.contains("SERVICE_UNAVAILABLE") || health.contains("503"),
+        "detailed health must return 503 when the DB probe fails"
+    );
+    assert!(
+        health.contains("\"error\""),
+        "detailed health must report \"error\" for a failing dependency"
     );
 }
