@@ -617,3 +617,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1336 -->
 - #1336: withdrawal: saved bank account beneficiaries
+
+<!-- handsoff-issue-1337 -->
+- #1337: withdrawal: fee quote endpoint (amount received before confirming)
