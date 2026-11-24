@@ -245,6 +245,48 @@ fn to_view(withdrawal: &Withdrawal) -> WithdrawalView {
         provider_reference: withdrawal.provider_reference.clone(),
         bank_code: withdrawal.bank_code.clone(),
         account_number: withdrawal
-            .accoun
+            .account_number
+            .as_deref()
+            .map(mask_account_number),
+        failure_reason: withdrawal.failure_reason.clone(),
+        created_at: withdrawal.created_at,
+        updated_at: withdrawal.updated_at,
+    }
+}
 
-/* … truncated 422 chars — edit only what you need near the top … */
+/// Mask an account number for display, revealing only the last four digits.
+///
+/// Values shorter than four characters are not valid NUBANs and would leak
+/// their entire contents if we naively sliced the tail, so they are fully
+/// masked instead.
+fn mask_account_number(account_number: &str) -> String {
+    if account_number.len() < 4 {
+        return "[MASKED]".to_string();
+    }
+    let last4_start = account_number.len() - 4;
+    let last4 = &account_number[last4_start..];
+    format!("****{last4}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mask_account_number;
+
+    #[test]
+    fn masks_standard_ten_digit_nuban() {
+        assert_eq!(mask_account_number("0123456789"), "****6789");
+    }
+
+    #[test]
+    fn masks_short_account_numbers_without_leaking() {
+        assert_eq!(mask_account_number("AB"), "[MASKED]");
+        assert_eq!(mask_account_number("A"), "[MASKED]");
+        assert_eq!(mask_account_number(""), "[MASKED]");
+        assert_eq!(mask_account_number("ABC"), "[MASKED]");
+    }
+
+    #[test]
+    fn masks_exactly_four_characters() {
+        assert_eq!(mask_account_number("1234"), "****1234");
+    }
+}
