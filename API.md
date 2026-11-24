@@ -730,6 +730,7 @@ Auth required. Detected incoming payments, newest first. Query: `?limit=` (defau
     "network": "stellar",
     "status": "confirmed",
     "confirmations": 0,
+    "payment_type": "deposit",
     "created_at": "2026-08-13T13:54:20.123456Z",
     "updated_at": "2026-08-13T13:54:20.987654Z"
   }
@@ -737,6 +738,8 @@ Auth required. Detected incoming payments, newest first. Query: `?limit=` (defau
 ```
 
 `status` is one of `detected` → `verified` → `confirmed`, or `failed`. `tx_hash` is a real Stellar hash — link it to an explorer (`https://stellar.expert/explorer/testnet/tx/{tx_hash}`).
+
+`payment_type` is `"deposit"` for a customer payment into the merchant's wallet, or `"sweep"` for an internal transfer that moves the balance to the platform's settlement wallet. Use this field to distinguish the two in reconciliation — sweeps reduce the custodial balance and are not customer revenue.
 
 > `confirmations` is currently always `0` — the confirmation-depth threshold isn't implemented. Don't display it as meaningful.
 

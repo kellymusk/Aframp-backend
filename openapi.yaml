@@ -2023,7 +2023,7 @@ components:
 
     Payment:
       type: object
-      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at]
+      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, payment_type, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
@@ -2044,6 +2044,17 @@ components:
         confirmations:
           type: integer
           description: Ledger confirmations counted so far; credited to available at STELLAR_MIN_CONFIRMATIONS.
+        payment_type:
+          type: string
+          enum: [deposit, sweep]
+          description: >
+            Distinguishes the purpose of the payment row.
+            `deposit` is a customer payment into the merchant's custodial wallet.
+            `sweep` is an internal transfer that moves the balance to the platform's
+            settlement wallet; sweeps reduce the custodial balance and are not
+            customer revenue. Null for rows that pre-date the #1464 migration.
+          nullable: true
+          example: deposit
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         flagged: { type: boolean, description: Deposit exceeded an anomaly threshold and is under review; it is still credited. }
