@@ -211,8 +211,72 @@ pub async fn logout(
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]))
 }
 
-/// Exchanges a valid, unexpired session token for a fresh one (also reset
-/// as the session cookie), up to `jwt::MAX_SESSION_DAYS` after the original
-/// login; after that the user has to log i
+/// Rotates the session: the presented token is revoked (its `jti` is added to
+/// `revoked_tokens`) and a fresh token is issued in its place. This means a
+/// stolen copy of the original token stops working the moment the legitimate
+/// client refreshes — see `docs/proposals/` for the trade-offs.
+pub async fn refresh(
+    State(state): State<AppState>,
+    session: Session,
+) -> ApiResult<impl IntoResponse> {
+    // Revoke the original token before issuing the replacement so a stolen
+    // copy cannot outlive the refresh.
+    jwt::revoke(&state.db, &session.claims)
+        .await
+        .map_err(internal)?;
 
-/* … truncated 5298 chars — edit only what you need near the top … */
+    let token = jwt::refresh_at(
+        &state.jwt_secret,
+        &session.claims,
+        chrono::Utc::now(),
+    )
+    .map_err(internal)?;
+    authenticated(
+        &state,
+        AuthResponse {
+            token,
+            user_id: session.claims.sub,
+            merchant_id: session.claims.merchant_id,
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::jwt;
+    use crate::models::AuthResponse;
+    use crate::AppState;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// Refreshing a token must revoke the original: after a refresh, the old
+    /// token presented on `GET /me` should be rejected with `401`.
+    #[tokio::test]
+    async fn refresh_revokes_original_token() {
+        let state = AppState::test().await;
+        let user_id = uuid::Uuid::new_v4();
+        let original = jwt::sign(&state.jwt_secret, user_id, None, false).unwrap();
+
+        // Refresh using the original token.
+        let refresh_req = Request::builder()
+            .method("POST")
+            .uri("/auth/refresh")
+            .header(header::COOKIE, format!("session={original}"))
+            .body(Body::empty())
+            .unwrap();
+        let refresh_resp = crate::app(state.clone()).oneshot(refresh_req).await.unwrap();
+        assert_eq!(refresh_resp.status(), StatusCode::OK);
+
+        // The original token must no longer be accepted.
+        let me_req = Request::builder()
+            .method("GET")
+            .uri("/me")
+            .header(header::COOKIE, format!("session={original}"))
+            .body(Body::empty())
+            .unwrap();
+        let me_resp = crate::app(state).oneshot(me_req).await.unwrap();
+        assert_eq!(me_resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}

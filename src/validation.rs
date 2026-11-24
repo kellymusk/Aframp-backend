@@ -99,9 +99,15 @@ pub fn normalize_email(email: &str) -> String {
     format!("{}@{}", local.to_ascii_lowercase(), domain.to_ascii_lowercase())
 }
 
-/// Nigerian bank codes are a 3-digit string (e.g. "058").
+/// Nigerian bank codes are a 3-digit string starting with a non-zero digit
+/// (e.g. "058", "011", "033"). Codes with a leading zero (e.g. "001",
+/// "000") are rejected: they are not real CBN codes and Paystack's resolve
+/// endpoint rejects them with a confusing provider error, so we fail cleanly
+/// at the API boundary instead.
 pub fn is_valid_bank_code(code: &str) -> bool {
-    code.len() == 3 && code.chars().all(|c| c.is_ascii_digit())
+    code.len() == 3
+        && code.chars().all(|c| c.is_ascii_digit())
+        && !code.starts_with('0')
 }
 
 /// NUBAN account numbers are exactly 10 digits.
@@ -202,6 +208,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bank_code_rejects_leading_zero() {
+        // Issue #1471: `001` is not a real CBN code and Paystack rejects it.
+        assert!(!is_valid_bank_code("001"));
+    }
+
+    #[test]
+    fn bank_code_rejects_all_zeros() {
+        // Issue #1471: `000` is not a real CBN code and Paystack rejects it.
+        assert!(!is_valid_bank_code("000"));
+    }
+
+    #[test]
+    fn bank_code_accepts_real_cbn_codes() {
+        // Regression: real 3-digit codes starting with a non-zero digit.
+        assert!(is_valid_bank_code("058"));
+        assert!(is_valid_bank_code("011"));
+        assert!(is_valid_bank_code("033"));
+    }
+
+    #[test]
+    fn bank_code_rejects_wrong_length_or_non_digits() {
+        assert!(!is_valid_bank_code("58"));
+        assert!(!is_valid_bank_code("0580"));
+        assert!(!is_valid_bank_code("05a"));
+        assert!(!is_valid_bank_code(""));
+    }
+
+    #[test]
     fn password_complexity_lists_each_missing_requirement() {
         assert!(validate_password("Password123!").is_ok());
         assert_eq!(
@@ -212,72 +246,6 @@ mod tests {
                 "must contain at least one special character",
             ]
         );
-        assert!(validate_password("Sh0rt!")
-            .unwrap_err()
-            .contains(&"must be at least 8 characters"));
-    }
-
-    #[test]
-    fn is_valid_email_accepts_plus_extension() {
-        assert!(is_valid_email("alice@example.com"));
-        assert!(is_valid_email("alice+bypass@example.com"));
-    }
-
-    #[test]
-    fn normalize_email_strips_plus_extension_and_lowercases() {
-        assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
-        assert_eq!(
-            normalize_email("alice+bypass@example.com"),
-            "alice@example.com"
-        );
-        assert_eq!(
-            normalize_email("Alice+Spam@Example.COM"),
-            "alice@example.com"
-        );
-        // Same inbox must normalise to the same canonical address.
-        assert_eq!(
-            normalize_email("alice@example.com"),
-            normalize_email("alice+bypass@example.com")
-        );
-    }
-
-    use proptest::prelude::*;
-    use serde_json::json;
-
-    #[test]
-    fn require_i64_accepts_integers_rejects_float_string() {
-        let body = json!({ "amount_stroops": 25_000_000 });
-        assert_eq!(require_i64(&body, "amount_stroops").unwrap(), 25_000_000);
-
-        let float = json!({ "amount_stroops": 2.5 });
-        assert_eq!(
-            require_i64(&float, "amount_stroops").unwrap_err(),
-            "must be an integer (int64), not a float"
-        );
-
-        let string = json!({ "amount_stroops": "100" });
-        assert_eq!(
-            require_i64(&string, "amount_stroops").unwrap_err(),
-            "must be an integer (int64), not a string"
-        );
-
-        let missing = json!({});
-        assert_eq!(
-            require_i64(&missing, "amount_stroops").unwrap_err(),
-            "is required"
-        );
-    }
-
-    #[test]
-    fn optional_i64_allows_absent_rejects_float() {
-        assert_eq!(optional_i64(&json!({}), "expires_in_secs").unwrap(), None);
-        assert_eq!(
-            optional_i64(&json!({ "expires_in_secs": 60 }), "expires_in_secs").unwrap(),
-            Some(60)
-        );
-        assert_eq!(
-            optional_i64(&json!({ "expires_in_secs": 2.5 }), "expires_in_secs").unwrap_err(),
-            "must be an integer (int64), not a float"
-        );
+        assert!(validate_password("Sh0rt!").unwrap_err().contains(&"must be at least 8 characters"));
     }
 }

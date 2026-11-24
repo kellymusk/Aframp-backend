@@ -82,21 +82,16 @@ pub async fn poll_once_with_confirmations<L: BlockchainListener + ?Sized>(
         .await
         .map_err(|e| e.to_string())?;
 
+    use futures_util::TryStreamExt;
     let skip = listener.skipped_addresses();
-    let wallet_list = wallets::pollable_wallets(db, &skip)
+    let address_cursors: Vec<AddressCursor> = wallets::pollable_wallet_addresses(db, &skip)
+        .map_ok(|(address, cursor)| AddressCursor { address, cursor })
+        .try_collect()
         .await
         .map_err(|e| e.to_string())?;
-    if wallet_list.is_empty() {
+    if address_cursors.is_empty() {
         return Ok(());
     }
-
-    let address_cursors: Vec<AddressCursor> = wallet_list
-        .iter()
-        .map(|w| AddressCursor {
-            address: w.address.clone(),
-            cursor: w.last_polled_cursor.clone(),
-        })
-        .collect();
 
     let results = listener.fetch_deposits_since(&address_cursors).await?;
     for result in results {
@@ -114,8 +109,13 @@ pub async fn poll_once_with_confirmations<L: BlockchainListener + ?Sized>(
         let Some(next_cursor) = result.next_cursor else {
             continue;
         };
-        let Some(wallet) = wallet_list.iter().find(|w| w.address == result.address) else {
-            continue;
+        let wallet = match wallets::wallet_by_address(db, &result.address).await {
+            Ok(Some(w)) => w,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(error = %err, address = %result.address, "failed to look up wallet for cursor update");
+                continue;
+            }
         };
         if !all_processed || wallet.last_polled_cursor.as_deref() == Some(next_cursor.as_str()) {
             continue;

@@ -21,6 +21,14 @@ pub struct User {
     /// When `Some`, the account is locked until this timestamp. Cleared on
     /// admin unlock or when the time naturally passes.
     pub locked_until: Option<DateTime<Utc>>,
+    /// Version of the terms of service / privacy policy the user accepted at
+    /// signup. `None` only for accounts created before acceptance was
+    /// recorded.
+    pub accepted_terms_version: Option<String>,
+    /// When the user accepted the terms of service / privacy policy.
+    pub accepted_terms_at: Option<DateTime<Utc>>,
+    /// Client IP address at the moment of acceptance, for auditability.
+    pub accepted_terms_ip: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -41,6 +49,9 @@ pub struct SignupRequest {
     pub password: String,
     pub name: String,
     pub phone_number: String,
+    /// Version of the terms of service / privacy policy the user is
+    /// accepting. Required — signup is rejected with 400 when absent.
+    pub accepted_terms_version: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +78,8 @@ pub struct NewUser {
     pub email: String,
     pub password_hash: String,
     pub name: String,
+    pub accepted_terms_version: String,
+    pub accepted_terms_ip: Option<String>,
 }
 
 #[cfg(test)]
@@ -87,6 +100,9 @@ mod tests {
             phone_verified: true,
             failed_login_count: 0,
             locked_until: None,
+            accepted_terms_version: Some("2024-01-01".to_string()),
+            accepted_terms_at: Some(now),
+            accepted_terms_ip: Some("203.0.113.7".to_string()),
             created_at: now,
             updated_at: now,
         }
