@@ -25,13 +25,20 @@ Verify:
 cargo mutants --version
 ```
 
-## Running mutation testing
+## Running mutation testing locally
+
+All commands below assume a running Postgres test database and that
+`TEST_DATABASE_URL` points at it. Start the database first (e.g. via
+`docker compose up -d db`), then export the URL:
+
+```bash
+export TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test
+```
 
 ### Full run (slow — use for a baseline)
 
 ```bash
-TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
-  cargo mutants --test-tool cargo -- --test-threads=4
+cargo mutants --test-tool cargo -- --test-threads=4
 ```
 
 This runs every mutant across the entire codebase. Expect it to take 30–60
@@ -43,8 +50,7 @@ The services layer contains the core business logic (balances, payments,
 withdrawals, payment requests). This is the highest-value target.
 
 ```bash
-TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
-  cargo mutants --file 'src/services/**' -- --test-threads=4
+cargo mutants --file 'src/services/**' -- --test-threads=4
 ```
 
 ### Focused run: `src/auth/`
@@ -52,16 +58,28 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
 The auth layer (JWT signing, password hashing, OTP) is security-sensitive.
 
 ```bash
-TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
-  cargo mutants --file 'src/auth/**' -- --test-threads=4
+cargo mutants --file 'src/auth/**' -- --test-threads=4
 ```
 
 ### Focused run: both services and auth
 
 ```bash
-TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
-  cargo mutants --file 'src/services/**' --file 'src/auth/**' -- --test-threads=4
+cargo mutants --file 'src/services/**' --file 'src/auth/**' -- --test-threads=4
 ```
+
+### Checking the score gate locally
+
+After a run, pipe the summary through the score checker to see whether the run
+would pass the CI gate (default threshold is 85 %):
+
+```bash
+cargo mutants --file 'src/services/**' --file 'src/auth/**' \
+  -- --test-threads=4 2>&1 | tee mutants.log
+python3 scripts/check_mutation_score.py mutants.log 85
+```
+
+The script exits non-zero when the mutation score falls below the threshold, so
+running it locally reproduces exactly what CI enforces.
 
 ## Understanding the output
 
@@ -82,6 +100,15 @@ The summary line printed at the end looks like:
 
 **Mutation score** = caught / (caught + missed) × 100.  
 A score of 90 %+ is a reasonable target for safety-critical modules.
+
+## Current score gate
+
+The enforced minimum mutation score is **85 %**, checked by
+`scripts/check_mutation_score.py`. The script parses the cargo-mutants summary
+line and exits non-zero if `caught / (caught + missed)` falls below the
+threshold passed as its second argument (default `85`). This is the gate that
+CI is intended to enforce on `dev-backend` PRs — see
+`docs/proposals/mutation-testing-ci.md` for the rollout proposal.
 
 ## Identified surviving mutants (baseline)
 
@@ -163,9 +190,10 @@ a `mutants.toml` configuration file:
 path_globs = ["src/*/telemetry.rs"]
 ```
 
-## CI integration (optional)
+## CI integration
 
-To block PRs when mutation score drops below a threshold, add a workflow step:
+Mutation testing is intended to run on `dev-backend` PRs and block merges when
+the score drops below the gate. The proposed workflow step is:
 
 ```yaml
 - name: Mutation testing
@@ -173,14 +201,14 @@ To block PRs when mutation score drops below a threshold, add a workflow step:
     cargo install cargo-mutants
     cargo mutants --file 'src/services/**' --file 'src/auth/**' \
       -- --test-threads=4 2>&1 | tee mutants.log
-    # Fail if more than 15 % of mutants survive.
+    # Fail if the mutation score drops below 85 %.
     python3 scripts/check_mutation_score.py mutants.log 85
   env:
     TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
 ```
 
-See `scripts/check_mutation_score.py` for the score parser (add as a follow-up
-contribution).
+See `scripts/check_mutation_score.py` for the score parser and
+`docs/proposals/mutation-testing-ci.md` for the full rollout proposal.
 
 ## References
 

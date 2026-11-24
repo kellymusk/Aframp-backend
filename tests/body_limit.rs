@@ -46,3 +46,23 @@ async fn body_over_limit_returns_413() {
         StatusCode::PAYLOAD_TOO_LARGE
     );
 }
+
+/// #1454 — a custom limit is applied, not the default.
+#[tokio::test]
+async fn custom_limit_rejects_larger_body() {
+    let app = Router::new()
+        .route(
+            "/echo",
+            post(|body: Bytes| async move { body.len().to_string() }),
+        )
+        .layer(RequestBodyLimitLayer::new(1024));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/echo")
+        .body(Body::from(vec![b'a'; 2048]))
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}

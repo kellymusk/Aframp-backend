@@ -211,3 +211,30 @@ async fn unauthenticated_call_is_rejected_before_auditing() {
         "expected 401 for no token"
     );
 }
+
+/// #1455 — suspend/unsuspend record audit rows naming the merchant and actor.
+#[tokio::test]
+async fn suspend_and_unsuspend_merchant_insert_audit_rows() {
+    let (app, db) = app_and_db().await;
+    let (admin_token, admin_user_id) = promote_to_admin(&app, &db, "audit_suspend_admin").await;
+    let (_, merchant_id) = common::ensure_merchant(&app, "audit_suspend_target").await;
+
+    for verb in ["suspend", "unsuspend"] {
+        let path = format!("/admin/merchants/{merchant_id}/{verb}");
+        let (status, body) =
+            common::send(app.clone(), "POST", &path, Some(&admin_token), None).await;
+        assert_eq!(status, StatusCode::OK, "{verb} failed: {body}");
+
+        let (actor, action, resource_id): (String, String, Option<String>) = sqlx::query_as(
+            "SELECT admin_user_id::text, action, resource_id::text FROM admin_audit_log \
+             WHERE admin_user_id = $1::uuid ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&admin_user_id)
+        .fetch_one(&db)
+        .await
+        .expect("audit row");
+        assert_eq!(actor, admin_user_id);
+        assert_eq!(action, format!("POST {path}"));
+        assert_eq!(resource_id.as_deref(), Some(merchant_id.as_str()));
+    }
+}

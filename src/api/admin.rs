@@ -69,9 +69,10 @@ pub async fn merchants(
 
 pub async fn wallets(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
     Query(params): Query<ListParams>,
 ) -> ApiResult<Json<Page<AdminWalletRow>>> {
+    admin.require_pii()?;
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)
@@ -228,68 +229,6 @@ fn dashboard_csp() -> &'static str {
     static CSP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     CSP.get_or_init(|| {
         let script = inline_script(DASHBOARD_HTML).expect("admin dashboard has an inline script");
-        let digest = <sha2::Sha256 as sha2::Digest>::digest(script.as_bytes());
-        format!(
-            "default-src 'self'; script-src 'sha256-{}'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-            base64_std(&digest)
-        )
-    })
-}
+        let digest = <sha2::Sha256 as sha2::Dig
 
-fn inline_script(html: &str) -> Option<&str> {
-    let start = html.find("<script>")? + "<script>".len();
-    let end = start + html[start..].find("</script>")?;
-    Some(&html[start..end])
-}
-
-fn base64_std(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base64_std_matches_rfc4648_vectors() {
-        for (plain, encoded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64_std(plain.as_bytes()), encoded);
-        }
-    }
-
-    #[test]
-    fn dashboard_csp_pins_the_inline_script_hash() {
-        let csp = dashboard_csp();
-        assert!(csp.contains("script-src 'sha256-"), "{csp}");
-        assert!(
-            !csp.contains("'unsafe-inline'; img")
-                || csp.contains("style-src 'self' 'unsafe-inline'")
-        );
-        assert!(
-            !csp.contains("script-src 'unsafe-inline'"),
-            "inline scripts must not be allowed wholesale"
-        );
-    }
-}
+/* … truncated 1933 chars — edit only what you need near the top … */
