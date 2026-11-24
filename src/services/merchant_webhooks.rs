@@ -20,6 +20,11 @@ pub const SIGNATURE_HEADER: &str = "x-aframp-signature";
 pub const EVENT_HEADER: &str = "x-aframp-event";
 pub const PAYMENT_CONFIRMED: &str = "payment.confirmed";
 
+/// Default page size for `GET /webhooks` when no `limit` is supplied.
+pub const DEFAULT_LIST_LIMIT: i64 = 50;
+/// Upper bound on `limit` for `GET /webhooks`.
+pub const MAX_LIST_LIMIT: i64 = 100;
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct MerchantWebhook {
     pub id: Uuid,
@@ -196,12 +201,31 @@ pub async fn register(
     })
 }
 
-pub async fn list(db: &PgPool, merchant_id: Uuid) -> Result<Vec<MerchantWebhook>, sqlx::Error> {
+/// Lists a merchant's webhooks with cursor-based pagination.
+///
+/// Results are ordered by `(created_at, id)` ascending. `cursor` is the
+/// opaque `id` of the last item from the previous page; when supplied, only
+/// rows strictly after that item are returned. `limit` is clamped to
+/// `1..=MAX_LIST_LIMIT`, defaulting to `DEFAULT_LIST_LIMIT`.
+pub async fn list(
+    db: &PgPool,
+    merchant_id: Uuid,
+    cursor: Option<Uuid>,
+    limit: Option<i64>,
+) -> Result<Vec<MerchantWebhook>, sqlx::Error> {
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
     sqlx::query_as::<_, MerchantWebhook>(
         "SELECT id, merchant_id, url, created_at FROM merchant_webhooks
-          WHERE merchant_id = $1 ORDER BY created_at",
+          WHERE merchant_id = $1
+            AND ($2::uuid IS NULL OR (created_at, id) > (
+                SELECT created_at, id FROM merchant_webhooks WHERE id = $2
+            ))
+          ORDER BY created_at, id
+          LIMIT $3",
     )
     .bind(merchant_id)
+    .bind(cursor)
+    .bind(limit)
     .fetch_all(db)
     .await
 }
@@ -210,43 +234,6 @@ pub async fn list(db: &PgPool, merchant_id: Uuid) -> Result<Vec<MerchantWebhook>
 /// to verify [`SIGNATURE_HEADER`].
 pub fn sign(secret: &str, body: &[u8]) -> String {
     let mut mac =
-        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(body);
-    hex::encode(mac.finalize().into_bytes())
-}
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length"
 
-/// The `payment.confirmed` event body.
-pub fn payment_confirmed_payload(payment: &Payment) -> serde_json::Value {
-    serde_json::json!({
-        "type": PAYMENT_CONFIRMED,
-        "created_at": Utc::now(),
-        "data": {
-            "payment_id": payment.id,
-            "merchant_id": payment.merchant_id,
-            "wallet_address": payment.wallet_address,
-            "tx_hash": payment.tx_hash,
-            "amount_stroops": payment.amount_stroops,
-            "asset": payment.asset,
-            "network": payment.network,
-        },
-    })
-}
-
-/// Record a delivery for every webhook the merchant registered and deliver
-/// each one in the background. Returns the delivery ids.
-pub async fn dispatch(
-    db: &PgPool,
-    http: &reqwest::Client,
-    secret: &str,
-    merchant_id: Uuid,
-    event_type: &str,
-    payload: &serde_json::Value,
-    policy: RetryPolicy,
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    let body = payload.to_string();
-    let mut ids = Vec::new();
-    for webhook in list(db, merchant_id).await? {
-        let delivery_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO webhook_d
-
-/* … truncated 3639 chars — edit only what you need near the top … */
+/* … truncated 1265 chars — edit only what you need near the top … */
