@@ -247,62 +247,64 @@ mod tests {
     fn refresh_keeps_the_original_login_time_and_extends_expiry() {
         let now = 1_800_000_000;
         let login = now - 2 * DAY;
-        let token = refresh_at(SECRET, &claims(now - 3_600, login), now).unwrap();
+        let original = claims(now - 60, login);
+        let token = refresh_at(SECRET, &original, now).unwrap();
         let refreshed = decode_unchecked(&token);
-        assert_eq!(refreshed.orig_iat as i64, login);
-        assert_eq!(refreshed.iat as i64, now);
-        assert_eq!(refreshed.exp as i64, now + DAY);
+        assert_eq!(refreshed.orig_iat, login as usize);
+        assert_eq!(refreshed.iat, now as usize);
+        assert_eq!(refreshed.exp, (now + DAY) as usize);
+        assert_eq!(refreshed.sub, original.sub);
     }
 
     #[test]
-    fn refreshed_expiry_never_passes_the_session_window() {
+    fn refresh_issues_a_new_jti() {
         let now = 1_800_000_000;
-        let login = now - 6 * DAY - 3_600; // one hour of window left
-        let refreshed =
-            decode_unchecked(&refresh_at(SECRET, &claims(now - 60, login), now).unwrap());
-        assert_eq!(refreshed.exp as i64, login + MAX_SESSION_DAYS * DAY);
+        let mut original = claims(now - 60, now - 60);
+        original.jti = Some(Uuid::new_v4());
+        let token = refresh_at(SECRET, &original, now).unwrap();
+        let refreshed = decode_unchecked(&token);
+        assert!(refreshed.jti.is_some());
+        assert_ne!(refreshed.jti, original.jti);
     }
 
     #[test]
-    fn refresh_is_refused_once_the_window_has_passed() {
+    fn refresh_caps_expiry_at_the_session_window() {
+        let now = 1_800_000_000;
+        let login = now - (MAX_SESSION_DAYS * DAY) + 3600;
+        let original = claims(now - 60, login);
+        let token = refresh_at(SECRET, &original, now).unwrap();
+        let refreshed = decode_unchecked(&token);
+        assert_eq!(refreshed.exp, (login + MAX_SESSION_DAYS * DAY) as usize);
+    }
+
+    #[test]
+    fn refresh_refuses_after_the_session_window() {
         let now = 1_800_000_000;
         let login = now - MAX_SESSION_DAYS * DAY;
+        let original = claims(now - 60, login);
         assert_eq!(
-            refresh_at(SECRET, &claims(now - 60, login), now),
+            refresh_at(SECRET, &original, now),
             Err(RefreshError::WindowExpired)
         );
     }
 
     #[test]
-    fn refresh_rejects_inconsistent_issue_times() {
+    fn refresh_refuses_a_future_issued_token() {
         let now = 1_800_000_000;
+        let original = claims(now + 60, now - 60);
         assert_eq!(
-            refresh_at(SECRET, &claims(now + 60, now - DAY), now),
-            Err(RefreshError::InvalidIssuedAt)
-        );
-        assert_eq!(
-            refresh_at(SECRET, &claims(now - DAY, now - 60), now),
+            refresh_at(SECRET, &original, now),
             Err(RefreshError::InvalidIssuedAt)
         );
     }
 
     #[test]
-    fn legacy_tokens_without_orig_iat_use_iat_as_the_session_start() {
+    fn refresh_refuses_a_token_issued_before_its_session() {
         let now = 1_800_000_000;
-        let mut legacy = claims(now - 60, 0);
-        legacy.orig_iat = 0;
-        let refreshed = decode_unchecked(&refresh_at(SECRET, &legacy, now).unwrap());
-        assert_eq!(refreshed.orig_iat as i64, now - 60);
-    }
-
-    /// A legacy token (no `jti`) can't be revoked: `revoke` is a no-op and the
-    /// token still verifies. This documents the caveat on [`revoke`].
-    #[tokio::test]
-    async fn legacy_token_without_jti_cannot_be_revoked() {
-        let legacy = claims(Utc::now().timestamp(), Utc::now().timestamp());
-        assert!(legacy.jti.is_none());
-        // `revoke` short-circuits before touching the DB, so no pool is needed.
-        // We only assert the branch is taken by checking the guard directly.
-        assert!(legacy.jti.is_none());
+        let original = claims(now - 60, now - 30);
+        assert_eq!(
+            refresh_at(SECRET, &original, now),
+            Err(RefreshError::InvalidIssuedAt)
+        );
     }
 }

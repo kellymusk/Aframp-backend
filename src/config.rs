@@ -307,10 +307,18 @@ impl AppConfig {
             otp_provider,
             termii_api_key,
             termii_sender_id,
-            cors_allowed_origins: parse_cors_origins(
-                &std::env::var("CORS_ALLOWED_ORIGINS")
-                    .unwrap_or_else(|_| "http://localhost:3001".into()),
-            )?,
+            cors_allowed_origins: {
+                let raw = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+                let origins = parse_cors_origins(&raw)?;
+                if origins.is_empty() {
+                    tracing::warn!(
+                        "CORS_ALLOWED_ORIGINS is not set — no browser origin will be allowed. \
+                         Set this to your frontend URL(s) (e.g. https://app.example.com) or \
+                         all CORS preflight requests will be rejected."
+                    );
+                }
+                origins
+            },
             termii_webhook_secret: std::env::var("TERMII_WEBHOOK_SECRET")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
@@ -485,6 +493,14 @@ mod tests {
         assert!(parse_cors_origins("app.aframp.com").is_err());
         assert!(parse_cors_origins("ftp://app.aframp.com").is_err());
         assert!(parse_cors_origins("https://app.aframp.com/path").is_err());
+    }
+
+    #[test]
+    fn cors_origins_empty_string_returns_empty_vec() {
+        assert_eq!(parse_cors_origins("").unwrap(), Vec::<String>::new());
+        // A string with only commas/spaces should also produce an empty list
+        // (the filter(|o| !o.is_empty()) already handles this).
+        assert_eq!(parse_cors_origins(" , , ").unwrap(), Vec::<String>::new());
     }
 
     #[test]

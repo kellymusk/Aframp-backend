@@ -13,6 +13,10 @@ const MAX_EXPIRY_SECS: i64 = 24 * 60 * 60;
 /// Retention window after which expired+cancelled rows are hard-deleted.
 pub const HARD_DELETE_AFTER_DAYS: i64 = 30;
 
+/// Stroops per kobo. cNGN has 2 decimal places on the Stellar network, so the
+/// smallest representable unit is 1 kobo = 100,000 stroops (same as withdrawals).
+pub const STROOPS_PER_KOBO: i64 = 100_000;
+
 /// Random bytes per memo. 14 bytes hex-encode to 28 characters — the most a
 /// Stellar `MEMO_TEXT` can carry — giving 112 bits of entropy.
 ///
@@ -42,6 +46,8 @@ const PR_WALLET_COLS: &str = "pr.id, pr.merchant_id, pr.wallet_id, pr.amount_str
 pub enum PaymentRequestError {
     #[error("amount_stroops must be positive")]
     InvalidAmount,
+    #[error("amount_stroops must be a whole number of the asset's smallest unit (cNGN: {0} stroops per kobo)")]
+    InvalidPrecision(i64),
     #[error("expires_in_secs must be between 60 and 86400")]
     InvalidExpiry,
     #[error("no wallet found for merchant on network {0}")]
@@ -59,6 +65,12 @@ pub fn normalise_asset(asset: &str) -> String {
         "XLM".to_string()
     } else {
         asset.to_string()
+/// Returns the smallest-unit size in stroops for an asset, or `None` when the
+/// asset has no sub-stroop precision constraint (e.g. XLM, 7 decimal places).
+fn smallest_unit_stroops(asset: &str) -> Option<i64> {
+    match asset.to_ascii_uppercase().as_str() {
+        "CNGN" => Some(STROOPS_PER_KOBO),
+        _ => None,
     }
 }
 
@@ -77,6 +89,7 @@ fn is_memo_collision(err: &sqlx::Error) -> bool {
 /// merchant and network. Merchants may hold multiple wallets (one per asset /
 /// network), so we select the wallet matching the requested network rather than
 /// blindly returning the newest wallet by `created_at`.
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, network = %network))]
 pub async fn wallet_by_merchant_and_network(
     db: &PgPool,
     merchant_id: Uuid,
@@ -131,6 +144,14 @@ pub async fn create_payment_request(
     if amount_stroops <= 0 {
         return Err(PaymentRequestError::InvalidAmount);
     }
+    // Reject amounts that are not a whole number of the asset's smallest unit,
+    // so the generated SEP-0007 URI carries an amount wallets can represent
+    // exactly and the deposit worker can match it against a full-unit deposit.
+    if let Some(unit) = smallest_unit_stroops(&asset) {
+        if amount_stroops % unit != 0 {
+            return Err(PaymentRequestError::InvalidPrecision(unit));
+        }
+    }
     // Rejected rather than clamped, so a caller never believes a request
     // lives longer (or shorter) than it really does.
     let ttl = expires_in_secs.unwrap_or(DEFAULT_EXPIRY_SECS);
@@ -174,6 +195,7 @@ pub async fn create_payment_request(
 /// Creates a payment request, routing it to the merchant's wallet that matches
 /// the request's asset/network. This lets a merchant hold separate wallets per
 /// asset (e.g. XLM and cNGN) and have each request use the correct one.
+#[tracing::instrument(skip_all, err, fields(merchant_id = %merchant_id, %asset, network = %network))]
 pub async fn create_payment_request_for_network(
     db: &PgPool,
     merchant_id: Uuid,
@@ -272,3 +294,6 @@ pub async fn find_pending_by_wallet_and_memo(
     .fetch_optional(db)
     .await
 }
+         
+
+/* … truncated 6774 chars — edit only what you need near the top … */
