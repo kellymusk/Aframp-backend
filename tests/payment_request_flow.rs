@@ -1146,3 +1146,37 @@ async fn deposit_in_the_wrong_asset_does_not_pay_the_request() {
         "an XLM deposit must not settle a cNGN request"
     );
 }
+
+/// #1453 — QR customers have no session: get, status and qr must be public.
+#[tokio::test]
+async fn payment_request_public_endpoints_need_no_auth() {
+    let app = aframp::router(state().await);
+    let (token, _) = ensure_merchant(&app, "pr_public_endpoints").await;
+    create_wallet(&app, &token).await;
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap();
+
+    for path in [
+        format!("/payment-requests/{id}"),
+        format!("/payment-requests/{id}/status"),
+    ] {
+        let (status, body) = send(app.clone(), "GET", &path, None, None).await;
+        assert_eq!(status, StatusCode::OK, "{path} without auth: {body}");
+    }
+
+    let req = axum::http::Request::builder()
+        .uri(format!("/payment-requests/{id}/qr"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "image/png");
+}
