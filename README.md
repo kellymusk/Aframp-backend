@@ -627,3 +627,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-960 -->
 - #960: Documentation: API.md does not document the sep7_uri field or SEP-0007 URI format
+
+<!-- handsoff-issue-964 -->
+- #964: Bug: `path_payment_strict_receive` and `path_payment_strict_send` deposits credited at destination amount, not source amount
