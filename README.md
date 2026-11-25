@@ -626,3 +626,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1337 -->
 - #1337: withdrawal: fee quote endpoint (amount received before confirming)
+
+<!-- handsoff-issue-1329 -->
+- #1329: payments: accept an Idempotency-Key on money-moving POSTs
