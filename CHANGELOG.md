@@ -17,6 +17,34 @@ headings.
 ## [Unreleased]
 
 ### Added
+- Email verification for new accounts, with expiring verification tokens and
+  authenticated email changes held pending until the new address is verified.
+- Role-based admin access (`super_admin`, `support`, and `finance`).
+- Deposit anomaly flagging: unusually large deposits are still credited but
+  marked for admin review.
+- Webhook event type storage for provider delivery callbacks, including Termii
+  event names in the webhook audit trail.
+- Prometheus proposal for deposit-worker poll-duration and processed-deposit
+  metrics, including test acceptance criteria
+  (`docs/proposals/1250-prometheus-metrics.md`).
+- Database migrations:
+  - `0030_password_changed_at.sql` — invalidate sessions created before a
+    password change.
+  - `0031_payments_analytics_index.sql` — speed up merchant payment analytics
+    date-range queries.
+  - `0032_admin_audit_log.sql` — persist authenticated admin actions and add
+    lookup indexes.
+  - `0033_otp_partial_index.sql` — accelerate lookups of live OTP challenges.
+  - `0034_user_email_change.sql` — stage email changes until the new address
+    is verified.
+  - `0035_payment_request_description.sql` — store optional payment request
+    descriptions for payers and SEP-7 links.
+  - `0036_admin_role.sql` — add `super_admin`, `support`, and `finance` roles.
+  - `0037_payment_flagged.sql` — mark anomalous deposits for admin review.
+  - `0038_webhook_events_event_type.sql` — store provider event types in the
+    webhook audit log.
+  - `0039_otp_challenge_client_ip.sql` — retain OTP challenge client IPs for
+    audit and lookup.
 - `POST /auth/refresh` — swap a still-valid JWT for a new 24-hour token, for
   up to 7 days from original login. See `API.md § Authentication`.
 - `/admin/overview`, `/admin/merchants`, `/admin/users`, `/admin/wallets`,

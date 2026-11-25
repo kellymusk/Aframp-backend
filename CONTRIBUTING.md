@@ -87,6 +87,13 @@ cargo test --test auth_flow
 cargo test -- --nocapture
 ```
 
+## Changelog
+
+Every non-trivial PR must update `CHANGELOG.md` in the relevant `[Unreleased]`
+section, following the Keep a Changelog categories. Include user-visible
+features, API or service behaviour changes, and schema migrations; routine
+formatting or typo-only changes do not need an entry.
+
 ## Code Style
 
 - Run `cargo fmt` before committing
