@@ -434,6 +434,8 @@ It also revokes the presented token (the `Authorization: Bearer` header, or the 
 ### `GET /me`
 Auth required. The signed-in user's profile. The JWT carries only ids, so call this after a reload to render anything human-readable without forcing a re-login.
 
+The response also carries the merchant's wallet and balance summary, so a merchant onboarding screen (show the deposit address, show what's been received) needs **one** call instead of `GET /me` + `GET /wallet` + `GET /balance`.
+
 `200` →
 ```json
 {
@@ -444,12 +446,37 @@ Auth required. The signed-in user's profile. The JWT carries only ids, so call t
   "phone_verified": true,
   "created_at": "2026-08-13T14:15:34.232320Z",
   "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
-  "merchant_name": "Shop Name"
+  "merchant_name": "Shop Name",
+  "wallet": {
+    "id": "18f4244e-8460-4af9-b268-28bc4b23b9ea",
+    "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
+    "address": "GDDTPSD7BWERBIKVYXJY4KMBVFCUKNGJB2CS3DWBUUO3IB2CV7BZ5WSR",
+    "network": "stellar",
+    "created_at": "2026-08-13T14:15:34.518727Z"
+  },
+  "balances": [
+    {
+      "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
+      "asset": "XLM",
+      "available": 100000000000,
+      "pending": 0,
+      "updated_at": "2026-08-13T14:15:34.520195Z"
+    }
+  ]
 }
 ```
 
 `merchant_id` and `merchant_name` are `null` for an account with no merchant. The password hash is never serialized.
 `phone_number` is `null` for legacy accounts without a number; `phone_verified` is `false` until phone verification succeeds.
+
+**Joined merchant fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `wallet` | object \| `null` | The merchant's most recent wallet — the same object `GET /wallet` returns. `null` when no wallet has been created yet (the signal to run `POST /wallet/create`), and also `null` for an account with no merchant. |
+| `balances` | array | One entry per asset the merchant has ever held — the same rows `GET /balance` returns. `[]` for a new merchant, or for an account with no merchant. |
+
+`wallet.address` is the deposit address to show the merchant. Because `wallet` is `null` until onboarding creates one, handle that case explicitly rather than assuming an address is present. See [`docs/proposals/1128-me-join.md`](docs/proposals/1128-me-join.md).
 
 ---
 
@@ -712,7 +739,22 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 `updated_at` is `null` for a synthesized zero entry (no row exists yet). Until the server change lands (it touches protected `src/`), clients should treat a missing asset in today's array as a zero balance. See [`docs/proposals/1247-balance-supported-assets.md`](docs/proposals/1247-balance-supported-assets.md).
 
 ### `GET /transactions`
-Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200), `?cursor=` (see [Pagination](#pagination)), and the optional filters `?asset=` (exact match, e.g. `XLM` or `cNGN`) and `?status=` (`detected`, `verified`, `confirmed` or `failed`; anything else is `400 INVALID_PARAMETERS`). Filters combine with pagination: keep sending the same `asset`/`status` alongside each `cursor`. The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:
+Auth required. Detected incoming payments, newest first.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | 50 | Page size, clamped 1–200. |
+| `cursor` | string | — | Opaque keyset cursor from a previous page (see [Pagination](#pagination)). |
+| `asset` | string | — | Exact match, e.g. `XLM` or `cNGN`. |
+| `status` | string | — | `detected`, `verified`, `confirmed` or `failed`; anything else is `400 INVALID_PARAMETERS`. |
+| `from` | ISO 8601 date (`YYYY-MM-DD`) | — | Start of the date range, inclusive (midnight UTC). |
+| `to` | ISO 8601 date (`YYYY-MM-DD`) | — | End of the date range, inclusive (23:59:59 UTC). |
+
+`from`/`to` filter on `created_at`, so `?from=2025-03-01&to=2025-03-31` returns exactly the deposits made in March 2025 — useful for period reconciliation without downloading the CSV export. Either bound may be sent alone (`from` only = "since", `to` only = "up to"). A malformed date, `from` after `to`, or a range wider than **366 days** returns `400 INVALID_PARAMETERS`.
+
+All filters combine with each other and with pagination: keep sending the same `asset`/`status`/`from`/`to` alongside each `cursor`. The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:
 
 **Supports `ETag`/`If-None-Match`.** Same as `GET /payment-requests` above — send the last `ETag` back as `If-None-Match` to get `304 Not Modified` when nothing changed.
 
@@ -933,7 +975,7 @@ The window may span at most **366 days**. A wider window returns `400 INVALID_PA
 
 **Filters:** Only `status = confirmed` payments are counted. In-flight payments (`detected`, `verified`) are excluded.
 
-`200` → a sparse list of days that had at least one confirmed payment, ordered ascending:
+`200` → a sparse list of days that had at least one confirmed payment, ordered ascending, plus a per-asset `summary` over the whole window:
 
 ```json
 {
@@ -941,12 +983,32 @@ The window may span at most **366 days**. A wider window returns `400 INVALID_PA
   "to": "2026-10-19",
   "data": [
     { "date": "2026-10-01", "count": 3, "total_stroops": 30000000, "asset": "XLM" },
-    { "date": "2026-10-03", "count": 1, "total_stroops":  5000000, "asset": "XLM" }
+    { "date": "2026-10-03", "count": 1, "total_stroops":  5000000, "asset": "XLM" },
+    { "date": "2026-10-03", "count": 2, "total_stroops": 40000000, "asset": "cNGN" }
+  ],
+  "summary": [
+    {
+      "asset": "XLM",
+      "count": 4,
+      "total_stroops": 35000000,
+      "days": [
+        { "date": "2026-10-01", "count": 3, "total_stroops": 30000000 },
+        { "date": "2026-10-03", "count": 1, "total_stroops":  5000000 }
+      ]
+    },
+    {
+      "asset": "cNGN",
+      "count": 2,
+      "total_stroops": 40000000,
+      "days": [
+        { "date": "2026-10-03", "count": 2, "total_stroops": 40000000 }
+      ]
+    }
   ]
 }
 ```
 
-Days with no confirmed payments are **omitted** (sparse). Clients must fill date gaps themselves when rendering charts.
+Days with no confirmed payments are **omitted** from both `data` and `summary[].days` (sparse). Clients must fill date gaps themselves when rendering charts.
 
 Each item in `data`:
 
@@ -956,6 +1018,17 @@ Each item in `data`:
 | `count` | integer | Number of confirmed payments on this date for this asset. |
 | `total_stroops` | integer | Sum of `amount_stroops` for all confirmed payments in this bucket. |
 | `asset` | string | Asset code — `XLM`, `cNGN`, etc. |
+
+Each item in `summary` (one per asset with at least one confirmed payment in the window, ordered by `asset`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `asset` | string | Asset code — `XLM`, `cNGN`, etc. |
+| `count` | integer | Total confirmed payments for this asset across the whole window. |
+| `total_stroops` | integer | Total `amount_stroops` for this asset across the whole window. |
+| `days` | array | Per-day breakdown for this asset, ascending by `date`, same `{ date, count, total_stroops }` buckets as `data` minus the repeated `asset`. |
+
+`summary` is always an **array, never `null`** — a window with no confirmed payments returns `"data": []` and `"summary": []`. See [`docs/proposals/1494-analytics-payments-summary.md`](docs/proposals/1494-analytics-payments-summary.md).
 
 **Error responses:**
 
