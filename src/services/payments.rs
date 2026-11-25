@@ -167,6 +167,65 @@ pub async fn payments_by_merchant(
     }
 }
 
+/// One row of the per-asset, per-day confirmed deposit aggregate produced by
+/// [`daily_confirmed_totals`].
+///
+/// `day` is the UTC calendar day the payment was created on. Rows are sparse:
+/// a day with no confirmed payments for an asset is simply absent rather than
+/// reported as a zero row.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct DailyAssetTotal {
+    pub asset: String,
+    pub day: chrono::NaiveDate,
+    pub total_stroops: i64,
+    pub count: i64,
+}
+
+/// Per-asset summary rolled up from [`DailyAssetTotal`] rows, consumed by the
+/// analytics `summary` field.
+#[derive(Debug, Clone)]
+pub struct AssetDailySummary {
+    pub asset: String,
+    pub total_stroops: i64,
+    pub count: i64,
+    pub days: Vec<DailyAssetTotal>,
+}
+
+/// Rolls the sparse per-day rows from [`daily_confirmed_totals`] up into one
+/// entry per asset, preserving the per-day breakdown. Assets are ordered by
+/// descending total amount (ties broken by asset name) so the largest
+/// settlement volume appears first; each asset's `days` are ordered by day
+/// ascending.
+pub fn summarize_daily_totals(rows: Vec<DailyAssetTotal>) -> Vec<AssetDailySummary> {
+    use std::collections::BTreeMap;
+
+    let mut by_asset: BTreeMap<String, AssetDailySummary> = BTreeMap::new();
+    for row in rows {
+        let entry = by_asset
+            .entry(row.asset.clone())
+            .or_insert_with(|| AssetDailySummary {
+                asset: row.asset.clone(),
+                total_stroops: 0,
+                count: 0,
+                days: Vec::new(),
+            });
+        entry.total_stroops += row.total_stroops;
+        entry.count += row.count;
+        entry.days.push(row);
+    }
+
+    let mut summaries: Vec<AssetDailySummary> = by_asset.into_values().collect();
+    for summary in &mut summaries {
+        summary.days.sort_by_key(|d| d.day);
+    }
+    summaries.sort_by(|a, b| {
+        b.total_stroops
+            .cmp(&a.total_stroops)
+            .then_with(|| a.asset.cmp(&b.asset))
+    });
+    summaries
+}
+
 /// All of a merchant's payments created within the optional `[from, to]`
 /// window, oldest first — the row source for the CSV export.
 pub async fn payments_by_merchant_range(

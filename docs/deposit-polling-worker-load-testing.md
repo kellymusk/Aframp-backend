@@ -43,6 +43,20 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
     cargo test --test deposit_polling_worker_load -- --ignored
 ```
 
+### Related load tests
+
+- `tests/payment_requests_pagination_load.rs` — seeds 50,000 payment requests
+  and asserts that each cursor page of `GET /payment-requests` completes under
+  100 ms. Like the DB-backed deposit worker tests above, it is `#[ignore]`d and
+  must be run with `--ignored`:
+
+  ```bash
+  TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp_test \
+      cargo test --test payment_requests_pagination_load -- --ignored
+  ```
+
+  See `docs/payment-requests-pagination-load-testing.md` for details.
+
 ---
 
 ## Mock Listeners

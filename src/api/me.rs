@@ -32,7 +32,8 @@ pub struct MeView {
     pub merchant_id: Option<Uuid>,
     pub merchant_name: Option<String>,
     /// Wallet address for the merchant, or `null` if no wallet has been
-    /// created yet. Populated in the same round-trip as the profile.
+    /// created yet. Populated in the same round-trip as the profile, so
+    /// onboarding clients don't need a separate `GET /wallet` call.
     pub wallet: Option<String>,
     /// XLM balance summary for the merchant's Stellar wallet, or `null` if no
     /// wallet exists yet. Other assets are listed by `GET /balance`.

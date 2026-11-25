@@ -19,11 +19,34 @@ pub struct AnalyticsParams {
     pub to: Option<String>,
 }
 
+/// Per-asset, per-day summary row derived from the sparse daily aggregates.
+#[derive(Serialize)]
+pub struct AssetDailySummary {
+    pub asset: String,
+    pub date: NaiveDate,
+    pub total_stroops: i64,
+    pub count: i64,
+}
+
 #[derive(Serialize)]
 pub struct PaymentAnalytics {
     pub from: NaiveDate,
     pub to: NaiveDate,
     pub data: Vec<DailyPaymentAggregate>,
+    /// Per-asset daily breakdown; empty (never null) when there are no payments.
+    pub summary: Vec<AssetDailySummary>,
+}
+
+/// Builds the per-asset daily summary from the sparse aggregate rows.
+fn build_summary(data: &[DailyPaymentAggregate]) -> Vec<AssetDailySummary> {
+    data.iter()
+        .map(|row| AssetDailySummary {
+            asset: row.asset.clone(),
+            date: row.date,
+            total_stroops: row.total_stroops,
+            count: row.count,
+        })
+        .collect()
 }
 
 fn parse_date(name: &str, value: &str) -> ApiResult<NaiveDate> {
@@ -82,5 +105,12 @@ pub async fn payments(
         .await
         .map_err(internal)?;
 
-    Ok(Json(PaymentAnalytics { from, to, data }))
+    let summary = build_summary(&data);
+
+    Ok(Json(PaymentAnalytics {
+        from,
+        to,
+        data,
+        summary,
+    }))
 }

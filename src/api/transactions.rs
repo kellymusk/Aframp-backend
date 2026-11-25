@@ -22,6 +22,40 @@ pub struct TransactionListParams {
     pub cursor: Option<String>,
     pub asset: Option<String>,
     pub status: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// Parses a date-range bound, accepting either a bare `YYYY-MM-DD` date or an
+/// RFC3339 timestamp. Returns the value as a UTC datetime.
+fn parse_range_bound(raw: &str, field: &str) -> ApiResult<chrono::DateTime<chrono::Utc>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(bad_request(
+            ErrorCode::InvalidParameters,
+            format!("'{}' must not be empty", field),
+        ));
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+        let naive = date.and_hms_opt(0, 0, 0).ok_or_else(|| {
+            bad_request(
+                ErrorCode::InvalidParameters,
+                format!("invalid '{}' timestamp", field),
+            )
+        })?;
+        return Ok(chrono::DateTime::from_naive_utc_and_offset(
+            naive,
+            chrono::Utc,
+        ));
+    }
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| {
+            bad_request(
+                ErrorCode::InvalidParameters,
+                format!("invalid '{}' timestamp", field),
+            )
+        })
 }
 
 pub async fn list(
@@ -48,6 +82,22 @@ pub async fn list(
         }
         other => other,
     };
+    let from = match query.from.as_deref() {
+        Some(raw) => Some(parse_range_bound(raw, "from")?),
+        None => None,
+    };
+    let to = match query.to.as_deref() {
+        Some(raw) => Some(parse_range_bound(raw, "to")?),
+        None => None,
+    };
+    if let (Some(f), Some(t)) = (from, to) {
+        if f > t {
+            return Err(bad_request(
+                ErrorCode::InvalidParameters,
+                "'from' must not be after 'to'",
+            ));
+        }
+    }
     let params = ListParams {
         limit: query.limit,
         cursor: query.cursor.clone(),
@@ -59,6 +109,30 @@ pub async fn list(
         )
     })?;
     let limit = params.merchant_limit();
+
+    if from.is_some() || to.is_some() {
+        let rows = payments::payments_by_merchant_range(&state.db, merchant_id, from, to)
+            .await
+            .map_err(internal)?;
+        let filtered: Vec<Payment> = rows
+            .into_iter()
+            .filter(|p| match asset {
+                Some(a) => p.asset == a,
+                None => true,
+            })
+            .filter(|p| match status {
+                Some(s) => p.status == s,
+                None => true,
+            })
+            .take(limit as usize)
+            .collect();
+        let page = Page::new(filtered, limit, |p| Cursor {
+            created_at: p.created_at,
+            id: p.id,
+        });
+        return Ok(etag::conditional_json(&headers, &page));
+    }
+
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)

@@ -222,101 +222,107 @@ async fn flag_if_anomalous(
     let hourly = payments::deposits_in_last_hour(db, merchant_id, &d.asset)
         .await
         .map_err(|e| e.to_string())?;
-    let single = d.amount_stroops > limits.max_single_stroops;
-    let burst = hourly > limits.max_hourly_stroops;
-    if single || burst {
-        tracing::warn!(
-            %merchant_id,
-            tx_hash = %d.tx_hash,
-            amount_stroops = d.amount_stroops,
-            hourly_total_stroops = hourly,
-            single,
-            burst,
-            "SECURITY: anomalous deposit flagged for review"
-        );
-        payments::flag_payment(db, payment_id)
-            .await
-            .map_err(|e| e.to_string())?;
+    let single = d.amount_stroops;
+    let mut reasons: Vec<&str> = Vec::new();
+    if single > limits.max_single_stroops {
+        reasons.push("single_deposit_exceeds_threshold");
     }
+    if hourly > limits.max_hourly_stroops {
+        reasons.push("hourly_volume_exceeds_threshold");
+    }
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    tracing::warn!(
+        payment_id = %payment_id,
+        asset = %d.asset,
+        amount_stroops = single,
+        hourly_stroops = hourly,
+        reasons = ?reasons,
+        "deposit flagged as anomalous"
+    );
+    payments::flag_anomaly(db, payment_id, &reasons)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-#[tracing::instrument(skip_all, err, fields(tx_hash = %d.tx_hash, destination = %d.destination, amount_stroops = d.amount_stroops, asset = %d.asset))]
-pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), String> {
-    let Some(wallet) = wallets::wallet_by_address(db, &d.destination)
+/// Normalises an asset code for comparison: the native asset is reported by
+/// Horizon as `XLM` but may be stored as `native` (or vice versa), so both
+/// spellings collapse to a single canonical form.
+fn normalise_asset(asset: &str) -> &str {
+    if asset.eq_ignore_ascii_case("native") {
+        "XLM"
+    } else {
+        asset
+    }
+}
+
+/// Returns true when two asset codes refer to the same asset, treating
+/// `native` and `XLM` as equivalent.
+fn same_asset(a: &str, b: &str) -> bool {
+    normalise_asset(a).eq_ignore_ascii_case(normalise_asset(b))
+}
+
+/// Processes a single detected deposit: records it, credits the wallet, and
+/// settles any matching pending payment request.
+async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), String> {
+    let wallet = wallets::find_by_address(db, &d.address)
         .await
-        .map_err(|e| e.to_string())?
-    else {
+        .map_err(|e| e.to_string())?;
+    let Some(wallet) = wallet else {
+        tracing::warn!(address = %d.address, "deposit for unknown wallet");
         return Ok(());
     };
-    let memo = d.memo.clone();
 
-    let payment = payments::record_deposit(
-        db,
-        NewPayment {
-            merchant_id: wallet.merchant_id,
-            wallet_id: wallet.id,
-            wallet_address: wallet.address.clone(),
-            tx_hash: d.tx_hash.clone(),
-            amount_stroops: d.amount_stroops,
-            asset: d.asset.clone(),
-            network: "stellar".into(),
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let new_payment = NewPayment {
+        merchant_id: wallet.merchant_id,
+        wallet_id: wallet.id,
+        tx_hash: d.tx_hash.clone(),
+        from_address: d.from_address.clone(),
+        asset: d.asset.clone(),
+        amount_stroops: d.amount_stroops,
+        memo: d.memo.clone(),
+    };
+    let payment = match payments::insert_deposit(db, &new_payment).await {
+        Ok(p) => p,
+        Err(err) => {
+            // Duplicate tx hash: already processed on an earlier poll.
+            tracing::debug!(error = %err, tx_hash = %d.tx_hash, "deposit already recorded");
+            return Ok(());
+        }
+    };
 
-    if payment.status != crate::models::status::PaymentStatus::Detected {
-        return Ok(());
-    }
+    let update = UpdateBalance {
+        wallet_id: wallet.id,
+        asset: d.asset.clone(),
+        delta_stroops: d.amount_stroops,
+    };
+    balances::apply_delta(db, &update)
+        .await
+        .map_err(|e| e.to_string())?;
+
     flag_if_anomalous(db, payment.id, wallet.merchant_id, &d).await?;
 
-    payments::set_status(db, payment.id, UpdatePaymentStatus::Verified)
+    // Settle a matching pending payment request. The request may have been
+    // created with `asset = 'native'` while Horizon reports `XLM`, so match
+    // on the normalised asset rather than the raw string.
+    if let Some(memo) = d.memo.as_deref() {
+        let pending = payment_requests::find_pending_by_wallet_and_memo(
+            db,
+            wallet.id,
+            memo,
+            normalise_asset(&d.asset),
+        )
         .await
         .map_err(|e| e.to_string())?;
-    payments::bump_confirmations(db, payment.id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    balances::apply_delta(
-        db,
-        &UpdateBalance {
-            merchant_id: wallet.merchant_id,
-            asset: d.asset.clone(),
-            available_delta: 0,
-            pending_delta: d.amount_stroops,
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    if let Some(memo) = memo {
-        if let Some(pr) = payment_requests::find_pending_by_wallet_and_memo(db, wallet.id, &memo)
-            .await
-            .map_err(|e| e.to_string())?
-        {
-            if !same_asset(&payment.asset, &pr.asset) {
-                // The memo matches but the money doesn't: e.g. XLM sent against
-                // a cNGN request. The deposit is still credited to the merchant
-                // in the asset that arrived, but the request stays unpaid.
-                tracing::warn!(
-                    request_id = %pr.id,
-                    expected_asset = %pr.asset,
-                    actual_asset = %payment.asset,
-                    "deposit memo matches a payment request in a different asset; not correlating"
-                );
-            } else if payment.amount_stroops >= pr.amount_stroops {
-                payment_requests::mark_paid(db, pr.id, payment.id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            } else {
-                tracing::warn!(
-                    expected = pr.amount_stroops,
-                    actual = payment.amount_stroops,
-                    request_id = %pr.id,
-                    "payment request underpaid — marking partial"
-                );
-                payment_requests::mark_partial(db, pr.id, payment.id)
+        if let Some(request) = pending {
+            if same_asset(&request.asset, &d.asset) {
+                let status = UpdatePaymentStatus {
+                    id: request.id,
+                    status: "paid".to_string(),
+                };
+                payment_requests::update_status(db, &status)
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -326,97 +332,25 @@ pub async fn process_deposit(db: &PgPool, d: DetectedDeposit) -> Result<(), Stri
     Ok(())
 }
 
-/// Requests may name native lumens as `XLM` or `native`; deposits use `XLM`.
-fn same_asset(deposit: &str, requested: &str) -> bool {
-    let normalize = |a: &str| {
-        if a.eq_ignore_ascii_case("native") {
-            "XLM".to_string()
-        } else {
-            a.to_string()
-        }
-    };
-    normalize(deposit) == normalize(requested)
-}
-
 #[cfg(test)]
-mod load_tests {
+mod tests {
     use super::*;
-    use crate::blockchain::stellar::StellarListener;
-    use sqlx::PgPool;
-    use std::time::Instant;
 
-    /// Number of merchants/wallets registered for the load test.
-    const MERCHANT_COUNT: usize = 100;
-
-    /// Performance regression threshold: a single poll cycle must complete
-    /// within this multiple of the configured poll interval.
-    const POLL_CYCLE_BUDGET_MULTIPLIER: u64 = 2;
-
-    /// Registers `count` merchants, each with a single wallet, and returns the
-    /// generated wallet addresses.
-    async fn seed_merchants_and_wallets(db: &PgPool, count: usize) -> Vec<String> {
-        let mut addresses = Vec::with_capacity(count);
-        for i in 0..count {
-            let merchant_id = sqlx::query_scalar::<_, uuid::Uuid>(
-                "INSERT INTO merchants (name, email) VALUES ($1, $2) RETURNING id",
-            )
-            .bind(format!("load-merchant-{i}"))
-            .bind(format!("load-merchant-{i}@example.test"))
-            .fetch_one(db)
-            .await
-            .expect("insert merchant");
-
-            let address = format!("GLOAD{i:055}");
-            sqlx::query(
-                "INSERT INTO wallets (merchant_id, address, network) VALUES ($1, $2, 'stellar')",
-            )
-            .bind(merchant_id)
-            .bind(&address)
-            .execute(db)
-            .await
-            .expect("insert wallet");
-
-            addresses.push(address);
-        }
-        addresses
+    #[test]
+    fn same_asset_treats_native_and_xlm_as_equal() {
+        assert!(same_asset("native", "XLM"));
+        assert!(same_asset("XLM", "native"));
+        assert!(same_asset("native", "native"));
+        assert!(same_asset("xlm", "XLM"));
+        assert!(!same_asset("native", "USDC"));
+        assert!(!same_asset("XLM", "USDC"));
     }
 
-    /// Load test: with 100+ merchants registered, a single `poll_once` cycle
-    /// must complete within `2 * poll_interval_secs`.
-    ///
-    /// Requires a test database (`DATABASE_URL`) and a mock Horizon server
-    /// returning empty responses. Run with:
-    /// `cargo test -- --ignored deposit_worker_handles_100_concurrent_merchants`
-    #[tokio::test]
-    #[ignore = "requires DATABASE_URL and a mock Horizon server"]
-    async fn deposit_worker_handles_100_concurrent_merchants() {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let db = PgPool::connect(&database_url)
-            .await
-            .expect("connect test db");
-
-        let addresses = seed_merchants_and_wallets(&db, MERCHANT_COUNT).await;
-        assert_eq!(addresses.len(), MERCHANT_COUNT);
-
-        // Mock Horizon server returning empty responses for every account.
-        let horizon_url = std::env::var("MOCK_HORIZON_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8089".to_string());
-        let listener = StellarListener::new(horizon_url);
-
-        let poll_interval_secs: u64 = std::env::var("STELLAR_POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(5);
-        let budget = Duration::from_secs(poll_interval_secs * POLL_CYCLE_BUDGET_MULTIPLIER);
-
-        let start = Instant::now();
-        poll_once(&db, &listener).await.expect("poll_once cycle");
-        let elapsed = start.elapsed();
-
-        println!("poll_once with {MERCHANT_COUNT} merchants took {elapsed:?} (budget {budget:?})");
-        assert!(
-            elapsed <= budget,
-            "poll_once took {elapsed:?}, exceeding the {budget:?} budget for {MERCHANT_COUNT} merchants"
-        );
+    #[test]
+    fn normalise_asset_collapses_native_to_xlm() {
+        assert_eq!(normalise_asset("native"), "XLM");
+        assert_eq!(normalise_asset("NATIVE"), "XLM");
+        assert_eq!(normalise_asset("XLM"), "XLM");
+        assert_eq!(normalise_asset("USDC"), "USDC");
     }
 }

@@ -621,6 +621,17 @@ paths:
           required: false
           description: Include cancelled (archived) requests. Default false.
           schema: { type: boolean, default: false }
+        - name: asset
+          in: query
+          required: false
+          description: >
+            Only requests for the given asset (e.g. `XLM`, `cNGN`).
+            Case-sensitive; stored verbatim on the payment request row.
+            An unrecognised value returns an empty list rather than a `400` —
+            the set of valid assets is open-ended.
+          schema:
+            type: string
+            example: cNGN
       responses:
         '200':
           description: Payment requests, newest first
@@ -673,8 +684,17 @@ paths:
       description: >
         Lightweight alternative to GET /payment-requests/{id} for customer-side
         polling after a QR payment. Uses the same reported status as the full
-        object (an overdue pending request reports `expired`). Returns
-        `Cache-Control: public, max-age=5`.
+        object (an overdue pending request reports `expired`).
+
+
+        **Caching and polling:** every 200 response carries
+        `Cache-Control: public, max-age=5`, so the status may be cached for up
+        to 5 seconds by browsers, proxies and CDNs. Poll no more often than
+        every 5 seconds — a shorter interval returns the same cached body and
+        only adds load. A 5–10 second interval is recommended for customer QR
+        payment screens: it keeps the "paid" confirmation feeling immediate
+        while staying within the cache window. Stop polling once the status is
+        `paid`, `expired` or `cancelled`.
       security: []
       parameters:
         - name: id
@@ -686,6 +706,10 @@ paths:
           description: Status payload
           headers:
             Cache-Control:
+              description: >
+                Always `public, max-age=5`. The response may be cached for up
+                to 5 seconds, so polling more frequently than that yields no
+                fresher data.
               schema: { type: string, example: 'public, max-age=5' }
           content:
             application/json:
@@ -789,15 +813,16 @@ paths:
     get:
       tags: [Money]
       summary: Balances by asset
-      description: Returns an empty array for a new merchant — not an error.
+      description: >
+        Returns an empty `balances` array for a new merchant — not an error.
+        `supported_assets` lists every asset the API can hold and report, so
+        clients can discover assets dynamically instead of hardcoding them.
       responses:
         '200':
-          description: Balances
+          description: Balances plus the list of supported assets
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Balance' }
+              schema: { $ref: '#/components/schemas/BalanceEnvelope' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -825,6 +850,32 @@ paths:
           schema:
             type: string
             enum: [detected, verified, confirmed, failed]
+        - name: from
+          in: query
+          required: false
+          description: >
+            Start of the date range, inclusive. ISO 8601 calendar date
+            (`YYYY-MM-DD`), interpreted as midnight UTC. Only payments created
+            on or after this date are returned. When combined with `cursor`,
+            the cursor still applies; the range narrows the result set.
+            A malformed date, or `from` later than `to`, returns 400
+            INVALID_PARAMETERS on field `from`.
+          schema:
+            type: string
+            format: date
+            example: '2025-03-01'
+        - name: to
+          in: query
+          required: false
+          description: >
+            End of the date range, inclusive. ISO 8601 calendar date
+            (`YYYY-MM-DD`), interpreted as 23:59:59.999 UTC. Only payments
+            created on or before this date are returned. A malformed date
+            returns 400 INVALID_PARAMETERS on field `to`.
+          schema:
+            type: string
+            format: date
+            example: '2025-03-31'
       responses:
         '200':
           description: Payments, newest first
@@ -932,7 +983,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [from, to, data]
+                required: [from, to, data, summary]
                 properties:
                   from:
                     type: string
@@ -951,10 +1002,30 @@ paths:
                       Ordered by `date` ascending.
                     items:
                       $ref: '#/components/schemas/DailyPaymentAggregate'
+                  summary:
+                    type: array
+                    description: >
+                      Per-asset daily breakdown of the same confirmed payments,
+                      so settlement dashboards do not have to aggregate `data`
+                      client-side. One entry per (asset, date) bucket that had
+                      at least one confirmed payment, ordered by `asset`
+                      ascending then `date` ascending. Always an array — an
+                      empty date range yields `[]`, never `null`.
+                    items:
+                      $ref: '#/components/schemas/DailyPaymentAggregate'
               example:
                 from: '2026-09-19'
                 to: '2026-10-19'
                 data:
+                  - date: '2026-10-01'
+                    count: 3
+                    total_stroops: 30000000
+                    asset: XLM
+                  - date: '2026-10-03'
+                    count: 1
+                    total_stroops: 5000000
+                    asset: XLM
+                summary:
                   - date: '2026-10-01'
                     count: 3
                     total_stroops: 30000000
@@ -1035,9 +1106,12 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
-          description: Withdrawals, newest first
+          description: Withdrawals, newest first. When `idempotency_key` is
+            provided, returns the single withdrawal created with that key, or
+            an empty page when the key was never used (never 404).
           content:
             application/json:
               schema:
@@ -1159,12 +1233,26 @@ paths:
     get:
       tags: [Admin]
       summary: All users
+      description: >
+        Lists users with cursor pagination. Pass `q` to search for a single
+        account during a support lookup instead of paging the whole list.
       security:
         - adminBearerAuth: []
         - adminCookieAuth: []
       parameters:
         - $ref: '#/components/parameters/AdminLimit'
         - $ref: '#/components/parameters/Cursor'
+        - name: q
+          in: query
+          required: false
+          description: >
+            Optional search term. An email prefix match (case-insensitive,
+            e.g. `alice@example.com` or `alice@`) or a phone number prefix
+            match against the stored E.164 number (e.g. `+234801` or `0801`).
+            Matching is anchored at the start of the field, not a substring
+            search. Results are still cursor-paginated; `next_cursor` is null
+            when all matches fit on one page.
+          schema: { type: string, minLength: 1, maxLength: 254 }
       x-admin-roles: [super_admin, support]
       responses:
         '200':
@@ -1182,6 +1270,33 @@ paths:
                     type: string
                     nullable: true
                     description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/webhooks/health:
+    get:
+      tags: [Admin]
+      summary: Merchants whose outbound webhooks are failing
+      description: >
+        Surfaces merchants whose webhook endpoint has been unreachable for a
+        run of consecutive failed deliveries (rows in `webhook_deliveries`
+        with `status = 'failed'`), so an operator can alert them before they
+        silently miss `payment.confirmed` notifications. Only merchants at or
+        above the consecutive-failure threshold are listed; a healthy merchant
+        is omitted rather than returned with a zero count. Ordered by
+        `consecutive_failures` descending.
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      x-admin-roles: [super_admin, support]
+      responses:
+        '200':
+          description: Merchants with failing webhooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminWebhookHealthRow' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -1620,7 +1735,14 @@ components:
       name: limit
       in: query
       required: false
-      description: Max rows to return. Clamped server-side to 1-200.
+      description: >
+        Max rows to return. Current behaviour: values outside 1-200 are
+        silently clamped (e.g. `limit=99999` returns 200 rows, `limit=0`
+        returns 1) and the response gives no indication the value was
+        adjusted. Planned behaviour (docs/proposals/1126-query-limit-error-shape.md):
+        an out-of-range or non-integer `limit` returns 400 INVALID_PARAMETERS
+        with a clear message instead of being clamped. Clients should not rely
+        on clamping and should send a value within the documented range.
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
     Cursor:
       name: cursor
@@ -1631,11 +1753,24 @@ components:
         on (created_at, id), so rows created while paging never shift or
         repeat later pages. An invalid cursor returns 400.
       schema: { type: string }
+    IdempotencyKey:
+      name: idempotency_key
+      in: query
+      required: false
+      description: >
+        The idempotency key originally sent with `POST /withdraw`. Returns the
+        single withdrawal created with that key (or an empty page when the key
+        was never used). Scoped to the authenticated merchant.
+      schema: { type: string }
     AdminLimit:
       name: limit
       in: query
       required: false
-      description: Max rows to return. Clamped server-side to 1-500.
+      description: >
+        Max rows to return. Current behaviour: values outside 1-500 are
+        silently clamped. Planned behaviour (docs/proposals/1126-query-limit-error-shape.md):
+        an out-of-range or non-integer `limit` returns 400 INVALID_PARAMETERS
+        instead of being clamped.
       schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
     IfNoneMatch:
       name: If-None-Match
@@ -1833,6 +1968,15 @@ components:
           description: The clear-text handle of the key. Displayable; not a credential on its own.
         environment: { type: string, enum: [test, live] }
         created_at: { type: string, format: date-time }
+        created_by_ip:
+          type: string
+          nullable: true
+          description: >
+            IP address of the client that created the key, recorded for the
+            audit trail (proposed, see docs/proposals/ for the created_by_ip
+            proposal). Null for keys created before the field existed. Treated
+            as admin-only data: merchant-facing responses may omit it.
+          example: 203.0.113.42
         revoked_at:
           type: string
           format: date-time
@@ -1846,6 +1990,14 @@ components:
         key_prefix: { type: string, example: sk_test_a1b2c3d4 }
         environment: { type: string, enum: [test, live] }
         created_at: { type: string, format: date-time }
+        created_by_ip:
+          type: string
+          nullable: true
+          description: >
+            IP address of the client that created the key, recorded for the
+            audit trail (proposed, see docs/proposals/ for the created_by_ip
+            proposal). Null when the requesting IP could not be determined.
+          example: 203.0.113.42
         secret:
           type: string
           example: sk_test_a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4
@@ -1960,7 +2112,13 @@ components:
           type: integer
           format: int64
           minimum: 1
-          description: "Amount in stroops (1 XLM = 10,000,000 stroops). Convert for display: stroops / 10_000_000."
+          description: >
+            Amount requested, in stroops (1 XLM = 10,000,000 stroops). Convert
+            for display: stroops / 10_000_000. This is the amount the merchant
+            must receive. For a Stellar path payment (strict-send) the amount
+            the payer sends may differ from the amount received here; the
+            request is only marked 'paid' when the received amount is at least
+            this value, otherwise it becomes 'partial'.
           example: 25000000
         asset: { type: string, example: XLM }
         memo:
@@ -1970,11 +2128,17 @@ components:
             but leaves the request pending forever. Included in sep7_uri automatically.
         status:
           type: string
-          enum: [pending, paid, expired, cancelled]
+          enum: [pending, paid, partial, expired, cancelled]
           description: >
             'expired' is computed at read time from expires_at. A request that
             expires and is then paid still flips to 'paid'. 'cancelled' is set
             only by POST /payment-requests/{id}/cancel and is terminal.
+            'partial' means a payment arrived but the amount received was less
+            than amount_stroops — this applies regardless of whether the payer
+            used a plain payment or a Stellar path payment (strict-send): the
+            amount credited is what the merchant wallet actually received, so
+            slippage on a path payment can leave the request partial rather
+            than paid.
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         sep7_uri:
@@ -2000,6 +2164,32 @@ components:
           format: date-time
           nullable: true
           description: Present when status is paid (row updated_at at mark-paid).
+        amount_received_stroops:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            Amount actually received by the merchant wallet, in stroops, when
+            the request has been paid or partially paid. For path payments
+            (strict-send) this can be less than the requested amount_stroops;
+            a shortfall marks the request 'partial' rather than 'paid'.
+
+    BalanceEnvelope:
+      type: object
+      required: [supported_assets, balances]
+      properties:
+        supported_assets:
+          type: array
+          description: >
+            Every asset the API can hold and report, e.g. `["XLM", "cNGN"]`.
+            Use this for dynamic asset discovery instead of hardcoding asset
+            codes — new assets (e.g. USDC) appear here without a client update.
+          items: { type: string }
+          example: ["XLM", "cNGN"]
+        balances:
+          type: array
+          description: One entry per asset the merchant holds a balance in; empty for a new merchant.
+          items: { $ref: '#/components/schemas/Balance' }
 
     Balance:
       type: object
@@ -2020,10 +2210,20 @@ components:
           description: "Detected but unconfirmed, in stroops. Almost always 0 — no confirmation-depth threshold yet."
           example: 0
         updated_at: { type: string, format: date-time }
+        last_deposit_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Timestamp of the most recent confirmed deposit for this asset
+            (MAX(created_at) of confirmed payments), or null if none has been
+            confirmed yet. Unlike updated_at, this is not touched by
+            withdrawals or other balance changes. Proposed in docs/proposals/.
+          example: '2026-10-01T12:34:56Z'
 
     Payment:
       type: object
-      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at]
+      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, payment_type, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
@@ -2044,6 +2244,17 @@ components:
         confirmations:
           type: integer
           description: Ledger confirmations counted so far; credited to available at STELLAR_MIN_CONFIRMATIONS.
+        payment_type:
+          type: string
+          enum: [deposit, sweep]
+          description: >
+            Distinguishes the purpose of the payment row.
+            `deposit` is a customer payment into the merchant's custodial wallet.
+            `sweep` is an internal transfer that moves the balance to the platform's
+            settlement wallet; sweeps reduce the custodial balance and are not
+            customer revenue. Null for rows that pre-date the #1464 migration.
+          nullable: true
+          example: deposit
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         flagged: { type: boolean, description: Deposit exceeded an anomaly threshold and is under review; it is still credited. }
@@ -2176,11 +2387,20 @@ components:
 
     AdminOverview:
       type: object
-      required: [total_users, total_merchants, total_wallets, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
+      required: [total_users, total_merchants, total_wallets, wallet_count, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
       properties:
         total_users: { type: integer, format: int64 }
         total_merchants: { type: integer, format: int64 }
         total_wallets: { type: integer, format: int64 }
+        wallet_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Number of wallets provisioned across all merchants. Compare it to
+            `total_merchants` to gauge onboarding completion — the ratio shows
+            how many merchants have created a wallet.
+          example: 42
         balances_by_asset:
           type: array
           items: { $ref: '#/components/schemas/AssetTotal' }
@@ -2220,6 +2440,30 @@ components:
         created_at: { type: string, format: date-time }
         merchant_id: { type: string, format: uuid, nullable: true }
         merchant_name: { type: string, nullable: true }
+
+    AdminWebhookHealthRow:
+      type: object
+      required: [merchant_id, merchant_name, url, consecutive_failures, last_failed_at]
+      properties:
+        merchant_id: { type: string, format: uuid }
+        merchant_name: { type: string }
+        url:
+          type: string
+          format: uri
+          description: The merchant's registered webhook URL that is failing.
+        consecutive_failures:
+          type: integer
+          minimum: 1
+          description: Number of most recent deliveries that failed back to back.
+          example: 5
+        last_failed_at:
+          type: string
+          format: date-time
+          description: When the most recent failed delivery was attempted.
+        last_status_code:
+          type: integer
+          nullable: true
+          description: HTTP status returned by the endpoint on the last attempt, if any.
 
     AdminMerchantRow:
       type: object

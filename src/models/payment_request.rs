@@ -24,6 +24,24 @@ pub struct PaymentRequest {
     pub description: Option<String>,
 }
 
+impl PaymentRequest {
+    /// A request is only payable while it is still pending and has not
+    /// expired. Cancelled requests are never payable.
+    pub fn is_payable(&self, now: DateTime<Utc>) -> bool {
+        self.status == PaymentRequestStatus::Pending
+            && self.cancelled_at.is_none()
+            && self.expires_at > now
+    }
+
+    /// A request is only cancellable by its owner while it is still pending
+    /// and has not expired.
+    pub fn is_cancellable(&self, now: DateTime<Utc>) -> bool {
+        self.status == PaymentRequestStatus::Pending
+            && self.cancelled_at.is_none()
+            && self.expires_at > now
+    }
+}
+
 /// Parsed create-payment-request body. Built via [`Self::from_json`] so
 /// non-integer `amount_stroops` yields a field-level `INVALID_PARAMETERS`
 /// error instead of axum's default 422.
