@@ -82,6 +82,11 @@ pub struct ApiError {
     /// may attempt login again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<u64>,
+    /// The `X-Request-ID` for this request. Injected by the
+    /// `inject_request_id` middleware so the client can quote it in a support
+    /// ticket without digging through response headers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 pub type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
@@ -100,6 +105,7 @@ pub fn bad_request_field(field: &str, message: &str) -> (StatusCode, Json<ApiErr
             code: ErrorCode::InvalidParameters,
             field: Some(field.into()),
             retry_after_secs: None,
+            request_id: None,
         }),
     )
 }
@@ -144,6 +150,7 @@ pub fn locked(retry_at: chrono::DateTime<chrono::Utc>) -> (StatusCode, Json<ApiE
             code: ErrorCode::AccountLocked,
             field: None,
             retry_after_secs: Some(remaining as u64),
+            request_id: None,
         }),
     )
 }
@@ -165,6 +172,7 @@ fn error(status: StatusCode, code: ErrorCode, message: &str) -> (StatusCode, Jso
             code,
             field: None,
             retry_after_secs: None,
+            request_id: None,
         }),
     )
 }
@@ -202,6 +210,7 @@ impl From<crate::services::otp::OtpError> for (StatusCode, Json<ApiError>) {
                     code: ErrorCode::TooManyRequests,
                     field: None,
                     retry_after_secs: Some(retry_after_secs),
+                    request_id: None,
                 }),
             ),
             OtpError::ChallengeNotFound => not_found(
