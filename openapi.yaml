@@ -621,6 +621,17 @@ paths:
           required: false
           description: Include cancelled (archived) requests. Default false.
           schema: { type: boolean, default: false }
+        - name: asset
+          in: query
+          required: false
+          description: >
+            Only requests for the given asset (e.g. `XLM`, `cNGN`).
+            Case-sensitive; stored verbatim on the payment request row.
+            An unrecognised value returns an empty list rather than a `400` —
+            the set of valid assets is open-ended.
+          schema:
+            type: string
+            example: cNGN
       responses:
         '200':
           description: Payment requests, newest first
@@ -789,15 +800,16 @@ paths:
     get:
       tags: [Money]
       summary: Balances by asset
-      description: Returns an empty array for a new merchant — not an error.
+      description: >
+        Returns an empty `balances` array for a new merchant — not an error.
+        `supported_assets` lists every asset the API can hold and report, so
+        clients can discover assets dynamically instead of hardcoding them.
       responses:
         '200':
-          description: Balances
+          description: Balances plus the list of supported assets
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Balance' }
+              schema: { $ref: '#/components/schemas/BalanceEnvelope' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -2050,6 +2062,23 @@ components:
             (strict-send) this can be less than the requested amount_stroops;
             a shortfall marks the request 'partial' rather than 'paid'.
 
+    BalanceEnvelope:
+      type: object
+      required: [supported_assets, balances]
+      properties:
+        supported_assets:
+          type: array
+          description: >
+            Every asset the API can hold and report, e.g. `["XLM", "cNGN"]`.
+            Use this for dynamic asset discovery instead of hardcoding asset
+            codes — new assets (e.g. USDC) appear here without a client update.
+          items: { type: string }
+          example: ["XLM", "cNGN"]
+        balances:
+          type: array
+          description: One entry per asset the merchant holds a balance in; empty for a new merchant.
+          items: { $ref: '#/components/schemas/Balance' }
+
     Balance:
       type: object
       required: [merchant_id, asset, available, pending, updated_at]
@@ -2082,7 +2111,7 @@ components:
 
     Payment:
       type: object
-      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at]
+      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, payment_type, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         merchant_id: { type: string, format: uuid }
@@ -2103,6 +2132,17 @@ components:
         confirmations:
           type: integer
           description: Ledger confirmations counted so far; credited to available at STELLAR_MIN_CONFIRMATIONS.
+        payment_type:
+          type: string
+          enum: [deposit, sweep]
+          description: >
+            Distinguishes the purpose of the payment row.
+            `deposit` is a customer payment into the merchant's custodial wallet.
+            `sweep` is an internal transfer that moves the balance to the platform's
+            settlement wallet; sweeps reduce the custodial balance and are not
+            customer revenue. Null for rows that pre-date the #1464 migration.
+          nullable: true
+          example: deposit
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         flagged: { type: boolean, description: Deposit exceeded an anomaly threshold and is under review; it is still credited. }
@@ -2235,11 +2275,20 @@ components:
 
     AdminOverview:
       type: object
-      required: [total_users, total_merchants, total_wallets, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
+      required: [total_users, total_merchants, total_wallets, wallet_count, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
       properties:
         total_users: { type: integer, format: int64 }
         total_merchants: { type: integer, format: int64 }
         total_wallets: { type: integer, format: int64 }
+        wallet_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Number of wallets provisioned across all merchants. Compare it to
+            `total_merchants` to gauge onboarding completion — the ratio shows
+            how many merchants have created a wallet.
+          example: 42
         balances_by_asset:
           type: array
           items: { $ref: '#/components/schemas/AssetTotal' }

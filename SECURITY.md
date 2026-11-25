@@ -31,6 +31,20 @@ must appear in the CSP and each permitted script element. Do not use
 `'unsafe-inline'` in `script-src`. The response must also include
 `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff`.
 
+## HSTS (Strict-Transport-Security)
+
+Production responses must include:
+
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+```
+
+The backend emits this header when running in production (`APP_ENV=production`,
+or `COOKIE_SECURE=true`). The TLS-terminating reverse proxy (Caddy/nginx) may
+also set it; see `DEPLOY.md` for proxy configuration. HSTS must never be enabled
+for plain-HTTP development hosts, because it pins browsers to HTTPS for the
+host and would break local development.
+
 ## Reporting a vulnerability
 
 **Do not open a public issue, pull request, or discussion for a security problem.**

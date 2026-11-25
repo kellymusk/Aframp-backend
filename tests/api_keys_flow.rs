@@ -103,6 +103,105 @@ async fn malformed_or_unknown_api_key_is_rejected() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+/// `GET /api-keys` must only return the calling merchant's keys, never another's.
+#[tokio::test]
+async fn api_keys_list_is_scoped_to_calling_merchant() {
+    let app = aframp::router(state().await);
+    let (token_a, _) = ensure_merchant(&app, "api_keys_scope_a").await;
+    let (token_b, _) = ensure_merchant(&app, "api_keys_scope_b").await;
+
+    let (status, created_a) = send(
+        app.clone(),
+        "POST",
+        "/api-keys",
+        Some(&token_a),
+        Some(json!({ "environment": "test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created_a}");
+    let key_a_id = created_a["id"].as_str().unwrap().to_string();
+
+    let (status, list_b) = send(app.clone(), "GET", "/api-keys", Some(&token_b), None).await;
+    assert_eq!(status, StatusCode::OK, "{list_b}");
+    let keys_b = list_b.as_array().unwrap();
+    assert!(
+        keys_b
+            .iter()
+            .all(|k| k["id"].as_str() != Some(key_a_id.as_str())),
+        "merchant B's list leaked merchant A's key: {list_b}"
+    );
+}
+
+/// `GET /api-keys` returns exactly the keys the calling merchant created.
+#[tokio::test]
+async fn api_keys_list_returns_exactly_own_keys() {
+    let app = aframp::router(state().await);
+    let (token, _) = ensure_merchant(&app, "api_keys_exact").await;
+
+    let mut created_ids = Vec::new();
+    for _ in 0..2 {
+        let (status, created) = send(
+            app.clone(),
+            "POST",
+            "/api-keys",
+            Some(&token),
+            Some(json!({ "environment": "test" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        created_ids.push(created["id"].as_str().unwrap().to_string());
+    }
+
+    let (status, list) = send(app.clone(), "GET", "/api-keys", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let keys = list.as_array().unwrap();
+    let mut listed_ids: Vec<String> = keys
+        .iter()
+        .map(|k| k["id"].as_str().unwrap().to_string())
+        .collect();
+    listed_ids.sort();
+    created_ids.sort();
+    assert_eq!(listed_ids, created_ids, "unexpected key list: {list}");
+}
+
+/// A merchant cannot revoke another merchant's API key.
+#[tokio::test]
+async fn cannot_revoke_another_merchants_api_key() {
+    let app = aframp::router(state().await);
+    let (token_a, _) = ensure_merchant(&app, "api_keys_revoke_a").await;
+    let (token_b, _) = ensure_merchant(&app, "api_keys_revoke_b").await;
+
+    let (status, created_b) = send(
+        app.clone(),
+        "POST",
+        "/api-keys",
+        Some(&token_b),
+        Some(json!({ "environment": "test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created_b}");
+    let key_b_id = created_b["id"].as_str().unwrap().to_string();
+    let key_b_secret = created_b["secret"].as_str().unwrap().to_string();
+
+    let (status, _) = send(
+        app.clone(),
+        "DELETE",
+        &format!("/api-keys/{key_b_id}"),
+        Some(&token_a),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "merchant A must not be able to revoke merchant B's key"
+    );
+
+    // B's key still authenticates.
+    let (status, _) = send(app.clone(), "GET", "/me", Some(&key_b_secret), None).await;
+    assert_eq!(status, StatusCode::OK, "B's key must still work");
+}
+
 /// Deleting the account revokes its API keys, as it does its sessions.
 #[tokio::test]
 async fn api_key_stops_working_after_account_deletion() {
