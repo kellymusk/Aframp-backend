@@ -930,7 +930,9 @@ When the upstream payout provider (Paystack) rejects or fails the transfer, the 
 > **Payouts do not currently complete in production.** The Paystack integration is real, but Aframp's Paystack balance is unfunded, so live calls often return `502` with *"Your balance is not enough to fulfil this request."* That is still a `PAYOUT_FAILED` — same no-retry rules. Paystack's own minimum transfer is ₦50 = `500000000` stroops.
 
 ### `GET /withdrawals`
-Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200) and `?cursor=` (see [Pagination](#pagination)).
+Auth required. Newest first. Query: `?limit=` (default 50, clamped 1–200), `?cursor=` (see [Pagination](#pagination)), and `?idempotency_key=`.
+
+When `idempotency_key` is set, the endpoint returns the single withdrawal created with that key (the same object shape as a list item) wrapped in a page, or an empty `data` array when the key was never used — it returns `200`, never `404`. This lets a client that lost the `id` from the `POST /withdraw` response recover the row using the key it originally provided. Without it, the full merchant list is returned as before.
 
 `200` → a page, `{ "data": [...], "next_cursor": ... }`, with `data` items like:
 ```json
