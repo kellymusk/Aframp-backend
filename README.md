@@ -624,3 +624,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1337 -->
 - #1337: withdrawal: fee quote endpoint (amount received before confirming)
+
+<!-- handsoff-issue-1331 -->
+- #1331: payments: return the merchant's display name on the public GET /payment-requests/{id}
