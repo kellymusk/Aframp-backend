@@ -373,4 +373,201 @@ async fn analytics_payments_scoped_to_authenticated_merchant() {
     let _ = (merchant_a, wallet_a);
 }
 
+// ---------------------------------------------------------------------------
+// Per-asset daily summary (issue #1494)
+// ---------------------------------------------------------------------------
+
+/// Confirmed deposits across two assets over three days must be summarised
+/// per asset and per day in the `summary` field.
+#[tokio::test]
+async fn analytics_payments_summary_per_asset_per_day() {
+    let (app, db) = app().await;
+    let (token, merchant_id, wallet_id) =
+        merchant_with_wallet(&app, &db, "analytics_summary").await;
+
+    // Day 1 (2 days ago): XLM 10M + 5M, cNGN 2M
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        10_000_000,
+        "XLM",
+        2,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        5_000_000,
+        "XLM",
+        2,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        2_000_000,
+        "cNGN",
+        2,
+    )
+    .await;
+
+    // Day 2 (1 day ago): XLM 7M, cNGN 3M + 4M
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        7_000_000,
+        "XLM",
+        1,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        3_000_000,
+        "cNGN",
+        1,
+    )
+    .await;
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        4_000_000,
+        "cNGN",
+        1,
+    )
+    .await;
+
+    // Day 3 (0 days ago): cNGN 1M
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        1_000_000,
+        "cNGN",
+        0,
+    )
+    .await;
+
+    // Non-confirmed payment must not be counted in the summary.
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "verified",
+        50_000_000,
+        "XLM",
+        1,
+    )
+    .await;
+
+    let (status, body) = common::send(app, "GET", "/analytics/payments", Some(&token), None).await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected error: {body}");
+
+    let summary = body["summary"]
+        .as_array()
+        .expect("summary must be an array");
+
+    // 3 days x 2 assets = 6 summary entries.
+    assert_eq!(summary.len(), 6, "expected 6 summary entries: {body}");
+
+    let find = |asset: &str, days_ago: i64| -> &Value {
+        summary
+            .iter()
+            .find(|e| {
+                e["asset"].as_str() == Some(asset)
+                    && e["date"].as_str() == Some(&expected_date(days_ago))
+            })
+            .unwrap_or_else(|| panic!("missing summary entry for {asset} {days_ago}d ago: {body}"))
+    };
+
+    let xlm_d2 = find("XLM", 2);
+    assert_eq!(xlm_d2["count"].as_i64().unwrap(), 2);
+    assert_eq!(xlm_d2["total_stroops"].as_i64().unwrap(), 15_000_000);
+
+    let cngn_d2 = find("cNGN", 2);
+    assert_eq!(cngn_d2["count"].as_i64().unwrap(), 1);
+    assert_eq!(cngn_d2["total_stroops"].as_i64().unwrap(), 2_000_000);
+
+    let xlm_d1 = find("XLM", 1);
+    assert_eq!(xlm_d1["count"].as_i64().unwrap(), 1);
+    assert_eq!(xlm_d1["total_stroops"].as_i64().unwrap(), 7_000_000);
+
+    let cngn_d1 = find("cNGN", 1);
+    assert_eq!(cngn_d1["count"].as_i64().unwrap(), 2);
+    assert_eq!(cngn_d1["total_stroops"].as_i64().unwrap(), 7_000_000);
+
+    let cngn_d0 = find("cNGN", 0);
+    assert_eq!(cngn_d0["count"].as_i64().unwrap(), 1);
+    assert_eq!(cngn_d0["total_stroops"].as_i64().unwrap(), 1_000_000);
+
+    // No XLM entry for today (no confirmed XLM payments today).
+    assert!(
+        !summary.iter().any(|e| {
+            e["asset"].as_str() == Some("XLM")
+                && e["date"].as_str() == Some(&expected_date(0))
+        }),
+        "XLM must have no summary entry for today: {body}"
+    );
+}
+
+/// An empty date range must yield empty `data` and `summary` arrays (not null).
+#[tokio::test]
+async fn analytics_payments_empty_range_returns_empty_arrays() {
+    let (app, db) = app().await;
+    let (token, merchant_id, wallet_id) =
+        merchant_with_wallet(&app, &db, "analytics_empty_range").await;
+
+    // Seed a confirmed payment well outside the requested window.
+    seed_payment(
+        &db,
+        &merchant_id,
+        &wallet_id,
+        "confirmed",
+        10_000_000,
+        "XLM",
+        1,
+    )
+    .await;
+
+    let (status, body) = common::send(
+        app,
+        "GET",
+        "/analytics/payments?from=2020-01-01&to=2020-01-02",
+        Some(&token),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "unexpected error: {body}");
+
+    let data = body["data"].as_array().expect("data must be an array");
+    assert!(data.is_empty(), "data must be empty: {body}");
+
+    let summary = body["summary"]
+        .as_array()
+        .expect("summary must be an array, not null");
+    assert!(summary.is_empty(), "summary must be empty: {body}");
+}
+
+/// Format the UTC date `days_ago` days before today as `YYYY-MM-DD`.
+fn expected_date(days_ago: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::days(days_ago))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
 fn _assert_value_is_used(_: &Value) {}

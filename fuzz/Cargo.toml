@@ -29,3 +29,7 @@ name = "fuzz_payment_request"
 path = "fuzz_targets/fuzz_payment_request.rs"
 test = false
 doc = false
+
+[[test]]
+name = "lockfile"
+path = "tests/lockfile.rs"

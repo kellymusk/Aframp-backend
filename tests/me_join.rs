@@ -112,6 +112,51 @@ async fn me_response_includes_verified_phone_fields() {
 }
 
 #[tokio::test]
+async fn me_response_includes_wallet_address_when_wallet_exists() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "me_wallet").await;
+
+    let (status, created) = send(app.clone(), "POST", "/wallet/create", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "POST /wallet/create failed: {created}");
+    let address = created["address"]
+        .as_str()
+        .expect("created wallet address")
+        .to_string();
+
+    let (status, me) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "GET /me failed: {me}");
+    assert_eq!(
+        me["wallet"].as_str(),
+        Some(address.as_str()),
+        "joined /me response must expose the wallet address: {me}"
+    );
+    assert!(
+        me.get("balances").is_some(),
+        "joined /me response must include balances: {me}"
+    );
+
+    // The joined value must agree with the standalone wallet endpoint.
+    let (status, wallet) = send(app, "GET", "/wallet", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "GET /wallet failed: {wallet}");
+    assert_eq!(wallet["address"].as_str(), Some(address.as_str()));
+}
+
+#[tokio::test]
+async fn me_response_wallet_is_null_when_no_wallet_row() {
+    let state = state().await;
+    let app = aframp::router(state);
+    let (token, _) = ensure_merchant(&app, "me_no_wallet").await;
+
+    let (status, me) = send(app, "GET", "/me", Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "GET /me failed: {me}");
+    assert!(
+        me["wallet"].is_null(),
+        "wallet should be null when no wallet row exists: {me}"
+    );
+}
+
+#[tokio::test]
 async fn me_join_returns_none_merchant_fields_when_no_merchant_row() {
     // Signup always creates a merchant today, so synthesize the edge case
     // the LEFT JOIN must handle: a user with no merchants row. We delete the

@@ -1,208 +1,105 @@
-use std::net::SocketAddr;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
+use serde::Serialize;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
-use aframp::{build_state, router, AppConfig};
-use axum::http::{HeaderName, HeaderValue, Request};
-use tower_http::limit::RequestBodyLimitLayer;
-use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::trace::TraceLayer;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok();
-
-    let env_filter =
-        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-
-    // LOG_FORMAT=json emits structured JSON logs for production log aggregators
-    // (Datadog, CloudWatch, etc.); anything else keeps human-readable text for dev.
-    let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string());
-    if log_format.eq_ignore_ascii_case("json") {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(env_filter)
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    }
-
-    // `--rotate-key` runs the WALLET_ENCRYPTION_KEY rotation and exits —
-    // it never starts the HTTP server or the deposit worker. See
-    // src/rotate_key.rs for the full operational sequence.
-    if std::env::args().nth(1).as_deref() == Some("--rotate-key") {
-        return aframp::rotate_key::run().await;
-    }
-
-    let config = AppConfig::from_env()?;
-    let state = Arc::new(build_state(&config).await?);
-
-    // Reconcile pending withdrawals on startup (older than 10 minutes)
-    if let Err(err) = aframp::services::withdrawals::reconcile_pending_withdrawals(
-        &state.db,
-        state.payment_provider.as_ref(),
-    )
-    .await
-    {
-        tracing::error!(error = %err, "failed to reconcile pending withdrawals on startup");
-    }
-
-    // Flipped to `true` on SIGTERM/Ctrl-C so the deposit worker stops between
-    // polls instead of being killed mid-deposit.
-    aframp::blockchain::worker::set_anomaly_thresholds(
-        aframp::blockchain::worker::DepositAnomalyThresholds {
-            max_single_stroops: config.max_single_deposit_stroops,
-            max_hourly_stroops: config.max_hourly_deposit_stroops,
-        },
-    );
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let worker = tokio::spawn(aframp::blockchain::worker::run(
-        state.clone(),
-        config.stellar_horizon_url.clone(),
-        config.stellar_poll_interval_secs,
-        config.stellar_poll_concurrency,
-        config.stellar_min_confirmations,
-        shutdown_rx,
-    ));
-
-    // Hard-delete expired+cancelled payment requests older than 30 days.
-    let cleanup_state = state.clone();
-    tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(60 * 60);
-        loop {
-            match aframp::services::payment_requests::hard_delete_expired_cancelled(
-                &cleanup_state.db,
-            )
-            .await
-            {
-                Ok(n) if n > 0 => {
-                    tracing::info!(
-                        deleted = n,
-                        "hard-deleted expired cancelled payment requests"
-                    )
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    tracing::warn!(error = %err, "payment request cleanup failed")
-                }
-            }
-            tokio::time::sleep(interval).await;
-        }
-    });
-    // Background OTP cleanup: deletes challenges older than 24 hours past
-    // expiry every hour. Prevents unbounded growth of the otp_challenges table.
-    // See services::otp::purge_stale_challenges for the retention policy.
-    {
-        let db = state.db.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600));
-            loop {
-                interval.tick().await;
-                match aframp::services::otp::purge_stale_challenges(&db).await {
-                    Ok(n) => tracing::info!(deleted = n, "otp_challenges cleanup complete"),
-                    Err(e) => tracing::error!(error = %e, "otp_challenges cleanup failed"),
-                }
-            }
-        });
-    }
-
-    // Auth travels as an HttpOnly cookie for browsers, so credentials are on —
-    // which means origins must be listed explicitly, never mirrored back.
-    let origins = config
-        .cors_allowed_origins
-        .iter()
-        .map(|origin| origin.parse::<HeaderValue>())
-        .collect::<Result<Vec<_>, _>>()?;
-    tracing::info!(?origins, "cors allowed origins");
-
-    if config.cookie.same_site == aframp::SameSite::None {
-        tracing::warn!(
-            "COOKIE_SAME_SITE=none sends the session on cross-site requests; \
-             serve the frontend same-origin instead if you can, or add CSRF tokens"
-        );
-    }
-
-    let cors = aframp::cors_layer(origins);
-
-    // Parsed and validated in AppConfig::from_env (invalid values fail startup).
-    let max_request_body_bytes = config.max_request_body_bytes;
-    tracing::info!(max_request_body_bytes, "request body limit configured");
-
-    let app = router((*state).clone())
-        .layer(cors)
-        // X-Request-ID: set before Trace so the id is on the request span,
-        // propagated after so it lands on the response. Incoming ids are
-        // only trusted if they're valid UUIDs (see SanitizingRequestId).
-        .layer(SetRequestIdLayer::new(
-            HeaderName::from_static("x-request-id"),
-            aframp::middleware::SanitizingRequestId,
-        ))
-        .layer(
-            TraceLayer::new_for_http().make_span_with(|req: &Request<axum::body::Body>| {
-                let request_id = req
-                    .headers()
-                    .get("x-request-id")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                tracing::info_span!(
-                    "request",
-                    method = %req.method(),
-                    uri = %req.uri(),
-                    request_id = %request_id,
-                )
-            }),
-        )
-        .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
-            "x-request-id",
-        )))
-        .layer(RequestBodyLimitLayer::new(max_request_body_bytes));
-
-    let address: SocketAddr = config.bind_addr.parse()?;
-    tracing::info!(%address, "aframp started");
-    // Connection info gives `/login` the peer IP for per-IP rate limiting.
-    axum::serve(
-        tokio::net::TcpListener::bind(address).await?,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
-
-    // The server has drained in-flight requests; let the worker finish its
-    // current poll, but don't hang shutdown on a stuck Horizon call.
-    let _ = shutdown_tx.send(true);
-    match tokio::time::timeout(std::time::Duration::from_secs(30), worker).await {
-        Ok(Ok(())) => tracing::info!("shutdown complete"),
-        Ok(Err(err)) => tracing::error!(error = %err, "deposit worker panicked"),
-        Err(_) => tracing::warn!("deposit worker did not stop within 30s; exiting anyway"),
-    }
-    Ok(())
+#[derive(Clone)]
+struct AppState {
+    rates_cache: Arc<Mutex<Option<CachedRates>>>,
 }
 
-/// Resolves on Ctrl-C or SIGTERM (what container platforms send on shutdown).
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(err) = tokio::signal::ctrl_c().await {
-            tracing::error!(error = %err, "failed to listen for Ctrl-C");
-            std::future::pending::<()>().await;
-        }
-    };
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                sigterm.recv().await;
-            }
-            Err(err) => {
-                tracing::error!(error = %err, "failed to listen for SIGTERM");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+#[derive(Clone)]
+struct CachedRates {
+    fetched_at: Instant,
+    payload: RatesResponse,
+}
 
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
+#[derive(Clone, Serialize)]
+struct AssetRate {
+    asset: String,
+    ngn: f64,
+}
+
+#[derive(Clone, Serialize)]
+struct RatesResponse {
+    rates: Vec<AssetRate>,
+    timestamp: u64,
+    source: String,
+}
+
+const RATES_TTL: Duration = Duration::from_secs(300);
+const RATES_SOURCE: &str = "aframp-internal";
+
+fn supported_assets() -> Vec<&'static str> {
+    vec!["XLM", "USDC", "NGNT"]
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+async fn fetch_ngn_rates() -> Vec<AssetRate> {
+    // Placeholder valuation source; replace with a real oracle/pricing feed.
+    supported_assets()
+        .into_iter()
+        .map(|asset| AssetRate {
+            asset: asset.to_string(),
+            ngn: match asset {
+                "XLM" => 250.0,
+                "USDC" => 1600.0,
+                "NGNT" => 1.0,
+                _ => 0.0,
+            },
+        })
+        .collect()
+}
+
+async fn get_rates(State(state): State<AppState>) -> impl IntoResponse {
+    let mut cache = state.rates_cache.lock().await;
+
+    if let Some(cached) = cache.as_ref() {
+        if cached.fetched_at.elapsed() < RATES_TTL {
+            return (StatusCode::OK, Json(cached.payload.clone())).into_response();
+        }
     }
-    tracing::info!("shutdown signal received; draining requests");
+
+    let payload = RatesResponse {
+        rates: fetch_ngn_rates().await,
+        timestamp: now_unix(),
+        source: RATES_SOURCE.to_string(),
+    };
+
+    *cache = Some(CachedRates {
+        fetched_at: Instant::now(),
+        payload: payload.clone(),
+    });
+
+    (StatusCode::OK, Json(payload)).into_response()
+}
+
+#[tokio::main]
+async fn main() {
+    let state = AppState {
+        rates_cache: Arc::new(Mutex::new(None)),
+    };
+
+    let app = Router::new()
+        .route("/rates", get(get_rates))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+        .await
+        .expect("failed to bind address");
+
+    axum::serve(listener, app).await.expect("server error");
 }
