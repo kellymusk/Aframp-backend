@@ -850,6 +850,32 @@ paths:
           schema:
             type: string
             enum: [detected, verified, confirmed, failed]
+        - name: from
+          in: query
+          required: false
+          description: >
+            Start of the date range, inclusive. ISO 8601 calendar date
+            (`YYYY-MM-DD`), interpreted as midnight UTC. Only payments created
+            on or after this date are returned. When combined with `cursor`,
+            the cursor still applies; the range narrows the result set.
+            A malformed date, or `from` later than `to`, returns 400
+            INVALID_PARAMETERS on field `from`.
+          schema:
+            type: string
+            format: date
+            example: '2025-03-01'
+        - name: to
+          in: query
+          required: false
+          description: >
+            End of the date range, inclusive. ISO 8601 calendar date
+            (`YYYY-MM-DD`), interpreted as 23:59:59.999 UTC. Only payments
+            created on or before this date are returned. A malformed date
+            returns 400 INVALID_PARAMETERS on field `to`.
+          schema:
+            type: string
+            format: date
+            example: '2025-03-31'
       responses:
         '200':
           description: Payments, newest first
@@ -957,7 +983,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [from, to, data]
+                required: [from, to, data, summary]
                 properties:
                   from:
                     type: string
@@ -976,10 +1002,30 @@ paths:
                       Ordered by `date` ascending.
                     items:
                       $ref: '#/components/schemas/DailyPaymentAggregate'
+                  summary:
+                    type: array
+                    description: >
+                      Per-asset daily breakdown of the same confirmed payments,
+                      so settlement dashboards do not have to aggregate `data`
+                      client-side. One entry per (asset, date) bucket that had
+                      at least one confirmed payment, ordered by `asset`
+                      ascending then `date` ascending. Always an array — an
+                      empty date range yields `[]`, never `null`.
+                    items:
+                      $ref: '#/components/schemas/DailyPaymentAggregate'
               example:
                 from: '2026-09-19'
                 to: '2026-10-19'
                 data:
+                  - date: '2026-10-01'
+                    count: 3
+                    total_stroops: 30000000
+                    asset: XLM
+                  - date: '2026-10-03'
+                    count: 1
+                    total_stroops: 5000000
+                    asset: XLM
+                summary:
                   - date: '2026-10-01'
                     count: 3
                     total_stroops: 30000000
