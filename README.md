@@ -627,3 +627,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1341 -->
 - #1341: security: merchant-facing account activity log
+
+<!-- handsoff-issue-1342 -->
+- #1342: auth: change the phone number used for OTP
