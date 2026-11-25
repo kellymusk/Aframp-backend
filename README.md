@@ -627,5 +627,16 @@ conventions, and the checklist reviewers expect.
 <!-- handsoff-issue-1337 -->
 - #1337: withdrawal: fee quote endpoint (amount received before confirming)
 
+<!-- handsoff-issue-1341 -->
+- #1341: security: merchant-facing account activity log
+
+<!-- handsoff-issue-1342 -->
+- #1342: auth: change the phone number used for OTP
+
+<!-- handsoff-issue-1343 -->
+- #1343: withdrawal: admin actions on failed withdrawals
+
+<!-- handsoff-issue-1344 -->
+- #1344: payments: refund endpoints the dashboard already calls don't exist
 <!-- handsoff-issue-1329 -->
 - #1329: payments: accept an Idempotency-Key on money-moving POSTs
