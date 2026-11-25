@@ -633,3 +633,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1343 -->
 - #1343: withdrawal: admin actions on failed withdrawals
+
+<!-- handsoff-issue-1344 -->
+- #1344: payments: refund endpoints the dashboard already calls don't exist
