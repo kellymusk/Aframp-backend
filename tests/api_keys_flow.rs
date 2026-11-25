@@ -6,6 +6,40 @@ use serde_json::json;
 
 use common::{ensure_merchant, send, state};
 
+/// #1499 — `POST /api-keys` must record the requesting IP in `api_keys.created_by_ip`.
+///
+/// Ignored until a maintainer adds the `created_by_ip` column and wires the
+/// `src/client_ip.rs` extraction into the create handler; see
+/// `docs/proposals/` for the proposal.
+#[tokio::test]
+#[ignore = "#1499: awaiting maintainer migration + handler wiring for api_keys.created_by_ip"]
+async fn api_key_records_creator_ip() {
+    let app = aframp::router(state().await);
+    let (token, _) = ensure_merchant(&app, "api_keys_creator_ip").await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/api-keys",
+        Some(&token),
+        Some(json!({ "environment": "test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let key_id = created["id"].as_str().unwrap().to_string();
+
+    // The test harness forwards a fixed client IP; the created row must echo it.
+    let expected_ip = common::TEST_CLIENT_IP;
+    let recorded: Option<String> = sqlx::query_scalar(
+        "SELECT created_by_ip FROM api_keys WHERE id = $1",
+    )
+    .bind(&key_id)
+    .fetch_one(state().await.pool())
+    .await
+    .expect("api_keys.created_by_ip must exist");
+    assert_eq!(recorded.as_deref(), Some(expected_ip));
+}
+
 #[tokio::test]
 async fn api_key_lifecycle() {
     let app = aframp::router(state().await);
