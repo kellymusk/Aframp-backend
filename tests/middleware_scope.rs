@@ -366,6 +366,56 @@ async fn admin_routes_require_admin_auth() {
             "admin route {method} {uri} must require admin auth, got {status}"
         );
     }
+// ── HSTS header tests (issue #1488) ──────────────────────────────────────────
+
+/// In production the router must emit `Strict-Transport-Security` on every
+/// response, so browsers are instructed to enforce HTTPS for future requests.
+#[tokio::test]
+async fn hsts_header_present_in_production() {
+    let mut state = common::state().await;
+    state.cookie_secure = true;
+    let app = router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    let hsts = response
+        .headers()
+        .get(axum::http::header::STRICT_TRANSPORT_SECURITY)
+        .expect("production responses must include Strict-Transport-Security");
+    let value = hsts.to_str().unwrap();
+    assert!(
+        value.contains("max-age="),
+        "HSTS header must carry a max-age directive, got: {value}"
+    );
+}
+
+/// In development the header must be absent so local plain-HTTP setups are
+/// not pinned to HTTPS by the browser.
+#[tokio::test]
+async fn hsts_header_absent_in_development() {
+    let mut state = common::state().await;
+    state.cookie_secure = false;
+    let app = router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.unwrap();
+
+    assert!(
+        response
+            .headers()
+            .get(axum::http::header::STRICT_TRANSPORT_SECURITY)
+            .is_none(),
+        "development responses must not include Strict-Transport-Security"
+    );
 }
 
 // ── documentation / design tests (no DB) ─────────────────────────────────────
