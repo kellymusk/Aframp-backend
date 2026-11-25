@@ -624,3 +624,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1337 -->
 - #1337: withdrawal: fee quote endpoint (amount received before confirming)
+
+<!-- handsoff-issue-1341 -->
+- #1341: security: merchant-facing account activity log
