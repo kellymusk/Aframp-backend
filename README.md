@@ -624,3 +624,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1337 -->
 - #1337: withdrawal: fee quote endpoint (amount received before confirming)
+
+<!-- handsoff-issue-960 -->
+- #960: Documentation: API.md does not document the sep7_uri field or SEP-0007 URI format
