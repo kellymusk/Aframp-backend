@@ -167,6 +167,25 @@ from `Dockerfile`) with the environment from the checklist below, and run
 `sqlx migrate run` before each release that adds a migration. Keep it to
 **one** process — see [the single-instance constraint](#the-single-instance-constraint).
 
+### HSTS
+
+When `APP_ENV=production` the backend emits
+`Strict-Transport-Security: max-age=31536000; includeSubDomains` on every
+response itself, so HSTS is present even if the proxy forgets it. The
+`header Strict-Transport-Security` directive in the Caddyfile above is
+therefore a defense-in-depth duplicate: the backend only adds the header when
+it is not already set (`if_not_present`), so the proxy's value wins whenever
+both are configured. Keep the two in sync, or drop the Caddy directive and let
+the backend own it.
+
+HSTS must only ever be served from an HTTPS origin — browsers that receive it
+over plain HTTP ignore it, and a misconfigured `max-age` on an HTTP-only host
+can lock users out of a working site. `includeSubDomains` additionally
+requires **every** subdomain of the domain to be reachable over HTTPS; if any
+subdomain is HTTP-only, remove `includeSubDomains` from both the backend and
+the proxy. In local development (`APP_ENV` unset or `development`) the header
+is suppressed entirely, so plain-HTTP `localhost` is unaffected.
+
 Behind a reverse proxy the backend's socket peer is the proxy, so per-IP
 login limits and the IPs in the auth audit logs would all be the proxy's. Set
 `TRUST_PROXY_HEADERS=true` to take the client address from `X-Forwarded-For`
@@ -207,6 +226,7 @@ secret is shorter than 32 bytes. See `src/config.rs` and `.env.example`.
 | `COOKIE_SAME_SITE` | no (`lax`) | `none` only for a cross-origin frontend. |
 | `DB_MAX_CONNECTIONS` / `DB_MIN_CONNECTIONS` / `DB_ACQUIRE_TIMEOUT_SECS` | no | Size to your Postgres tier's connection limit. |
 | `LOG_FORMAT` | no (`text`) | `json` for log aggregators. |
+| `APP_ENV` | no (`development`) | Set to `production` to enable HSTS (`Strict-Transport-Security: max-age=31536000; includeSubDomains`) on all responses. Suppressed otherwise. |
 
 ---
 
@@ -228,10 +248,12 @@ Replace `$HOST` with the Worker URL (or `https://pay.example.com/api` behind Cad
 5. **Webhook signature check** —
    `curl -i -X POST $HOST/webhooks/termii -H 'content-type: application/json' -d '{}'`
    → `403` (unsigned requests are rejected).
-6. **Cron keepalive** (Cloudflare) — after ~5 minutes, Workers →
+6. **HSTS** — `curl -sI $HOST/health | grep -i strict-transport-security`
+   returns `max-age=31536000; includeSubDomains` (requires `APP_ENV=production`).
+7. **Cron keepalive** (Cloudflare) — after ~5 minutes, Workers →
    `aframp-backend` → *Cron Events* shows successful runs.
-7. **Stellar polling** — logs show the deposit worker polling every
+8. **Stellar polling** — logs show the deposit worker polling every
    `STELLAR_POLL_INTERVAL_SECS` with no repeated Horizon errors.
-8. **End to end** — sign up a test merchant, create a wallet, send a small
+9. **End to end** — sign up a test merchant, create a wallet, send a small
    payment to it, and confirm `GET /balance` reflects it after
    `STELLAR_MIN_CONFIRMATIONS` ledgers.

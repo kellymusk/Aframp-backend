@@ -4,6 +4,7 @@ on:
   push:
     branches: [master, main]
   pull_request:
+    branches: [dev-backend]
 
 jobs:
   lockfile:
@@ -29,4 +30,11 @@ jobs:
       # exactly the drift this check exists to catch (a Cargo.toml version
       # bump committed without regenerating the lockfile, or vice versa).
       - name: Verify Cargo.lock is up to date
-        run: cargo check --locked --all-targets
+        run: |
+          if ! cargo check --locked --all-targets; then
+            echo "::error::Cargo.lock is out of date or inconsistent with Cargo.toml."
+            echo "::error::Do NOT modify Cargo.toml or Cargo.lock on dev-backend."
+            echo "::error::If you accidentally ran 'cargo add' or similar, revert the lockfile changes."
+            echo "::error::See CONTRIBUTING.md for the dependency policy on dev-backend."
+            exit 1
+          fi

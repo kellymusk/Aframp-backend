@@ -343,10 +343,61 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_423_locked() {
+        let retry_at = chrono::Utc::now() + chrono::Duration::seconds(60);
+        let resp = locked(retry_at);
+        assert_eq!(resp.0, StatusCode::LOCKED);
+        insta::assert_snapshot!(body_json(&resp));
+    }
+
+    #[test]
     fn snapshot_429_too_many_requests() {
         let resp = too_many_requests(ErrorCode::TooManyRequests, "rate limit exceeded");
         assert_eq!(resp.0, StatusCode::TOO_MANY_REQUESTS);
         insta::assert_snapshot!(body_json(&resp));
+    }
+
+    #[tokio::test]
+    async fn snapshot_429_includes_retry_after_header() {
+        use axum::body::Body;
+        use axum::routing::get;
+        use axum::Router;
+        use tower::ServiceExt;
+
+        async fn handler() -> (StatusCode, Json<ApiError>) {
+            too_many_requests(ErrorCode::TooManyRequests, "rate limit exceeded")
+        }
+
+        let app = Router::new()
+            .route("/limited", get(handler))
+            .layer(axum::middleware::from_fn(
+                crate::middleware::retry_after_header,
+            ));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/limited")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok()),
+            Some("60")
+        );
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("body is JSON");
+        insta::assert_json_snapshot!(body);
     }
 
     #[test]
