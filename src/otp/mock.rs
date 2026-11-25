@@ -12,6 +12,13 @@ pub struct MockOtpProvider;
 #[async_trait]
 impl OtpProvider for MockOtpProvider {
     async fn send_sms(&self, phone: &str, message: &str) -> Result<(), super::OtpSendError> {
+        #[cfg(not(test))]
+        tracing::debug!(
+            phone,
+            message = %mask_digits(message),
+            "mock OTP send (no real SMS delivered)"
+        );
+        #[cfg(test)]
         tracing::info!(phone, message, "mock OTP send (no real SMS delivered)");
         SENT.lock()
             .unwrap()
@@ -24,6 +31,28 @@ impl OtpProvider for MockOtpProvider {
     fn verify_webhook_signature(&self, _body: &[u8], signature: &str) -> bool {
         signature == "mock-signature"
     }
+}
+
+/// Mask the digits in a message body so OTP codes are never logged in
+/// plaintext. Keeps the first two digits (useful for correlating a log line
+/// with a specific send) and replaces every remaining digit with `*`.
+pub fn mask_digits(message: &str) -> String {
+    let mut seen = 0usize;
+    message
+        .chars()
+        .map(|c| {
+            if c.is_ascii_digit() {
+                seen += 1;
+                if seen <= 2 {
+                    c
+                } else {
+                    '*'
+                }
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// The message body most recently "sent" to `phone`, for tests to pull the
@@ -63,5 +92,23 @@ mod tests {
     #[test]
     fn extract_code_returns_none_without_a_code() {
         assert_eq!(extract_code("no digits here"), None);
+    }
+
+    #[test]
+    fn mask_digits_hides_otp_code() {
+        assert_eq!(
+            mask_digits("Your verification code is 482913"),
+            "Your verification code is 48****"
+        );
+    }
+
+    #[test]
+    fn mask_digits_keeps_short_numbers_visible() {
+        assert_eq!(mask_digits("code 42"), "code 42");
+    }
+
+    #[test]
+    fn mask_digits_leaves_non_digits_untouched() {
+        assert_eq!(mask_digits("no digits here"), "no digits here");
     }
 }

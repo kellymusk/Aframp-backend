@@ -126,6 +126,17 @@ async fn seed_payment_requests(db: &sqlx::PgPool, merchant_id: &str, address: &s
     }
 }
 
+/// Returns the cursor / has_more marker from a page response, if any.
+fn page_has_more(json: &Value) -> bool {
+    if let Some(has_more) = json.get("has_more").and_then(|v| v.as_bool()) {
+        return has_more;
+    }
+    if let Some(next) = json.get("next_cursor") {
+        return !next.is_null();
+    }
+    false
+}
+
 async fn assert_limit_matrix(app: axum::Router, token: &str, path: &str) {
     // Missing limit → default 50
     let (status, json) = send(app.clone(), "GET", path, Some(token), None).await;
@@ -232,4 +243,147 @@ async fn payment_requests_limit_boundaries() {
     let address = ensure_wallet(&app, &token).await;
     seed_payment_requests(&state.db, &merchant_id, &address, 210).await;
     assert_limit_matrix(app, &token, "/payment-requests").await;
+}
+
+/// #1496 — a merchant asking for `limit=500` must be clamped to the merchant
+/// maximum (200), never the admin maximum (500).
+#[tokio::test]
+async fn merchant_limit_is_clamped_to_200() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lim_merchant_cap").await;
+    let address = ensure_wallet(&app, &token).await;
+    seed_payments(&state.db, &merchant_id, &address, 510).await;
+
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        "/transactions?limit=500",
+/// #1504 — documents the *current* behaviour: an out-of-range `limit`
+/// (e.g. `limit=99999`) is silently clamped to 200 and the request succeeds
+/// with no indication the value was ignored. See
+/// docs/proposals/1126-query-limit-error-shape.md for the proposed change.
+#[tokio::test]
+async fn transactions_limit_99999_is_silently_clamped() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lim_tx_big").await;
+    let address = ensure_wallet(&app, &token).await;
+    seed_payments(&state.db, &merchant_id, &address, 210).await;
+
+    let (status, json) = send(
+        app,
+        "GET",
+        "/transactions?limit=99999",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "merchant limit=500: {json}");
+    let rows = page_items(&json).len();
+    assert_eq!(
+        rows, 200,
+        "merchant limit=500 must clamp to 200 (admin cap is 500): got {rows} rows"
+    );
+    assert!(
+        page_has_more(&json),
+        "merchant page clamped to 200 must signal more rows via has_more/next_cursor: {json}"
+    );
+}
+
+/// #1496 — an admin asking for `limit=500` is allowed the full admin maximum.
+#[tokio::test]
+async fn admin_limit_allows_up_to_500() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lim_admin_cap").await;
+    let address = ensure_wallet(&app, &token).await;
+    seed_payments(&state.db, &merchant_id, &address, 510).await;
+
+    let admin_token = common::ensure_admin(&app, "lim_admin_cap").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        "/admin/transactions?limit=500",
+        Some(&admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin limit=500: {json}");
+    let rows = page_items(&json).len();
+    assert_eq!(
+        rows, 500,
+        "admin limit=500 must be honoured (up to 500 rows): got {rows} rows"
+    );
+}
+
+/// #1496 — `limit=0` and negative limits are treated as the minimum of 1 row.
+#[tokio::test]
+async fn non_positive_limit_is_treated_as_one() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lim_nonpos").await;
+    let address = ensure_wallet(&app, &token).await;
+    seed_payments(&state.db, &merchant_id, &address, 10).await;
+
+    for raw in ["0", "-1", "-500"] {
+        let (status, json) = send(
+            app.clone(),
+            "GET",
+            &format!("/transactions?limit={raw}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "limit={raw}: {json}");
+        assert_eq!(
+            page_items(&json).len(),
+            1,
+            "limit={raw} must be treated as the minimum of 1 row"
+        );
+    }
+
+    // Current behaviour: 200 OK, clamped to the 200-row maximum, no error.
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "/transactions?limit=99999 must currently succeed (clamped): {json}"
+    );
+    assert_eq!(
+        page_items(&json).len(),
+        200,
+        "/transactions?limit=99999 must currently clamp to 200 rows: {json}"
+    );
+    assert!(
+        json.get("error").is_none(),
+        "current behaviour returns no error for out-of-range limit: {json}"
+    );
+}
+
+/// #1504 — the behaviour *proposed* by
+/// docs/proposals/1126-query-limit-error-shape.md: an out-of-range `limit`
+/// should be rejected with `400` and the documented JSON error shape
+/// `{ "error": "...", "code": "INVALID_PARAMETERS" }` instead of being
+/// silently clamped. Ignored until the proposal is implemented.
+#[tokio::test]
+#[ignore = "pending docs/proposals/1126-query-limit-error-shape.md: out-of-range limit should be 400 INVALID_PARAMETERS, not clamped"]
+async fn transactions_limit_99999_should_be_rejected() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lim_tx_rej").await;
+    let address = ensure_wallet(&app, &token).await;
+    seed_payments(&state.db, &merchant_id, &address, 210).await;
+
+    let (status, json) = send(
+        app,
+        "GET",
+        "/transactions?limit=99999",
+        Some(&token),
+        None,
+    )
+    .await;
+
+    // Proposed behaviour: 400 with the documented error shape.
+    assert_bad_limit(status, &json);
 }

@@ -614,6 +614,8 @@ conventions, and the checklist reviewers expect.
 <!-- handsoff-issue-1425 -->
 - #1425: Enhancement: add integration test for concurrent withdrawal requests exhausting daily limit
 
+<!-- handsoff-issue-1462 -->
+- #1462: Enhancement: add `GET /withdrawals/reconcile` admin endpoint to trigger manual reconciliation
 <!-- handsoff-issue-1470 -->
 - #1470: Bug: `reconcile_withdrawal_status` can double-refund when called concurrently for the same withdrawal
 

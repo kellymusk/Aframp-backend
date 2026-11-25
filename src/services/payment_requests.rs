@@ -56,6 +56,15 @@ pub enum PaymentRequestError {
     Database(#[from] sqlx::Error),
 }
 
+/// Canonicalises an asset code so `native` and `XLM` compare equal. Horizon
+/// reports the native asset as `XLM`, while payment requests may be created
+/// with `native`; storing/querying a single canonical form keeps the two in
+/// sync. Mirrors `same_asset()` in the blockchain worker.
+pub fn normalise_asset(asset: &str) -> String {
+    if asset.eq_ignore_ascii_case("native") {
+        "XLM".to_string()
+    } else {
+        asset.to_string()
 /// Returns the smallest-unit size in stroops for an asset, or `None` when the
 /// asset has no sub-stroop precision constraint (e.g. XLM, 7 decimal places).
 fn smallest_unit_stroops(asset: &str) -> Option<i64> {
@@ -104,6 +113,9 @@ pub async fn wallet_by_merchant_and_network(
 /// Cancelled rows report as `cancelled` regardless of expiry. Lives in the
 /// service layer so any caller (a webhook handler, a scheduled job) can use
 /// it without importing from `api::payment_requests`.
+///
+/// `cancelled_at` is checked first: a request cancelled before its expiry
+/// timestamp must report `cancelled`, not `pending`, until the expiry passes.
 pub fn effective_status(
     status: PaymentRequestStatus,
     expires_at: DateTime<Utc>,
@@ -147,6 +159,10 @@ pub async fn create_payment_request(
         return Err(PaymentRequestError::InvalidExpiry);
     }
     let expires_at = Utc::now() + Duration::seconds(ttl);
+
+    // Store the canonical asset form so a request created with `native`
+    // matches an incoming `XLM` deposit during payment-request matching.
+    let asset = normalise_asset(&asset);
 
     let mut attempt = 1;
     loop {
@@ -241,6 +257,43 @@ pub async fn payment_requests_by_merchant(
            JOIN wallets w ON w.id = pr.wallet_id
           WHERE pr.merchant_id = $1
             AND ($3 OR pr.cancelled_at IS NULL)
+          ORDER BY pr.created_at DESC
+          LIMIT $2"
+    ))
+    .bind(merchant_id)
+    .bind(limit)
+    .bind(include_cancelled)
+    .fetch_all(db)
+    .await
+}
+
+/// Finds a pending payment request by wallet address and memo, matching the
+/// asset in canonical form so a request stored as `native` still matches an
+/// incoming `XLM` deposit (and vice versa).
+pub async fn find_pending_by_wallet_and_memo(
+    db: &PgPool,
+    wallet_address: &str,
+    memo: &str,
+    asset: &str,
+) -> Result<Option<PaymentRequest>, sqlx::Error> {
+    let asset = normalise_asset(asset);
+    sqlx::query_as::<_, PaymentRequest>(&format!(
+        "SELECT {PR_COLS}
+           FROM payment_requests pr
+           JOIN wallets w ON w.id = pr.wallet_id
+          WHERE w.address = $1
+            AND pr.memo = $2
+            AND (pr.asset = $3 OR (pr.asset = 'native' AND $3 = 'XLM'))
+            AND pr.status = 'pending'
+            AND pr.cancelled_at IS NULL
+          LIMIT 1"
+    ))
+    .bind(wallet_address)
+    .bind(memo)
+    .bind(&asset)
+    .fetch_optional(db)
+    .await
+}
          
 
 /* … truncated 6774 chars — edit only what you need near the top … */
