@@ -216,6 +216,22 @@ pub async fn list(
         )
     })?;
     let limit = params.merchant_limit();
+
+    // Idempotency-key lookup: recover a single withdrawal by the key the
+    // client originally provided, so a lost creation response doesn't force
+    // a client to page through every withdrawal. Unknown keys answer with an
+    // empty page (200), never a 404.
+    if let Some(key) = &params.idempotency_key {
+        let row = withdrawals::find_by_idempotency_key(&state.db, merchant_id, key)
+            .await
+            .map_err(internal)?;
+        let views: Vec<WithdrawalView> = row.map(to_view).into_iter().collect();
+        return Ok(Json(Page::new(views, limit, |w| Cursor {
+            created_at: w.created_at,
+            id: w.id,
+        })));
+    }
+
     let cursor = match params.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)

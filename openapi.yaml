@@ -1035,9 +1035,12 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
-          description: Withdrawals, newest first
+          description: Withdrawals, newest first. When `idempotency_key` is
+            provided, returns the single withdrawal created with that key, or
+            an empty page when the key was never used (never 404).
           content:
             application/json:
               schema:
@@ -1630,6 +1633,15 @@ components:
         Opaque token from the previous page's `next_cursor`. Pages are keyed
         on (created_at, id), so rows created while paging never shift or
         repeat later pages. An invalid cursor returns 400.
+      schema: { type: string }
+    IdempotencyKey:
+      name: idempotency_key
+      in: query
+      required: false
+      description: >
+        The idempotency key originally sent with `POST /withdraw`. Returns the
+        single withdrawal created with that key (or an empty page when the key
+        was never used). Scoped to the authenticated merchant.
       schema: { type: string }
     AdminLimit:
       name: limit

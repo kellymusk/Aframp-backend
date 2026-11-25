@@ -18,6 +18,11 @@ pub const ADMIN_MAX_LIMIT: i64 = 500;
 pub struct ListParams {
     pub limit: Option<i64>,
     pub cursor: Option<String>,
+    /// Optional idempotency key lookup, withdrawals only. When set, the
+    /// endpoint returns the single withdrawal created with that key (or an
+    /// empty page when the key was never used) instead of the merchant's
+    /// full list.
+    pub idempotency_key: Option<String>,
 }
 
 impl ListParams {

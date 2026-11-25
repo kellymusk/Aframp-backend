@@ -777,6 +777,83 @@ async fn withdrawal_idempotency_key_returns_original_withdrawal() {
 }
 
 #[tokio::test]
+async fn withdrawal_lookup_by_idempotency_key_returns_same_row() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lookup_idem").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let key = "lookup-key-1";
+    let (status, created) = send_with_headers(
+        app.clone(),
+        "POST",
+        "/withdraw",
+        Some(&token),
+        Some(json!({
+            "amount_stroops": 2_000_000,
+            "asset": "cNGN",
+            "bank_code": "058",
+            "account_number": "0123456789"
+        })),
+        &[("Idempotency-Key", key)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "withdraw failed: {created}");
+    let id = created["id"].as_str().unwrap();
+
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        &format!("/withdrawals?idempotency_key={key}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "lookup failed: {json}");
+    let data = json["data"].as_array().expect("response must have a data array");
+    assert_eq!(data.len(), 1, "lookup must return exactly one row: {json}");
+    assert_eq!(data[0]["id"], id, "lookup must return the same withdrawal row");
+    assert_eq!(data[0]["amount_stroops"], 2_000_000);
+}
+
+#[tokio::test]
+async fn withdrawal_lookup_unknown_idempotency_key_returns_empty() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = ensure_merchant(&app, "lookup_unknown").await;
+
+    sqlx::query(
+        "INSERT INTO balances (merchant_id, asset, available, pending)
+         VALUES ($1::uuid, 'cNGN', 5_000_000, 0)",
+    )
+    .bind(&merchant_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        "/withdrawals?idempotency_key=does-not-exist",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unknown key must be 200: {json}");
+    let data = json["data"].as_array().expect("response must have a data array");
+    assert_eq!(data.len(), 0, "unknown key must return an empty page: {json}");
+    assert!(json["next_cursor"].is_null());
+}
+
+#[tokio::test]
 async fn withdrawal_paystack_timeout_refunds_balance_and_records_reason() {
     let mut state = state().await;
     state.payment_provider = Arc::new(TimeoutProvider);
