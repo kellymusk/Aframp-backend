@@ -213,8 +213,7 @@ Fill in `.env`:
 | `OTP_PROVIDER` | no | `termii` | `mock` logs the OTP to stdout instead of sending it (read it from `cargo run` output — no Termii account needed). `termii` sends a real SMS. Always use `mock` in local dev |
 | `TERMII_API_KEY` | no | — | Termii Dashboard → API Keys. Required only when `OTP_PROVIDER=termii` |
 | `TERMII_SENDER_ID` | no | `Aframp` | Sender name shown on the SMS. Must match an ID registered and approved in the Termii dashboard. Ignored when `OTP_PROVIDER=mock` |
-| `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight |
-| `CORS_ALLOWED_ORIGINS` | no | `http://localhost:3001` | Comma-separated browser origins allowed to call the API. Never mirrored back — an unlisted origin fails preflight. Each value is validated at startup (scheme `http`/`https`, host, no path/query, no `*` wildcard) — the app refuses to start rather than accept a malformed origin |
+| `CORS_ALLOWED_ORIGINS` | **required in production** | — | Comma-separated browser origins allowed to call the API (e.g. `https://app.example.com`). Never mirrored back — an unlisted origin fails preflight. If unset, the server logs a warning and allows no browser origins. Each entry is validated at startup (scheme `http`/`https`, host required, no path/query, no `*` wildcard) — the app refuses to start rather than accept a malformed origin |
 | `COOKIE_SECURE` | no | `true` | Whether the session cookie carries `Secure`. Leave on: browsers treat `localhost` as a secure context, so the default works in dev too. Only turn it off for a non-localhost plain-HTTP setup, which you should not have |
 | `COOKIE_SAME_SITE` | no | `lax` | `lax` or `none`. `none` (which forces `Secure`) is only for a frontend on a different origin, and lets the session ride cross-site requests — prefer serving the frontend same-origin |
 
@@ -617,3 +616,13 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1462 -->
 - #1462: Enhancement: add `GET /withdrawals/reconcile` admin endpoint to trigger manual reconciliation
+<!-- handsoff-issue-1470 -->
+- #1470: Bug: `reconcile_withdrawal_status` can double-refund when called concurrently for the same withdrawal
+
+<!-- handsoff-issue-1478 -->
+- #1478: Bug: `upsert_challenge` hourly count query includes unconsumed AND unexpired rows only — expired-but-unconsumed slots count against the cap incorrectly
+<!-- handsoff-issue-1336 -->
+- #1336: withdrawal: saved bank account beneficiaries
+
+<!-- handsoff-issue-1337 -->
+- #1337: withdrawal: fee quote endpoint (amount received before confirming)

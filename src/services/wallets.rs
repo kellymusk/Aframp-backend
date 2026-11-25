@@ -114,13 +114,32 @@ pub async fn wallet_by_merchant(
     .await
 }
 
-#[tracing::instrument(skip_all, err)]
-pub async fn all_wallets(db: &PgPool) -> Result<Vec<Wallet>, sqlx::Error> {
-    sqlx::query_as::<_, Wallet>(
-        "SELECT id, merchant_id, address, network, created_at, last_polled_cursor FROM wallets WHERE network = 'stellar'",
+/// Returns just the Stellar wallet addresses as a stream, so the caller can
+/// process them incrementally without buffering a `Vec<Wallet>` for every poll
+/// cycle. Only the `address` column is transferred — the other columns are not
+/// needed for building the poll list.
+pub fn stellar_wallet_addresses(
+    db: &PgPool,
+) -> impl futures_util::Stream<Item = Result<String, sqlx::Error>> + '_ {
+    sqlx::query_scalar::<_, String>(
+        "SELECT address FROM wallets WHERE network = 'stellar'",
     )
-    .fetch_all(db)
-    .await
+    .fetch(db)
+}
+
+/// Returns just the `(address, last_polled_cursor)` for Stellar wallets that
+/// are not in the skip list, as a stream. The worker uses this to build
+/// `AddressCursor` entries without loading the full `Wallet` row.
+pub fn pollable_wallet_addresses<'a>(
+    db: &'a PgPool,
+    skip: &'a [String],
+) -> impl futures_util::Stream<Item = Result<(String, Option<String>), sqlx::Error>> + 'a {
+    sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT address, last_polled_cursor FROM wallets
+          WHERE network = 'stellar' AND NOT (address = ANY($1))",
+    )
+    .bind(skip)
+    .fetch(db)
 }
 
 /// Stellar wallets to poll this cycle, leaving out addresses the listener is
