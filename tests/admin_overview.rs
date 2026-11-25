@@ -92,6 +92,69 @@ async fn admin_merchants_lists_multi_wallet_merchant_once() {
     assert_eq!(rows.data.iter().filter(|r| r.id == merchant_id).count(), 1);
 }
 
+/// #1501: the overview must expose `wallet_count` matching the number of
+/// wallets provisioned in the DB, both on the service struct and in the
+/// `GET /admin/overview` JSON payload.
+#[tokio::test]
+async fn admin_overview_includes_wallet_count() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, merchant_id) = common::ensure_merchant(&app, "admin_wallet_count").await;
+    let (status, json) = common::send(
+        app.clone(),
+        "POST",
+        "/wallet/create",
+        Some(&token),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "wallet create failed: {json}"
+    );
+
+    // Add a second wallet on a different network so the DB count is known.
+    let merchant_id: uuid::Uuid = merchant_id.parse().unwrap();
+    sqlx::query(
+        "INSERT INTO wallets (merchant_id, address, network, secret_key_encrypted)
+         VALUES ($1, $2, 'bitcoin', 'unused')",
+    )
+    .bind(merchant_id)
+    .bind(format!("bc1q{}", uuid::Uuid::new_v4().simple()))
+    .execute(&state.db)
+    .await
+    .expect("insert second wallet");
+
+    let expected: i64 = sqlx::query_scalar("SELECT count(*) FROM wallets")
+        .fetch_one(&state.db)
+        .await
+        .expect("count wallets");
+
+    let overview = aframp::services::admin::overview(&state.db)
+        .await
+        .expect("admin overview");
+    assert_eq!(
+        overview.wallet_count, expected,
+        "overview wallet_count must match the number of wallets in the DB"
+    );
+
+    let (status, json) = common::send(
+        app.clone(),
+        "GET",
+        "/admin/overview",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "overview failed: {json}");
+    assert_eq!(
+        json.get("wallet_count").and_then(|v| v.as_i64()),
+        Some(expected),
+        "GET /admin/overview must include wallet_count: {json}"
+    );
+}
+
 /// Admin lists are keyset-paginated: following `next_cursor` walks every row
 /// exactly once, newest first.
 #[tokio::test]

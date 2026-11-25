@@ -789,15 +789,16 @@ paths:
     get:
       tags: [Money]
       summary: Balances by asset
-      description: Returns an empty array for a new merchant — not an error.
+      description: >
+        Returns an empty `balances` array for a new merchant — not an error.
+        `supported_assets` lists every asset the API can hold and report, so
+        clients can discover assets dynamically instead of hardcoding them.
       responses:
         '200':
-          description: Balances
+          description: Balances plus the list of supported assets
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Balance' }
+              schema: { $ref: '#/components/schemas/BalanceEnvelope' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
@@ -2001,6 +2002,23 @@ components:
           nullable: true
           description: Present when status is paid (row updated_at at mark-paid).
 
+    BalanceEnvelope:
+      type: object
+      required: [supported_assets, balances]
+      properties:
+        supported_assets:
+          type: array
+          description: >
+            Every asset the API can hold and report, e.g. `["XLM", "cNGN"]`.
+            Use this for dynamic asset discovery instead of hardcoding asset
+            codes — new assets (e.g. USDC) appear here without a client update.
+          items: { type: string }
+          example: ["XLM", "cNGN"]
+        balances:
+          type: array
+          description: One entry per asset the merchant holds a balance in; empty for a new merchant.
+          items: { $ref: '#/components/schemas/Balance' }
+
     Balance:
       type: object
       required: [merchant_id, asset, available, pending, updated_at]
@@ -2176,11 +2194,20 @@ components:
 
     AdminOverview:
       type: object
-      required: [total_users, total_merchants, total_wallets, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
+      required: [total_users, total_merchants, total_wallets, wallet_count, balances_by_asset, payments_by_status, withdrawals_by_status, payment_requests_by_status]
       properties:
         total_users: { type: integer, format: int64 }
         total_merchants: { type: integer, format: int64 }
         total_wallets: { type: integer, format: int64 }
+        wallet_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Number of wallets provisioned across all merchants. Compare it to
+            `total_merchants` to gauge onboarding completion — the ratio shows
+            how many merchants have created a wallet.
+          example: 42
         balances_by_asset:
           type: array
           items: { $ref: '#/components/schemas/AssetTotal' }
