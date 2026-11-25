@@ -519,6 +519,10 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
+        cache.contains("public"),
+        "status response should be publicly cacheable, got {cache:?}"
+    );
+    assert!(
         cache.contains("max-age=5"),
         "expected short Cache-Control TTL, got {cache:?}"
     );
@@ -586,6 +590,49 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
     assert!(
         body["paid_at"].as_str().is_some(),
         "paid_at should be set when status is paid: {body}"
+    );
+}
+
+/// #1507 — the status endpoint must advertise a short, public cache TTL so
+/// CDNs and QR polling clients share the same 5-second freshness window.
+#[tokio::test]
+async fn status_endpoint_sets_public_cache_control() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_status_cache").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body, headers) = send_with_response_headers(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}/status"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "status poll failed: {body}");
+    let cache = headers
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cache.contains("public"),
+        "status response should be publicly cacheable, got {cache:?}"
+    );
+    assert!(
+        cache.contains("max-age=5"),
+        "status response should be cached for 5 seconds, got {cache:?}"
     );
 }
 

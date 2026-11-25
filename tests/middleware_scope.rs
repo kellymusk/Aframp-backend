@@ -155,6 +155,217 @@ async fn post_with_wrong_content_type_still_returns_415() {
     );
 }
 
+// ── route → middleware scope mapping ─────────────────────────────────────────
+//
+// Every route registered in `src/lib.rs` must appear in exactly one of the
+// tables below.  When a new route is added, add it here too — a route that
+// lands in the wrong scope (e.g. a protected route exposed publicly) will then
+// fail one of the tests in this section.
+//
+// Scope legend:
+//   PUBLIC   — no auth middleware; must NOT answer 401 without a token.
+//   MERCHANT — merchant auth required; must answer 401 without a token.
+//   ADMIN    — admin auth required; must answer 401 or 403 without an admin
+//              token.
+//
+// PUBLIC routes:
+//   GET  /health
+//   GET  /health/detailed
+//   GET  /admin
+//   POST /signup
+//   POST /login
+//   POST /refresh
+//   GET  /assets
+//   GET  /assets/{id}
+//   GET  /assets/{id}/history
+//   GET  /orderbook/{base}/{quote}
+//   GET  /trades/{base}/{quote}
+//   GET  /stats
+//   GET  /fee-estimate
+//   GET  /transactions/{hash}
+//   GET  /wallets/{address}/balances
+//   GET  /wallets/{address}/transactions
+//   GET  /payment-requests/{id}/status
+//   GET  /payment-requests/{id}/qr
+//   POST /payment-requests/{id}/expire
+//   POST /payment-requests/{id}/cancel
+//   GET  /webhooks/stellar
+//   POST /webhooks/stellar
+//
+// MERCHANT routes (merchant auth required):
+//   GET  /me
+//   GET  /me/transactions
+//   GET  /me/payment-requests
+//   POST /payment-requests
+//   GET  /payment-requests/{id}
+//   POST /payments
+//   GET  /payments/{id}
+//   POST /withdrawals
+//   GET  /withdrawals/{id}
+//   GET  /api-keys
+//   POST /api-keys
+//   DELETE /api-keys/{id}
+//   GET  /settings
+//   PUT  /settings
+//
+// ADMIN routes (admin auth required):
+//   GET  /admin/dashboard
+//   GET  /admin/events
+//   GET  /admin/merchants
+//   GET  /admin/merchants/{id}
+//   POST /admin/merchants/{id}/suspend
+//   POST /admin/merchants/{id}/unsuspend
+//   GET  /admin/users
+//   GET  /admin/users/{id}
+//   POST /admin/users/{id}/unlock
+//   GET  /admin/transactions
+//   GET  /admin/payment-requests
+//   GET  /admin/withdrawals
+//   GET  /admin/settings
+//   PUT  /admin/settings
+//   GET  /admin/api-keys
+
+/// Routes that must be reachable without any auth token.  A 401 here means a
+/// public route was accidentally placed behind an auth layer.
+const PUBLIC_ROUTES: &[&str] = &[
+    "/health",
+    "/health/detailed",
+    "/admin",
+    "/assets",
+    "/assets/1",
+    "/assets/1/history",
+    "/orderbook/XLM/USDC",
+    "/trades/XLM/USDC",
+    "/stats",
+    "/fee-estimate",
+    "/transactions/abc123",
+    "/wallets/GABC/balances",
+    "/wallets/GABC/transactions",
+    "/payment-requests/1/status",
+    "/payment-requests/1/qr",
+    "/webhooks/stellar",
+];
+
+/// Routes that require merchant auth.  Without a token they must answer 401.
+const MERCHANT_ROUTES: &[&str] = &[
+    "/me",
+    "/me/transactions",
+    "/me/payment-requests",
+    "/payment-requests/1",
+    "/payments/1",
+    "/withdrawals/1",
+    "/api-keys",
+    "/settings",
+];
+
+/// Routes that require admin auth.  Without an admin token they must answer
+/// 401 or 403.
+const ADMIN_ROUTES: &[&str] = &[
+    "/admin/dashboard",
+    "/admin/events",
+    "/admin/merchants",
+    "/admin/merchants/1",
+    "/admin/users",
+    "/admin/users/1",
+    "/admin/transactions",
+    "/admin/payment-requests",
+    "/admin/withdrawals",
+    "/admin/settings",
+    "/admin/api-keys",
+];
+
+/// `(method, uri)` pairs for write endpoints that require merchant auth.
+const MERCHANT_WRITE_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/payment-requests"),
+    ("POST", "/payments"),
+    ("POST", "/withdrawals"),
+    ("POST", "/api-keys"),
+    ("DELETE", "/api-keys/1"),
+    ("PUT", "/settings"),
+];
+
+/// `(method, uri)` pairs for admin write endpoints.
+const ADMIN_WRITE_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/admin/merchants/1/suspend"),
+    ("POST", "/admin/merchants/1/unsuspend"),
+    ("POST", "/admin/users/1/unlock"),
+    ("PUT", "/admin/settings"),
+];
+
+/// Send a request with no auth headers and return the status code.
+async fn send_no_auth(app: axum::Router, method: &str, uri: &str) -> StatusCode {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    app.oneshot(req).await.unwrap().status()
+}
+
+// ── middleware scope: public routes ──────────────────────────────────────────
+
+/// Every public route must be reachable without a token (never 401).
+#[tokio::test]
+async fn public_routes_do_not_require_auth() {
+    for uri in PUBLIC_ROUTES {
+        let app = router(common::state().await);
+        let status = send_no_auth(app, "GET", uri).await;
+        assert_ne!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "public route {uri} must not require auth, got {status}"
+        );
+    }
+}
+
+// ── middleware scope: merchant routes ────────────────────────────────────────
+
+/// Every merchant-auth route must reject an unauthenticated request with 401.
+#[tokio::test]
+async fn merchant_routes_require_auth() {
+    for uri in MERCHANT_ROUTES {
+        let app = router(common::state().await);
+        let status = send_no_auth(app, "GET", uri).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "merchant route {uri} must require auth, got {status}"
+        );
+    }
+
+    for (method, uri) in MERCHANT_WRITE_ROUTES {
+        let app = router(common::state().await);
+        let status = send_no_auth(app, method, uri).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "merchant route {method} {uri} must require auth, got {status}"
+        );
+    }
+}
+
+// ── middleware scope: admin routes ───────────────────────────────────────────
+
+/// Every admin route must reject an unauthenticated request with 401 or 403.
+#[tokio::test]
+async fn admin_routes_require_admin_auth() {
+    for uri in ADMIN_ROUTES {
+        let app = router(common::state().await);
+        let status = send_no_auth(app, "GET", uri).await;
+        assert!(
+            status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+            "admin route {uri} must require admin auth, got {status}"
+        );
+    }
+
+    for (method, uri) in ADMIN_WRITE_ROUTES {
+        let app = router(common::state().await);
+        let status = send_no_auth(app, method, uri).await;
+        assert!(
+            status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+            "admin route {method} {uri} must require admin auth, got {status}"
+        );
+    }
 // ── HSTS header tests (issue #1488) ──────────────────────────────────────────
 
 /// In production the router must emit `Strict-Transport-Security` on every
