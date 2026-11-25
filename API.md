@@ -321,6 +321,21 @@ Cursor handling is identical on every list endpoint: omit `cursor` for the
 first page; a present but malformed or tampered cursor is always rejected with
 the same `400` error body, regardless of endpoint.
 
+### `limit` behaviour
+
+Every list endpoint accepts `?limit=` (default **50**). The value is **clamped**, not rejected:
+
+| You send | You get |
+|---|---|
+| `limit=10` | 10 rows |
+| `limit=0` or a negative value | 1 row (clamped up to the minimum) |
+| `limit=200` | 200 rows |
+| `limit=99999` | 200 rows (clamped down to the maximum) — **no error, no indication the value was ignored** |
+
+So a client that asks for `limit=99999` receives a normal `200` with at most 200 rows and has no way to tell its value was capped. Treat `next_cursor` as the only signal that more data exists.
+
+> **Planned change (#1126):** out-of-range `limit` values will be rejected with `400 INVALID_PARAMETERS` and a message naming the allowed range, instead of being silently clamped. Until that lands, clamp client-side and don't rely on the server to report the effective limit. See [`docs/proposals/1126-query-limit-error-shape.md`](docs/proposals/1126-query-limit-error-shape.md).
+
 ## Endpoints
 
 ### `GET /health`
@@ -488,6 +503,7 @@ Auth required (merchant account). Body: `{ "name"?: string, "email"?: string }` 
 `200` → `{ "merchant_id": "...", "name": "...", "email": "<address on file>" | null, "pending_email": null | "..." }`. `400` with `field` for invalid input.
 
 ### `POST /merchants/me/email/confirm`
+Auth required. Body: `{ "token": string }`. Moves `pending
 Auth required. Body: `{ "token": string }`. Moves `pending_email` into `email`. `200` → same shape as `PATCH /merchants/me`; `400 OTP_INVALID` if the token is wrong or expired, or no change is pending.
 
 ### `DELETE /me`
