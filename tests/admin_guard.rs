@@ -195,6 +195,138 @@ async fn admin_dashboard_sends_security_headers() {
     assert_eq!(headers["x-content-type-options"], "nosniff");
 }
 
+/// Creates a user (via the merchant signup flow) and returns its email and
+/// phone number so search tests can look it up by either field.
+async fn create_searchable_user(app: &axum::Router, prefix: &str) -> (String, String) {
+    let (_, merchant_id) = ensure_merchant(app, prefix).await;
+    let (email, phone): (String, String) = sqlx::query_as(
+        "SELECT email, phone_number FROM users
+          WHERE id = (SELECT user_id FROM merchants WHERE id = $1::uuid)",
+    )
+    .bind(&merchant_id)
+    .fetch_one(&state().await.db)
+    .await
+    .unwrap();
+    (email, phone)
+}
+
+/// Extracts the `id` of every user row in an `/admin/users` page.
+fn user_ids(page: &serde_json::Value) -> Vec<String> {
+    page["data"]
+        .as_array()
+        .expect("admin users page should carry a data array")
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn admin_users_search_by_email_returns_only_the_match() {
+    let (app, db) = app_and_db().await;
+    let token = admin_token(&app, &db).await;
+
+    let (email, _) = create_searchable_user(&app, "admin_guard_search_email").await;
+    // A second, unrelated user that must not show up in the results.
+    let (other_email, _) = create_searchable_user(&app, "admin_guard_search_other").await;
+
+    let (_, me) = send(app.clone(), "GET", "/me", Some(&token), None).await;
+    let admin_id = me["user_id"].as_str().unwrap().to_string();
+
+    let path = format!("/admin/users?q={}", urlencoding::encode(&email));
+    let (status, json) = send(app.clone(), "GET", &path, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "search should succeed: {json}");
+
+    let ids = user_ids(&json);
+    assert!(
+        ids.iter().any(|id| id != &admin_id),
+        "search for {email} should return the matching user: {json}"
+    );
+    let emails: Vec<&str> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["email"].as_str().unwrap())
+        .collect();
+    assert!(
+        emails.contains(&email.as_str()),
+        "search for {email} should include that user: {json}"
+    );
+    assert!(
+        !emails.contains(&other_email.as_str()),
+        "search for {email} must not include unrelated users: {json}"
+    );
+}
+
+#[tokio::test]
+async fn admin_users_search_by_phone_prefix_returns_the_match() {
+    let (app, db) = app_and_db().await;
+    let token = admin_token(&app, &db).await;
+
+    let (email, phone) = create_searchable_user(&app, "admin_guard_search_phone").await;
+    let (other_email, _) = create_searchable_user(&app, "admin_guard_search_phone_other").await;
+
+    // Search on a prefix of the phone number, not the whole value.
+    let prefix = &phone[..phone.len().min(8)];
+    let path = format!("/admin/users?q={}", urlencoding::encode(prefix));
+    let (status, json) = send(app.clone(), "GET", &path, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "phone search should succeed: {json}");
+
+    let emails: Vec<&str> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["email"].as_str().unwrap())
+        .collect();
+    assert!(
+        emails.contains(&email.as_str()),
+        "phone prefix {prefix} should match {email}: {json}"
+    );
+    assert!(
+        !emails.contains(&other_email.as_str()),
+        "phone prefix {prefix} must not match unrelated users: {json}"
+    );
+}
+
+#[tokio::test]
+async fn admin_users_search_is_guarded_for_non_admins() {
+    let (app, _) = app_and_db().await;
+    let (token, _) = ensure_merchant(&app, "admin_guard_search_merchant").await;
+
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        "/admin/users?q=alice@example.com",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "merchant must not search admin users: {json}"
+    );
+    assert_eq!(json["code"], "FORBIDDEN");
+    assert!(
+        !json.is_array(),
+        "search must not leak rows to a merchant: {json}"
+    );
+
+    let (status, json) = send(
+        app.clone(),
+        "GET",
+        "/admin/users?q=alice@example.com",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "anonymous must not search admin users: {json}"
+    );
+    assert_eq!(json["code"], "INVALID_CREDENTIALS");
+}
+
 /// Gives the admin behind `token` the given `admin_role` (read per request).
 async fn set_admin_role(app: &axum::Router, db: &PgPool, token: &str, role: Option<&str>) {
     let (_, me) = send(app.clone(), "GET", "/me", Some(token), None).await;

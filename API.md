@@ -1042,6 +1042,36 @@ The `/admin` dashboard's login form uses the old one-step `/login` flow. If the 
 
 3. **The dashboard now handles the OTP step inline** — if `/login` returns a `challenge_id`, a code-entry form is shown automatically (see the updated `admin_dashboard.html`).
 
+### `GET /admin/users`
+
+Admin only (`is_admin`). Lists users with cursor pagination, newest first.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` | string | — | Optional search term for operator lookups. See semantics below. |
+| `limit` | integer | 50 | Page size, clamped 1–200. |
+| `cursor` | string | — | Opaque keyset cursor from a previous page. |
+
+**Search semantics (`q`):**
+
+- Leading/trailing whitespace is trimmed; an empty or whitespace-only `q` is treated as absent (no filter).
+- If `q` contains `@`, it is matched as an **email prefix** (case-insensitive), e.g. `q=alice@example.com` or `q=alice@ex`.
+- Otherwise `q` is normalized as a Nigerian phone number and matched against the stored E.164 number — an **exact** match on the normalized form, plus a **prefix** match on the digits, so `q=0801112` and `q=+234801112` both find `+2348011122233`.
+- A `q` that is neither a plausible email prefix nor a parseable phone fragment returns `400 INVALID_PARAMETERS` with `field: "q"` rather than silently returning every user.
+
+Search combines with pagination: keep sending the same `q` alongside each `cursor`.
+
+`200` → `{ "data": [ ...user objects... ], "next_cursor": "<token>" | null }`, where each user object is the same shape `GET /me` returns (minus the merchant fields): `user_id`, `email`, `name`, `phone_number`, `phone_verified`, `is_admin`, `created_at`.
+
+Errors: `400 INVALID_PARAMETERS` for a malformed `q` or `cursor`; `403 FORBIDDEN` for a non-admin caller.
+
+### `GET /admin/webhooks/health`
+
+Admin only (`is_admin`). Lists merchants whose webhook endpoint looks unreachable, so the operator can be alerted instead of discovering it from support tickets.
+
+A merchant is listed when its **most recent consecutive failed deliveries** reach the threshold: the endpoint is queried for `webhook_deliveries` rows with `status = 'failed'` and the merchant is included when it has **more than 5 consecutive failures** (i.e. 6 or more in a row, counting back from the latest delivery; a single `delivered` row resets the streak). The threshold is configurable server-side via `WEBHOOK_HEALTH_FAILURE_THRESHOLD` and defaults to `5`.
 ### `GET /admin/overview`
 
 Auth required (admin only — `403 FORBIDDEN` for a non-admin). Dashboard summary of platform-wide totals.
@@ -1049,6 +1079,18 @@ Auth required (admin only — `403 FORBIDDEN` for a non-admin). Dashboard summar
 `200` →
 ```json
 {
+  "threshold": 5,
+  "data": [
+    {
+      "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
+      "merchant_name": "Shop Name",
+      "webhook_url": "https://merchant.example.com/webhooks/aframp",
+      "consecutive_failures": 7,
+      "last_failure_at": "2026-08-13T17:10:52.853489Z",
+      "last_success_at": "2026-08-13T09:02:11.000000Z",
+      "last_error": "connection refused"
+    }
+  ]
   "merchant_count": 42,
   "user_count": 57,
   "wallet_count": 31,
@@ -1060,6 +1102,19 @@ Auth required (admin only — `403 FORBIDDEN` for a non-admin). Dashboard summar
 ```
 
 | Field | Type | Description |
+|-------|------|-------------|
+| `threshold` | integer | The consecutive-failure count a merchant must exceed to be listed. |
+| `merchant_id` | string (UUID) | The affected merchant. |
+| `merchant_name` | string | Display name for the admin dashboard. |
+| `webhook_url` | string \| null | The endpoint that is failing; `null` if the merchant has no URL configured. |
+| `consecutive_failures` | integer | Length of the current failure streak. |
+| `last_failure_at` | string (RFC 3339) | When the most recent failed delivery was attempted. |
+| `last_success_at` | string (RFC 3339) \| null | Most recent successful delivery, or `null` if the endpoint has never succeeded. |
+| `last_error` | string \| null | The most recent delivery error, for triage. |
+
+The list is ordered by `consecutive_failures` descending, so the worst-off merchant comes first. An empty `data` array means every merchant's webhook is healthy. This endpoint is read-only — it does not retry deliveries; a merchant's endpoint recovers on its own once it starts returning `2xx`.
+
+Errors: `403 FORBIDDEN` for a non-admin caller. See `docs/proposals/1484-webhook-health-check.md`.
 |---|---|---|
 | `merchant_count` | integer | Number of merchants on the platform. |
 | `user_count` | integer | Number of user accounts. |

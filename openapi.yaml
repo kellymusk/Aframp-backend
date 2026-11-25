@@ -1230,12 +1230,26 @@ paths:
     get:
       tags: [Admin]
       summary: All users
+      description: >
+        Lists users with cursor pagination. Pass `q` to search for a single
+        account during a support lookup instead of paging the whole list.
       security:
         - adminBearerAuth: []
         - adminCookieAuth: []
       parameters:
         - $ref: '#/components/parameters/AdminLimit'
         - $ref: '#/components/parameters/Cursor'
+        - name: q
+          in: query
+          required: false
+          description: >
+            Optional search term. An email prefix match (case-insensitive,
+            e.g. `alice@example.com` or `alice@`) or a phone number prefix
+            match against the stored E.164 number (e.g. `+234801` or `0801`).
+            Matching is anchored at the start of the field, not a substring
+            search. Results are still cursor-paginated; `next_cursor` is null
+            when all matches fit on one page.
+          schema: { type: string, minLength: 1, maxLength: 254 }
       x-admin-roles: [super_admin, support]
       responses:
         '200':
@@ -1253,6 +1267,33 @@ paths:
                     type: string
                     nullable: true
                     description: Pass as `cursor` to fetch the next page; null on the last page.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/webhooks/health:
+    get:
+      tags: [Admin]
+      summary: Merchants whose outbound webhooks are failing
+      description: >
+        Surfaces merchants whose webhook endpoint has been unreachable for a
+        run of consecutive failed deliveries (rows in `webhook_deliveries`
+        with `status = 'failed'`), so an operator can alert them before they
+        silently miss `payment.confirmed` notifications. Only merchants at or
+        above the consecutive-failure threshold are listed; a healthy merchant
+        is omitted rather than returned with a zero count. Ordered by
+        `consecutive_failures` descending.
+      security:
+        - adminBearerAuth: []
+        - adminCookieAuth: []
+      x-admin-roles: [super_admin, support]
+      responses:
+        '200':
+          description: Merchants with failing webhooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminWebhookHealthRow' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -2387,6 +2428,30 @@ components:
         created_at: { type: string, format: date-time }
         merchant_id: { type: string, format: uuid, nullable: true }
         merchant_name: { type: string, nullable: true }
+
+    AdminWebhookHealthRow:
+      type: object
+      required: [merchant_id, merchant_name, url, consecutive_failures, last_failed_at]
+      properties:
+        merchant_id: { type: string, format: uuid }
+        merchant_name: { type: string }
+        url:
+          type: string
+          format: uri
+          description: The merchant's registered webhook URL that is failing.
+        consecutive_failures:
+          type: integer
+          minimum: 1
+          description: Number of most recent deliveries that failed back to back.
+          example: 5
+        last_failed_at:
+          type: string
+          format: date-time
+          description: When the most recent failed delivery was attempted.
+        last_status_code:
+          type: integer
+          nullable: true
+          description: HTTP status returned by the endpoint on the last attempt, if any.
 
     AdminMerchantRow:
       type: object
