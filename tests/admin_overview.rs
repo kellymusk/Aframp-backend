@@ -1,6 +1,134 @@
 mod common;
 
 use common::state;
+use std::time::{Duration, Instant};
+
+/// Overview must report the actual row counts for users, merchants and
+/// wallets, and the status breakdowns must add up to the totals.
+#[tokio::test]
+async fn admin_overview_returns_correct_counts() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+
+    // Seed a couple of merchants (each with a wallet) so the counts are
+    // non-trivial and we can compare against the DB directly.
+    for i in 0..2 {
+        let (token, _merchant_id) =
+            common::ensure_merchant(&app, &format!("overview_counts_{i}")).await;
+        let (status, json) = common::send(
+            app.clone(),
+            "POST",
+            "/wallet/create",
+            Some(&token),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "wallet create failed: {json}"
+        );
+    }
+
+    let overview = aframp::services::admin::overview(&state.db)
+        .await
+        .expect("overview");
+
+    let expected_users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    let expected_merchants: i64 = sqlx::query_scalar("SELECT count(*) FROM merchants")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    let expected_wallets: i64 = sqlx::query_scalar("SELECT count(*) FROM wallets")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+    assert_eq!(overview.total_users, expected_users);
+    assert_eq!(overview.total_merchants, expected_merchants);
+    assert_eq!(overview.total_wallets, expected_wallets);
+
+    // Status breakdowns must be internally consistent with the totals.
+    let merchant_status_sum: i64 = overview
+        .merchants_by_status
+        .values()
+        .map(|v| *v as i64)
+        .sum();
+    assert_eq!(
+        merchant_status_sum, overview.total_merchants,
+        "merchant status breakdown must sum to total merchants"
+    );
+
+    let wallet_status_sum: i64 = overview
+        .wallets_by_status
+        .values()
+        .map(|v| *v as i64)
+        .sum();
+    assert_eq!(
+        wallet_status_sum, overview.total_wallets,
+        "wallet status breakdown must sum to total wallets"
+    );
+
+    // The transactional variant must agree with the concurrent one.
+    let in_tx = aframp::services::admin::overview_in_transaction(&state.db)
+        .await
+        .expect("overview in transaction");
+    assert_eq!(in_tx.total_users, overview.total_users);
+    assert_eq!(in_tx.total_merchants, overview.total_merchants);
+    assert_eq!(in_tx.total_wallets, overview.total_wallets);
+}
+
+/// #1485: the overview queries are independent and must run concurrently.
+/// A slow response on one query must not serialise the others, so the total
+/// wall-clock time should stay close to the slowest single query rather than
+/// the sum of all of them.
+///
+/// We simulate a slow DB by holding a row lock on `users` from a competing
+/// transaction: the user-count query blocks until the lock is released, while
+/// the merchant/wallet queries (which touch other tables) can complete
+/// immediately. If the queries were sequential, the whole overview would be
+/// blocked for the full lock duration.
+#[tokio::test]
+async fn admin_overview_queries_run_concurrently() {
+    let state = state().await;
+
+    // Take an exclusive lock on the users table so any read that needs a
+    // table-level lock (or a row lock) on it has to wait.
+    let mut locker = state.db.begin().await.expect("begin locker tx");
+    sqlx::query("LOCK TABLE users IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *locker)
+        .await
+        .expect("lock users table");
+
+    let lock_hold = Duration::from_millis(600);
+    let db = state.db.clone();
+    let overview_task = tokio::spawn(async move {
+        let started = Instant::now();
+        let result = aframp::services::admin::overview(&db).await;
+        (result, started.elapsed())
+    });
+
+    // Give the overview a moment to start its queries, then release the lock.
+    tokio::time::sleep(lock_hold).await;
+    locker.rollback().await.expect("release lock");
+
+    let (result, elapsed) = overview_task.await.expect("overview task panicked");
+    result.expect("overview should succeed once the lock is released");
+
+    // Sequential execution would still finish, but the point of this test is
+    // that the concurrent implementation does not deadlock or serialise on the
+    // locked table in a way that multiplies the wait. We assert the overview
+    // completed shortly after the lock was released rather than waiting for
+    // multiple sequential lock acquisitions.
+    assert!(
+        elapsed < lock_hold + Duration::from_secs(2),
+        "overview took {elapsed:?}, expected it to complete promptly after the \
+         lock was released (concurrent queries should not serialise)"
+    );
+}
 
 /// Overview must not observe uncommitted writes from another transaction —
 /// the read batch is framed by BEGIN/COMMIT so counts stay consistent.

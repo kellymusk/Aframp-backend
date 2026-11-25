@@ -18,7 +18,19 @@ use crate::models::{
 };
 use crate::pagination::{Cursor, Page};
 use crate::services::admin;
+use crate::services::merchant_webhooks;
 use crate::AppState;
+
+/// Query parameters for `GET /admin/users`. Extends the standard cursor
+/// pagination with an optional `q` search term matched against email prefix
+/// or exact phone number.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct AdminUserListParams {
+    #[serde(flatten)]
+    pub list: ListParams,
+    /// Search term: email prefix or exact phone number.
+    pub q: Option<String>,
+}
 
 pub async fn overview(
     State(state): State<AppState>,
@@ -32,17 +44,18 @@ pub async fn overview(
 pub async fn users(
     State(state): State<AppState>,
     admin: AdminUser,
-    Query(params): Query<ListParams>,
+    Query(params): Query<AdminUserListParams>,
 ) -> ApiResult<Json<Page<AdminUserRow>>> {
     admin.require_pii()?;
-    let cursor = match params.cursor.as_deref() {
+    let cursor = match params.list.cursor.as_deref() {
         Some(raw) => Some(
             Cursor::decode(raw)
                 .ok_or_else(|| bad_request(ErrorCode::InvalidParameters, "invalid cursor"))?,
         ),
         None => None,
     };
-    let page = admin::users(&state.db, params.admin_limit(), cursor)
+    let query = params.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let page = admin::users(&state.db, params.list.admin_limit(), cursor, query)
         .await
         .map_err(internal)?;
     Ok(Json(page))
@@ -141,6 +154,20 @@ pub async fn payment_requests(
         .await
         .map_err(internal)?;
     Ok(Json(page))
+}
+
+/// `GET /admin/webhooks/health` — list merchants whose webhook endpoint has
+/// failed `threshold` or more consecutive deliveries. Surfaces silent webhook
+/// outages so operators can alert the merchant.
+pub async fn webhooks_health(
+    State(state): State<AppState>,
+    admin: AdminUser,
+) -> ApiResult<Json<Vec<merchant_webhooks::WebhookHealthRow>>> {
+    admin.require_pii()?;
+    let rows = merchant_webhooks::unhealthy_merchants(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(rows))
 }
 
 /// Server-Sent Events stream of live admin activity. Protected by `AdminUser`,
