@@ -630,3 +630,6 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1342 -->
 - #1342: auth: change the phone number used for OTP
+
+<!-- handsoff-issue-1343 -->
+- #1343: withdrawal: admin actions on failed withdrawals
