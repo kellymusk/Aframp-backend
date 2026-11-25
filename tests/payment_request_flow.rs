@@ -519,6 +519,10 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(
+        cache.contains("public"),
+        "status response should be publicly cacheable, got {cache:?}"
+    );
+    assert!(
         cache.contains("max-age=5"),
         "expected short Cache-Control TTL, got {cache:?}"
     );
@@ -586,6 +590,49 @@ async fn status_endpoint_reports_pending_expired_and_paid() {
     assert!(
         body["paid_at"].as_str().is_some(),
         "paid_at should be set when status is paid: {body}"
+    );
+}
+
+/// #1507 — the status endpoint must advertise a short, public cache TTL so
+/// CDNs and QR polling clients share the same 5-second freshness window.
+#[tokio::test]
+async fn status_endpoint_sets_public_cache_control() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_status_cache").await;
+    create_wallet(&app, &token).await;
+
+    let (status, created) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create failed: {created}");
+    let id = created["id"].as_str().unwrap();
+
+    let (status, body, headers) = send_with_response_headers(
+        app.clone(),
+        "GET",
+        &format!("/payment-requests/{id}/status"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "status poll failed: {body}");
+    let cache = headers
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        cache.contains("public"),
+        "status response should be publicly cacheable, got {cache:?}"
+    );
+    assert!(
+        cache.contains("max-age=5"),
+        "status response should be cached for 5 seconds, got {cache:?}"
     );
 }
 
@@ -1095,6 +1142,96 @@ async fn payment_request_description_over_140_chars_is_rejected() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["field"], "description");
+}
+
+/// #1460 — GET /payment-requests?asset= returns only requests for that asset.
+#[tokio::test]
+async fn payment_request_list_filters_by_asset() {
+    let state = state().await;
+    let app = aframp::router(state.clone());
+    let (token, _) = ensure_merchant(&app, "pr_asset_filter").await;
+    create_wallet(&app, &token).await;
+
+    // Create one XLM and one cNGN payment request under the same merchant.
+    let (status, xlm) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 10_000_000, "asset": "XLM" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "XLM create failed: {xlm}");
+
+    let (status, cngn) = send(
+        app.clone(),
+        "POST",
+        "/payment-requests",
+        Some(&token),
+        Some(json!({ "amount_stroops": 20_000_000, "asset": "cNGN" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "cNGN create failed: {cngn}");
+
+    // Filter to cNGN only — must return exactly the one cNGN request.
+    let (status, list) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests?asset=cNGN",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "cNGN filter failed: {list}");
+    let rows = list["data"].as_array().expect("expected data array");
+    assert_eq!(rows.len(), 1, "expected only the cNGN request: {list}");
+    assert_eq!(rows[0]["asset"], "cNGN");
+    assert_eq!(rows[0]["id"], cngn["id"]);
+
+    // Filter to XLM only — must return exactly the one XLM request.
+    let (status, list) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests?asset=XLM",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "XLM filter failed: {list}");
+    let rows = list["data"].as_array().expect("expected data array");
+    assert_eq!(rows.len(), 1, "expected only the XLM request: {list}");
+    assert_eq!(rows[0]["asset"], "XLM");
+    assert_eq!(rows[0]["id"], xlm["id"]);
+
+    // No filter — both requests are returned.
+    let (status, list) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unfiltered list failed: {list}");
+    let rows = list["data"].as_array().expect("expected data array");
+    assert_eq!(rows.len(), 2, "expected both requests with no filter: {list}");
+
+    // Unknown asset — empty list, not an error.
+    let (status, list) = send(
+        app.clone(),
+        "GET",
+        "/payment-requests?asset=USDC",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unknown asset filter failed: {list}");
+    let rows = list["data"].as_array().expect("expected data array");
+    assert_eq!(
+        rows.len(),
+        0,
+        "unknown asset should return an empty list, not an error: {list}"
+    );
 }
 
 /// A deposit whose memo matches a request but in a different asset (XLM

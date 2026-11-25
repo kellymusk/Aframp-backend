@@ -321,6 +321,21 @@ Cursor handling is identical on every list endpoint: omit `cursor` for the
 first page; a present but malformed or tampered cursor is always rejected with
 the same `400` error body, regardless of endpoint.
 
+### `limit` behaviour
+
+Every list endpoint accepts `?limit=` (default **50**). The value is **clamped**, not rejected:
+
+| You send | You get |
+|---|---|
+| `limit=10` | 10 rows |
+| `limit=0` or a negative value | 1 row (clamped up to the minimum) |
+| `limit=200` | 200 rows |
+| `limit=99999` | 200 rows (clamped down to the maximum) — **no error, no indication the value was ignored** |
+
+So a client that asks for `limit=99999` receives a normal `200` with at most 200 rows and has no way to tell its value was capped. Treat `next_cursor` as the only signal that more data exists.
+
+> **Planned change (#1126):** out-of-range `limit` values will be rejected with `400 INVALID_PARAMETERS` and a message naming the allowed range, instead of being silently clamped. Until that lands, clamp client-side and don't rely on the server to report the effective limit. See [`docs/proposals/1126-query-limit-error-shape.md`](docs/proposals/1126-query-limit-error-shape.md).
+
 ## Endpoints
 
 ### `GET /health`
@@ -515,6 +530,7 @@ Auth required (merchant account). Body: `{ "name"?: string, "email"?: string }` 
 `200` → `{ "merchant_id": "...", "name": "...", "email": "<address on file>" | null, "pending_email": null | "..." }`. `400` with `field` for invalid input.
 
 ### `POST /merchants/me/email/confirm`
+Auth required. Body: `{ "token": string }`. Moves `pending
 Auth required. Body: `{ "token": string }`. Moves `pending_email` into `email`. `200` → same shape as `PATCH /merchants/me`; `400 OTP_INVALID` if the token is wrong or expired, or no change is pending.
 
 ### `DELETE /me`
@@ -639,6 +655,7 @@ Query:
 - `?limit=` (default 50, clamped 1–200)
 - `?cursor=` opaque keyset cursor from a previous page
 - `?include_cancelled=true` to include soft-deleted requests (default: excluded)
+- `?asset=` only requests for the given asset (e.g. `XLM`, `cNGN`). Case-sensitive, stored verbatim. An unrecognised value returns an empty list rather than a `400` — the asset space is open-ended.
 
 `200` → `{ "data": [ ... ], "next_cursor": "..." | null }`.
 
@@ -695,6 +712,52 @@ Deposit detection still runs on a timer (`STELLAR_POLL_INTERVAL_SECS`, default 6
 
 `404` if the id doesn't exist.
 
+#### Payment Request Polling
+
+This is the endpoint to poll from a customer-facing QR payment screen. It's public (no auth), tiny, and cheap to call — but it is not free, so pick a sane interval.
+
+**Recommended interval: 5–10 seconds.** The response carries `Cache-Control: public, max-age=5`, so a poll inside that 5-second window can be served from the browser cache or a CDN without reaching the API at all. Polling faster than 5s buys you nothing — the cached response is identical — and just adds load. Polling much slower than 10s (say every 30s) makes the "Payment received" confirmation feel laggy to the customer.
+
+| Interval | Verdict |
+|---|---|
+| < 5s (e.g. 100ms) | Wasteful — the `max-age=5` cache means most requests return the same body |
+| **5–10s** | **Recommended** — matches the cache window and the ~60s detection latency |
+| > 10s | Works, but the customer waits noticeably longer to see "paid" |
+
+Because deposit detection itself runs on a timer (default 60s), the status can't change faster than that regardless of how often you poll. A 5–10s poll interval is already well below that floor.
+
+Stop polling as soon as `status` is anything other than `pending` — `paid`, `expired` or `cancelled` are all terminal.
+
+```js
+async function pollPaymentStatus(id, { intervalMs = 5000, signal } = {}) {
+  while (!signal?.aborted) {
+    const res = await fetch(`${API}/payment-requests/${id}/status`, {
+      signal,
+      cache: 'default', // honour Cache-Control: public, max-age=5
+    });
+    if (!res.ok) throw new Error(`status lookup failed: ${res.status}`);
+
+    const { status, paid_at } = await res.json();
+    if (status !== 'pending') return { status, paid_at }; // paid | expired | cancelled
+
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+```
+
+If you'd rather drive it from a timer, the same rule applies — clear the interval on the first non-`pending` status:
+
+```js
+const timer = setInterval(async () => {
+  const res = await fetch(`${API}/payment-requests/${id}/status`);
+  const { status } = await res.json();
+  if (status !== 'pending') {
+    clearInterval(timer);
+    renderResult(status); // "Payment received" / "QR expired" / "Cancelled"
+  }
+}, 5000);
+```
+
 ### `POST /payment-requests/{id}/expire`
 Auth required, merchant-scoped. Forces a `pending` request straight to `expired`, without waiting for `expires_at` — e.g. the customer abandoned the session and the merchant wants to regenerate the QR immediately.
 
@@ -707,24 +770,40 @@ Unlike the natural TTL expiry above (computed at read time), this writes `expire
 ---
 
 ### `GET /balance`
-Auth required. One row per asset the merchant has ever held. Returns `[]` for a new merchant — not an error.
+Auth required. Returns the merchant's balances wrapped in an envelope that also advertises which assets the API supports.
 
 `200` →
 ```json
-[
-  {
-    "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
-    "asset": "XLM",
-    "available": 100000000000,
-    "pending": 0,
-    "updated_at": "2026-08-13T14:15:34.520195Z"
-  }
-]
+{
+  "supported_assets": ["XLM", "cNGN"],
+  "balances": [
+    {
+      "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
+      "asset": "XLM",
+      "available": 100000000000,
+      "pending": 0,
+      "updated_at": "2026-08-13T14:15:34.520195Z"
+    }
+  ]
+}
 ```
 
-`available` is withdrawable; `pending` is detected but not yet confirmed. In practice `pending` is almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet).
+| Field | Type | Description |
+|---|---|---|
+| `supported_assets` | string[] | Every asset the API supports — currently at least `["XLM", "cNGN"]`. **Read this instead of hardcoding the asset list**: as new assets are added (e.g. USDC), clients that hardcode will miss them until they ship an update. |
+| `balances` | object[] | One entry per asset the merchant has ever held, plus a synthesized zero entry for each supported asset with no row yet. |
 
-**Planned response envelope (#1247).** The supported assets are `XLM` and `cNGN`. The planned shape wraps the list so a new merchant sees a zero entry per supported asset instead of `[]`:
+Each item in `balances`:
+
+| Field | Type | Description |
+|---|---|---|
+| `merchant_id` | string (UUID) | The merchant the balance belongs to. |
+| `asset` | string | Asset code — `XLM`, `cNGN`, etc. |
+| `available` | integer | Withdrawable amount, in stroops. |
+| `pending` | integer | Detected but not yet confirmed, in stroops. In practice almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet). |
+| `updated_at` | string (RFC 3339) \| null | `null` for a synthesized zero entry (no row exists yet). |
+
+A brand-new merchant therefore sees a zero entry per supported asset rather than an empty list:
 
 ```json
 {
@@ -736,7 +815,7 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 }
 ```
 
-`updated_at` is `null` for a synthesized zero entry (no row exists yet). Until the server change lands (it touches protected `src/`), clients should treat a missing asset in today's array as a zero balance. See [`docs/proposals/1247-balance-supported-assets.md`](docs/proposals/1247-balance-supported-assets.md).
+See [`docs/proposals/1247-balance-supported-assets.md`](docs/proposals/1247-balance-supported-assets.md).
 
 ### `GET /transactions`
 Auth required. Detected incoming payments, newest first.
@@ -772,6 +851,7 @@ All filters combine with each other and with pagination: keep sending the same `
     "network": "stellar",
     "status": "confirmed",
     "confirmations": 0,
+    "payment_type": "deposit",
     "created_at": "2026-08-13T13:54:20.123456Z",
     "updated_at": "2026-08-13T13:54:20.987654Z"
   }
@@ -779,6 +859,8 @@ All filters combine with each other and with pagination: keep sending the same `
 ```
 
 `status` is one of `detected` → `verified` → `confirmed`, or `failed`. `tx_hash` is a real Stellar hash — link it to an explorer (`https://stellar.expert/explorer/testnet/tx/{tx_hash}`).
+
+`payment_type` is `"deposit"` for a customer payment into the merchant's wallet, or `"sweep"` for an internal transfer that moves the balance to the platform's settlement wallet. Use this field to distinguish the two in reconciliation — sweeps reduce the custodial balance and are not customer revenue.
 
 > `confirmations` is currently always `0` — the confirmation-depth threshold isn't implemented. Don't display it as meaningful.
 
@@ -959,6 +1041,37 @@ The `/admin` dashboard's login form uses the old one-step `/login` flow. If the 
    ```
 
 3. **The dashboard now handles the OTP step inline** — if `/login` returns a `challenge_id`, a code-entry form is shown automatically (see the updated `admin_dashboard.html`).
+
+### `GET /admin/overview`
+
+Auth required (admin only — `403 FORBIDDEN` for a non-admin). Dashboard summary of platform-wide totals.
+
+`200` →
+```json
+{
+  "merchant_count": 42,
+  "user_count": 57,
+  "wallet_count": 31,
+  "payment_count": 1284,
+  "payment_total_stroops": 32100000000,
+  "withdrawal_count": 96,
+  "withdrawal_total_stroops": 4800000000
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `merchant_count` | integer | Number of merchants on the platform. |
+| `user_count` | integer | Number of user accounts. |
+| `wallet_count` | integer | Number of provisioned wallets. Compare with `merchant_count` to see how many merchants have completed onboarding — a ratio below 1 means some merchants have not created a wallet yet. |
+| `payment_count` | integer | Number of recorded payments. |
+| `payment_total_stroops` | integer | Sum of payment amounts, in stroops. |
+| `withdrawal_count` | integer | Number of withdrawals. |
+| `withdrawal_total_stroops` | integer | Sum of withdrawal amounts, in stroops. |
+
+See [`docs/proposals/1262-stellar-wallet-count.md`](docs/proposals/1262-stellar-wallet-count.md).
+
+---
 
 ### `GET /analytics/payments`
 
