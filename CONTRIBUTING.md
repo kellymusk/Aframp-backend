@@ -72,6 +72,22 @@ endpoints inherit the global `security` (cookieAuth / bearerAuth); admin
 endpoints must set `security: [{ adminBearerAuth: [] }]`; public endpoints must
 set `security: []` explicitly.
 
+### Middleware scope
+
+Every new route registered in `src/lib.rs` (or `src/main.rs`) must be added to
+`tests/middleware_scope.rs` in the same PR. For each route, list it together
+with its expected auth scope and assert the matching behaviour:
+
+| Scope | Expected behaviour without credentials |
+|-------|----------------------------------------|
+| `public` | `200` (or the route's normal success status) |
+| `merchant-auth` | `401` |
+| `admin-auth` | `401` / `403` |
+
+See `docs/middleware-scope-refactor.md` for the middleware architecture. A route
+that lands in the wrong scope is a security bug, and the middleware scope test
+is what catches it — do not skip this step when adding routes.
+
 ## Reporting Issues
 
 Use the GitHub issue tracker. See `.github/ISSUE_TEMPLATE/` for templates covering bugs, feature requests, and security vulnerabilities.

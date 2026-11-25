@@ -668,6 +668,52 @@ Deposit detection still runs on a timer (`STELLAR_POLL_INTERVAL_SECS`, default 6
 
 `404` if the id doesn't exist.
 
+#### Payment Request Polling
+
+This is the endpoint to poll from a customer-facing QR payment screen. It's public (no auth), tiny, and cheap to call — but it is not free, so pick a sane interval.
+
+**Recommended interval: 5–10 seconds.** The response carries `Cache-Control: public, max-age=5`, so a poll inside that 5-second window can be served from the browser cache or a CDN without reaching the API at all. Polling faster than 5s buys you nothing — the cached response is identical — and just adds load. Polling much slower than 10s (say every 30s) makes the "Payment received" confirmation feel laggy to the customer.
+
+| Interval | Verdict |
+|---|---|
+| < 5s (e.g. 100ms) | Wasteful — the `max-age=5` cache means most requests return the same body |
+| **5–10s** | **Recommended** — matches the cache window and the ~60s detection latency |
+| > 10s | Works, but the customer waits noticeably longer to see "paid" |
+
+Because deposit detection itself runs on a timer (default 60s), the status can't change faster than that regardless of how often you poll. A 5–10s poll interval is already well below that floor.
+
+Stop polling as soon as `status` is anything other than `pending` — `paid`, `expired` or `cancelled` are all terminal.
+
+```js
+async function pollPaymentStatus(id, { intervalMs = 5000, signal } = {}) {
+  while (!signal?.aborted) {
+    const res = await fetch(`${API}/payment-requests/${id}/status`, {
+      signal,
+      cache: 'default', // honour Cache-Control: public, max-age=5
+    });
+    if (!res.ok) throw new Error(`status lookup failed: ${res.status}`);
+
+    const { status, paid_at } = await res.json();
+    if (status !== 'pending') return { status, paid_at }; // paid | expired | cancelled
+
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+```
+
+If you'd rather drive it from a timer, the same rule applies — clear the interval on the first non-`pending` status:
+
+```js
+const timer = setInterval(async () => {
+  const res = await fetch(`${API}/payment-requests/${id}/status`);
+  const { status } = await res.json();
+  if (status !== 'pending') {
+    clearInterval(timer);
+    renderResult(status); // "Payment received" / "QR expired" / "Cancelled"
+  }
+}, 5000);
+```
+
 ### `POST /payment-requests/{id}/expire`
 Auth required, merchant-scoped. Forces a `pending` request straight to `expired`, without waiting for `expires_at` — e.g. the customer abandoned the session and the merchant wants to regenerate the QR immediately.
 

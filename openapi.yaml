@@ -673,8 +673,17 @@ paths:
       description: >
         Lightweight alternative to GET /payment-requests/{id} for customer-side
         polling after a QR payment. Uses the same reported status as the full
-        object (an overdue pending request reports `expired`). Returns
-        `Cache-Control: public, max-age=5`.
+        object (an overdue pending request reports `expired`).
+
+
+        **Caching and polling:** every 200 response carries
+        `Cache-Control: public, max-age=5`, so the status may be cached for up
+        to 5 seconds by browsers, proxies and CDNs. Poll no more often than
+        every 5 seconds — a shorter interval returns the same cached body and
+        only adds load. A 5–10 second interval is recommended for customer QR
+        payment screens: it keeps the "paid" confirmation feeling immediate
+        while staying within the cache window. Stop polling once the status is
+        `paid`, `expired` or `cancelled`.
       security: []
       parameters:
         - name: id
@@ -686,6 +695,10 @@ paths:
           description: Status payload
           headers:
             Cache-Control:
+              description: >
+                Always `public, max-age=5`. The response may be cached for up
+                to 5 seconds, so polling more frequently than that yields no
+                fresher data.
               schema: { type: string, example: 'public, max-age=5' }
           content:
             application/json:
