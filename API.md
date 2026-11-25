@@ -681,24 +681,40 @@ Unlike the natural TTL expiry above (computed at read time), this writes `expire
 ---
 
 ### `GET /balance`
-Auth required. One row per asset the merchant has ever held. Returns `[]` for a new merchant — not an error.
+Auth required. Returns the merchant's balances wrapped in an envelope that also advertises which assets the API supports.
 
 `200` →
 ```json
-[
-  {
-    "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
-    "asset": "XLM",
-    "available": 100000000000,
-    "pending": 0,
-    "updated_at": "2026-08-13T14:15:34.520195Z"
-  }
-]
+{
+  "supported_assets": ["XLM", "cNGN"],
+  "balances": [
+    {
+      "merchant_id": "6a91d75c-8c41-4fa5-b10b-6eb8cda8ac0a",
+      "asset": "XLM",
+      "available": 100000000000,
+      "pending": 0,
+      "updated_at": "2026-08-13T14:15:34.520195Z"
+    }
+  ]
+}
 ```
 
-`available` is withdrawable; `pending` is detected but not yet confirmed. In practice `pending` is almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet).
+| Field | Type | Description |
+|---|---|---|
+| `supported_assets` | string[] | Every asset the API supports — currently at least `["XLM", "cNGN"]`. **Read this instead of hardcoding the asset list**: as new assets are added (e.g. USDC), clients that hardcode will miss them until they ship an update. |
+| `balances` | object[] | One entry per asset the merchant has ever held, plus a synthesized zero entry for each supported asset with no row yet. |
 
-**Planned response envelope (#1247).** The supported assets are `XLM` and `cNGN`. The planned shape wraps the list so a new merchant sees a zero entry per supported asset instead of `[]`:
+Each item in `balances`:
+
+| Field | Type | Description |
+|---|---|---|
+| `merchant_id` | string (UUID) | The merchant the balance belongs to. |
+| `asset` | string | Asset code — `XLM`, `cNGN`, etc. |
+| `available` | integer | Withdrawable amount, in stroops. |
+| `pending` | integer | Detected but not yet confirmed, in stroops. In practice almost always `0` — deposits currently move to confirmed immediately (no confirmation-depth threshold yet). |
+| `updated_at` | string (RFC 3339) \| null | `null` for a synthesized zero entry (no row exists yet). |
+
+A brand-new merchant therefore sees a zero entry per supported asset rather than an empty list:
 
 ```json
 {
@@ -710,7 +726,7 @@ Auth required. One row per asset the merchant has ever held. Returns `[]` for a 
 }
 ```
 
-`updated_at` is `null` for a synthesized zero entry (no row exists yet). Until the server change lands (it touches protected `src/`), clients should treat a missing asset in today's array as a zero balance. See [`docs/proposals/1247-balance-supported-assets.md`](docs/proposals/1247-balance-supported-assets.md).
+See [`docs/proposals/1247-balance-supported-assets.md`](docs/proposals/1247-balance-supported-assets.md).
 
 ### `GET /transactions`
 Auth required. Detected incoming payments, newest first. Query: `?limit=` (default 50, clamped 1–200), `?cursor=` (see [Pagination](#pagination)), and the optional filters `?asset=` (exact match, e.g. `XLM` or `cNGN`) and `?status=` (`detected`, `verified`, `confirmed` or `failed`; anything else is `400 INVALID_PARAMETERS`). Filters combine with pagination: keep sending the same `asset`/`status` alongside each `cursor`. The response is a page: `{ "data": [...], "next_cursor": ... }`, with `data` items like this:
@@ -921,6 +937,37 @@ The `/admin` dashboard's login form uses the old one-step `/login` flow. If the 
    ```
 
 3. **The dashboard now handles the OTP step inline** — if `/login` returns a `challenge_id`, a code-entry form is shown automatically (see the updated `admin_dashboard.html`).
+
+### `GET /admin/overview`
+
+Auth required (admin only — `403 FORBIDDEN` for a non-admin). Dashboard summary of platform-wide totals.
+
+`200` →
+```json
+{
+  "merchant_count": 42,
+  "user_count": 57,
+  "wallet_count": 31,
+  "payment_count": 1284,
+  "payment_total_stroops": 32100000000,
+  "withdrawal_count": 96,
+  "withdrawal_total_stroops": 4800000000
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `merchant_count` | integer | Number of merchants on the platform. |
+| `user_count` | integer | Number of user accounts. |
+| `wallet_count` | integer | Number of provisioned wallets. Compare with `merchant_count` to see how many merchants have completed onboarding — a ratio below 1 means some merchants have not created a wallet yet. |
+| `payment_count` | integer | Number of recorded payments. |
+| `payment_total_stroops` | integer | Sum of payment amounts, in stroops. |
+| `withdrawal_count` | integer | Number of withdrawals. |
+| `withdrawal_total_stroops` | integer | Sum of withdrawal amounts, in stroops. |
+
+See [`docs/proposals/1262-stellar-wallet-count.md`](docs/proposals/1262-stellar-wallet-count.md).
+
+---
 
 ### `GET /analytics/payments`
 

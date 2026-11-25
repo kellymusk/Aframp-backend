@@ -91,11 +91,10 @@ async fn pending_deposit_shows_pending_gt_zero_and_available_zero() {
     assert_eq!(rows[0]["pending"], amount);
 }
 
-/// #1247 — target behaviour once the balance envelope lands in `src/`: a new
-/// merchant gets a zero entry for every supported asset plus the list itself.
-/// Ignored until then; see docs/proposals/1247-balance-supported-assets.md.
+/// #1503 — `GET /balance` must expose a `supported_assets` field so clients do
+/// not hardcode `['XLM', 'cNGN']`. See
+/// docs/proposals/1247-balance-supported-assets.md and src/api/balances.rs.
 #[tokio::test]
-#[ignore = "#1247 changes GET /balance from an array to an object; needs a coordinated frontend release"]
 async fn new_merchant_balance_lists_supported_assets() {
     let state = state().await;
     let app = aframp::router(state);
@@ -103,7 +102,21 @@ async fn new_merchant_balance_lists_supported_assets() {
 
     let (status, json) = send(app.clone(), "GET", "/balance", Some(&token), None).await;
     assert_eq!(status, StatusCode::OK, "balance failed: {json}");
-    assert_eq!(json["supported_assets"], json!(["XLM", "cNGN"]));
+
+    let supported = json["supported_assets"]
+        .as_array()
+        .unwrap_or_else(|| panic!("supported_assets must be an array: {json}"));
+    let assets: Vec<&str> = supported
+        .iter()
+        .map(|a| a.as_str().expect("supported_assets entries are strings"))
+        .collect();
+    for expected in ["XLM", "cNGN"] {
+        assert!(
+            assets.contains(&expected),
+            "supported_assets must include {expected}: {json}"
+        );
+    }
+
     let rows = json["balances"].as_array().expect("balances array");
     assert_eq!(rows.len(), 2, "one zero entry per supported asset: {json}");
     for (row, asset) in rows.iter().zip(["XLM", "cNGN"]) {
