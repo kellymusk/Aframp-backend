@@ -76,6 +76,11 @@ pub struct AppState {
     pub webhook_allow_private_targets: bool,
     /// Horizon base URL, probed by `GET /health/detailed`.
     pub stellar_horizon_url: std::sync::Arc<String>,
+    /// Whether the service runs in production (`APP_ENV=production`).
+    ///
+    /// Drives security headers such as `Strict-Transport-Security`, which must
+    /// only be emitted when the service is served over HTTPS.
+    pub is_production: bool,
 }
 
 impl AppState {
@@ -143,7 +148,41 @@ pub async fn build_state(config: &AppConfig) -> Result<AppState, Box<dyn std::er
         trust_proxy_headers: config.trust_proxy_headers,
         webhook_allow_private_targets: config.webhook_allow_private_targets,
         stellar_horizon_url: std::sync::Arc::new(config.stellar_horizon_url.clone()),
+        is_production: config.is_production(),
     })
+}
+
+/// Security headers applied to every response.
+///
+/// `Strict-Transport-Security` is only emitted in production: sending it from a
+/// plain-HTTP development server would pin browsers to a scheme the server
+/// cannot serve.
+pub fn security_headers_layer(
+    is_production: bool,
+) -> axum::middleware::FromFnLayer<
+    impl Fn(
+            axum::extract::Request,
+            axum::middleware::Next,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = axum::response::Response> + Send>,
+        > + Clone
+        + Send
+        + 'static,
+    (),
+    axum::extract::Request,
+> {
+    axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| async move {
+            let mut response = next.run(request).await;
+            if is_production {
+                response.headers_mut().insert(
+                    axum::http::header::STRICT_TRANSPORT_SECURITY,
+                    axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+                );
+            }
+            response
+        },
+    )
 }
 
 /// CORS policy for browser clients. Auth travels as an HttpOnly cookie, so
@@ -316,11 +355,14 @@ pub fn router(state: AppState) -> axum::Router {
             "/admin/users/{id}/unlock",
             axum::routing::post(api::admin::unlock_user),
         )
-        .with_state(state)
+        .with_state(state.clone())
         .layer(axum::middleware::from_fn(
             middleware::require_json_content_type,
         ))
         .layer(axum::middleware::from_fn(middleware::retry_after_header))
+        // Outermost layer: every response, including errors and preflights,
+        // carries the security headers.
+        .layer(security_headers_layer(state.is_production))
         .layer(axum::middleware::from_fn(middleware::inject_request_id))
 }
 
@@ -355,6 +397,7 @@ mod cors_tests {
             trust_proxy_headers: false,
             webhook_allow_private_targets: false,
             stellar_horizon_url: std::sync::Arc::new("http://127.0.0.1:9".to_string()),
+            is_production: false,
         }
     }
 
@@ -388,6 +431,39 @@ mod cors_tests {
         assert!(
             status.is_success(),
             "DELETE preflight should be allowed, got {status}"
+        );
+    }
+
+    async fn get_root(is_production: bool) -> axum::response::Response {
+        let mut state = test_state();
+        state.is_production = is_production;
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/")
+            .body(Body::empty())
+            .expect("request");
+        router(state).oneshot(request).await.expect("response")
+    }
+
+    #[tokio::test]
+    async fn hsts_header_present_in_production() {
+        let response = get_root(true).await;
+        let value = response
+            .headers()
+            .get(header::STRICT_TRANSPORT_SECURITY)
+            .expect("Strict-Transport-Security must be set in production");
+        assert_eq!(value, "max-age=31536000; includeSubDomains");
+    }
+
+    #[tokio::test]
+    async fn hsts_header_absent_outside_production() {
+        let response = get_root(false).await;
+        assert!(
+            response
+                .headers()
+                .get(header::STRICT_TRANSPORT_SECURITY)
+                .is_none(),
+            "Strict-Transport-Security must not be set outside production"
         );
     }
 }

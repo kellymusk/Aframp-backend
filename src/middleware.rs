@@ -15,7 +15,13 @@ use axum::Json;
 use tower_http::request_id::{MakeRequestId, RequestId};
 use uuid::Uuid;
 
+use crate::config::Config;
 use crate::error::{unsupported_media_type, ApiError, ErrorCode};
+
+/// `Strict-Transport-Security` value advertised in production. One year,
+/// including subdomains, matching the proposal in
+/// `docs/proposals/1248-hsts-header.md`.
+pub const HSTS_VALUE: &str = "max-age=31536000; includeSubDomains";
 
 /// Generates the `X-Request-ID` correlating one request across logs and a
 /// client bug report. An incoming `X-Request-ID` is trusted and echoed back
@@ -96,6 +102,53 @@ fn is_json_content_type(value: Option<&HeaderValue>) -> bool {
     media_type.subtype() == mime::JSON || media_type.suffix() == Some(mime::JSON)
 }
 
+/// Adds `Strict-Transport-Security` to every response when the service runs
+/// in production. The header is only inserted when absent, so a TLS-terminating
+/// proxy that already sets its own value wins. Whether production is active is
+/// decided once, when the layer is built via [`Hsts::from_config`], rather than
+/// reading the environment on every request.
+#[derive(Clone, Copy, Debug)]
+pub struct Hsts {
+    enabled: bool,
+}
+
+impl Hsts {
+    /// Builds the layer from the resolved application config. Production is
+    /// detected from the same signal the rest of the app uses (`APP_ENV`),
+    /// exposed as [`Config::is_production`].
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            enabled: config.is_production(),
+        }
+    }
+
+    /// Builds the layer from an explicit flag, for tests and callers that
+    /// already know the environment.
+    pub fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    /// Runs the inner handler and, in production, stamps the HSTS header onto
+    /// the response unless one is already present.
+    pub async fn run(&self, request: Request, next: Next) -> Response {
+        let mut response = next.run(request).await;
+        if self.enabled && !response.headers().contains_key(header::STRICT_TRANSPORT_SECURITY) {
+            response.headers_mut().insert(
+                header::STRICT_TRANSPORT_SECURITY,
+                HeaderValue::from_static(HSTS_VALUE),
+            );
+        }
+        response
+    }
+}
+
+/// Middleware form of [`Hsts`] for `axum::middleware::from_fn_with_state`.
+pub async fn hsts(
+    axum::extract::State(hsts): axum::extract::State<Hsts>,
+    request: Request,
+    next: Next,
+) -> Response {
+    hsts.run(request, next).await
 /// Injects the `X-Request-ID` for this request into the JSON body of every
 /// error response, so a merchant receiving e.g. a 500 can quote the ID in a
 /// support ticket without knowing to look at the response headers.
@@ -313,6 +366,29 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
     }
 
+    fn hsts_app(enabled: bool) -> Router {
+        Router::new()
+            .route("/get", get(handler))
+            .layer(axum::middleware::from_fn_with_state(
+                Hsts::new(enabled),
+                hsts,
+            ))
+    }
+
+    #[tokio::test]
+    async fn hsts_header_present_in_production() {
+        let app = hsts_app(true);
+        let res = app
+            .clone()
+            .oneshot(request("GET", "/get", None, ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::STRICT_TRANSPORT_SECURITY)
+                .and_then(|v| v.to_str().ok()),
+            Some(HSTS_VALUE)
     // ── inject_request_id tests ───────────────────────────────────────────────
 
     async fn send_inject(
@@ -346,6 +422,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hsts_header_absent_in_dev() {
+        let app = hsts_app(false);
+        let res = app
+            .clone()
+            .oneshot(request("GET", "/get", None, ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res
+            .headers()
+            .contains_key(header::STRICT_TRANSPORT_SECURITY));
+    }
+
+    #[tokio::test]
+    async fn hsts_header_does_not_override_existing_value() {
+        async fn with_hsts() -> Response {
+            let mut res = Response::new(axum::body::Body::empty());
+            res.headers_mut().insert(
+                header::STRICT_TRANSPORT_SECURITY,
+                HeaderValue::from_static("max-age=60"),
+            );
+            res
+        }
+        let app = Router::new()
+            .route("/get", get(with_hsts))
+            .layer(axum::middleware::from_fn_with_state(
+                Hsts::new(true),
+                hsts,
+            ));
+        let res = app
+            .clone()
+            .oneshot(request("GET", "/get", None, ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()
+                .get(header::STRICT_TRANSPORT_SECURITY)
+                .and_then(|v| v.to_str().ok()),
+            Some("max-age=60")
     async fn error_body_retains_existing_fields() {
         let app = inject_app();
         let (status, body) = send_inject(&app, "/error", Some("any-id")).await;
