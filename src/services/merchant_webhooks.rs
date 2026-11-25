@@ -25,6 +25,24 @@ pub const DEFAULT_LIST_LIMIT: i64 = 50;
 /// Upper bound on `limit` for `GET /webhooks`.
 pub const MAX_LIST_LIMIT: i64 = 100;
 
+/// Number of consecutive failed deliveries after which a merchant's webhook
+/// is considered unhealthy and surfaced by [`unhealthy_webhooks`] /
+/// `GET /admin/webhooks/health`. A merchant whose endpoint has been
+/// unreachable for this many attempts in a row is missing events such as
+/// `payment.confirmed` and needs operator attention.
+pub const UNHEALTHY_FAILURE_THRESHOLD: i64 = 5;
+
+/// A merchant webhook whose most recent deliveries have all failed.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct UnhealthyWebhook {
+    pub merchant_id: Uuid,
+    pub url: String,
+    /// How many of the most recent deliveries failed in a row (capped at the
+    /// number of rows inspected, see [`UNHEALTHY_FAILURE_THRESHOLD`]).
+    pub consecutive_failures: i64,
+    pub last_failure_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct MerchantWebhook {
     pub id: Uuid,
@@ -226,6 +244,59 @@ pub async fn list(
     .bind(merchant_id)
     .bind(cursor)
     .bind(limit)
+    .fetch_all(db)
+    .await
+}
+
+/// Lists merchant webhooks that are currently unhealthy: their most recent
+/// `threshold` deliveries (defaulting to [`UNHEALTHY_FAILURE_THRESHOLD`]) are
+/// all `status = 'failed'`.
+///
+/// For each registered webhook the deliveries are ranked newest-first; a
+/// webhook is unhealthy when it has at least `threshold` deliveries and every
+/// one of the newest `threshold` rows failed. `consecutive_failures` reports
+/// how many of those newest rows failed (i.e. `threshold` for a match), and
+/// `last_failure_at` is the timestamp of the most recent failed delivery.
+/// Results are ordered by most recent failure first.
+pub async fn unhealthy_webhooks(
+    db: &PgPool,
+    threshold: Option<i64>,
+) -> Result<Vec<UnhealthyWebhook>, sqlx::Error> {
+    let threshold = threshold
+        .unwrap_or(UNHEALTHY_FAILURE_THRESHOLD)
+        .max(1);
+    sqlx::query_as::<_, UnhealthyWebhook>(
+        "WITH ranked AS (
+            SELECT d.webhook_id,
+                   d.status,
+                   d.created_at,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY d.webhook_id
+                       ORDER BY d.created_at DESC, d.id DESC
+                   ) AS rn
+              FROM webhook_deliveries d
+         ),
+         recent AS (
+            SELECT webhook_id,
+                   COUNT(*) AS inspected,
+                   COUNT(*) FILTER (WHERE status = 'failed') AS failures,
+                   MAX(created_at) FILTER (WHERE status = 'failed') AS last_failure_at
+              FROM ranked
+             WHERE rn <= $1
+             GROUP BY webhook_id
+         )
+         SELECT w.merchant_id,
+                w.url,
+                r.failures AS consecutive_failures,
+                r.last_failure_at
+           FROM recent r
+           JOIN merchant_webhooks w ON w.id = r.webhook_id
+          WHERE r.inspected >= $1
+            AND r.failures = r.inspected
+            AND r.last_failure_at IS NOT NULL
+          ORDER BY r.last_failure_at DESC",
+    )
+    .bind(threshold)
     .fetch_all(db)
     .await
 }

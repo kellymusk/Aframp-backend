@@ -614,6 +614,8 @@ conventions, and the checklist reviewers expect.
 <!-- handsoff-issue-1425 -->
 - #1425: Enhancement: add integration test for concurrent withdrawal requests exhausting daily limit
 
+<!-- handsoff-issue-1462 -->
+- #1462: Enhancement: add `GET /withdrawals/reconcile` admin endpoint to trigger manual reconciliation
 <!-- handsoff-issue-1470 -->
 - #1470: Bug: `reconcile_withdrawal_status` can double-refund when called concurrently for the same withdrawal
 
@@ -630,3 +632,16 @@ conventions, and the checklist reviewers expect.
 
 <!-- handsoff-issue-1333 -->
 - #1333: auth: password reset (request + confirm)
+<!-- handsoff-issue-1341 -->
+- #1341: security: merchant-facing account activity log
+
+<!-- handsoff-issue-1342 -->
+- #1342: auth: change the phone number used for OTP
+
+<!-- handsoff-issue-1343 -->
+- #1343: withdrawal: admin actions on failed withdrawals
+
+<!-- handsoff-issue-1344 -->
+- #1344: payments: refund endpoints the dashboard already calls don't exist
+<!-- handsoff-issue-1329 -->
+- #1329: payments: accept an Idempotency-Key on money-moving POSTs

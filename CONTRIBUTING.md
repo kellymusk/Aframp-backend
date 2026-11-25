@@ -34,7 +34,35 @@ Everything else is protected:
 
 Changes to protected paths require a maintainer-authored PR against the **`main`** branch with an approved code review from `@kelly-musk`.
 
+### Do not modify `Cargo.toml` or `Cargo.lock` on `dev-backend`
+
+`Cargo.toml` and `Cargo.lock` are protected paths. On `dev-backend` you must
+**not** add, remove, or update dependencies, and you must **not** commit any
+change to `Cargo.lock`.
+
+A common accident: running `cargo add <crate>` or `cargo update` while working
+in `tests/` rewrites `Cargo.lock` even though you never meant to change
+dependencies. If that happens, your PR will fail CI with the **`Cargo.lock up to
+date`** check (the `cargo-lock-check` workflow, `.github/workflows/cargo-lock-check.yml`),
+and the `Guard` job will flag `Cargo.lock` as a protected-path violation.
+
+**How to recover:**
+
+```bash
+# Discard the accidental lock file change
+git checkout -- Cargo.lock
+
+# If you already committed it, revert the commit or restore the file:
+git checkout HEAD~1 -- Cargo.lock
+git commit -m "revert accidental Cargo.lock change"
+```
+
+Then push again — the `Cargo.lock up to date` check should pass. If you believe
+a dependency change is genuinely required, open an issue and let a maintainer
+handle it in a PR against `main`.
+
 ---
+=======
 
 ## Getting Started
 
@@ -71,6 +99,22 @@ Every new endpoint in `openapi.yaml` must declare its auth. Authenticated
 endpoints inherit the global `security` (cookieAuth / bearerAuth); admin
 endpoints must set `security: [{ adminBearerAuth: [] }]`; public endpoints must
 set `security: []` explicitly.
+
+### Middleware scope
+
+Every new route registered in `src/lib.rs` (or `src/main.rs`) must be added to
+`tests/middleware_scope.rs` in the same PR. For each route, list it together
+with its expected auth scope and assert the matching behaviour:
+
+| Scope | Expected behaviour without credentials |
+|-------|----------------------------------------|
+| `public` | `200` (or the route's normal success status) |
+| `merchant-auth` | `401` |
+| `admin-auth` | `401` / `403` |
+
+See `docs/middleware-scope-refactor.md` for the middleware architecture. A route
+that lands in the wrong scope is a security bug, and the middleware scope test
+is what catches it — do not skip this step when adding routes.
 
 ## Reporting Issues
 

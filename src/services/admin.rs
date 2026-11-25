@@ -124,22 +124,43 @@ pub async fn overview_in_transaction(db: &PgPool) -> Result<AdminOverview, sqlx:
     })
 }
 
+/// List users with cursor pagination and an optional operator search term.
+///
+/// When `search` is `Some(q)` (trimmed, non-empty) the result set is filtered
+/// to users matching either:
+/// - `email` prefix, case-insensitive (`lower(email) LIKE lower($q) || '%'`), or
+/// - `phone_number` exact match or prefix (`phone_number LIKE $q || '%'`).
+///
+/// Index requirements for the search path:
+/// - `CREATE INDEX ... ON users (lower(email) text_pattern_ops)` so the
+///   case-insensitive prefix match can use an index range scan.
+/// - `CREATE INDEX ... ON users (phone_number text_pattern_ops)` for the
+///   phone prefix match (also serves exact matches).
+///
+/// Cursor pagination is preserved: the `(created_at, id)` keyset predicate is
+/// applied together with the search filter.
 pub async fn users(
     db: &PgPool,
     limit: i64,
     cursor: Option<Cursor>,
+    search: Option<&str>,
 ) -> Result<Page<AdminUserRow>, sqlx::Error> {
+    let search = search.map(str::trim).filter(|q| !q.is_empty());
     let rows = sqlx::query_as::<_, AdminUserRow>(
         "SELECT u.id, u.email, u.name, u.is_admin, u.created_at,
                 m.id AS merchant_id, m.name AS merchant_name
          FROM users u
          LEFT JOIN merchants m ON m.user_id = u.id
          WHERE ($1::timestamptz IS NULL OR (u.created_at, u.id) < ($1, $2::uuid))
+           AND ($3::text IS NULL
+                OR lower(u.email) LIKE lower($3) || '%'
+                OR u.phone_number LIKE $3 || '%')
          ORDER BY u.created_at DESC, u.id DESC
-         LIMIT $3",
+         LIMIT $4",
     )
     .bind(cursor.as_ref().map(|c| c.created_at))
     .bind(cursor.as_ref().map(|c| c.id))
+    .bind(search)
     .bind(limit + 1)
     .fetch_all(db)
     .await?;
@@ -318,4 +339,66 @@ pub async fn unsuspend_merchant(
 /// Returns `true` if the user was found and updated.
 pub async fn unlock_user(db: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Error> {
     crate::services::users::admin_unlock(db, user_id).await
+}
+
+/// A merchant whose webhook endpoint has failed `consecutive_failures` times
+/// in a row (most recent deliveries first).
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct WebhookHealthRow {
+    pub merchant_id: Uuid,
+    pub merchant_name: String,
+    pub webhook_url: Option<String>,
+    pub consecutive_failures: i64,
+    pub last_failure_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Webhook health check (#1484): list merchants whose most recent
+/// `webhook_deliveries` rows are all `status = 'failed'` for at least
+/// `threshold` consecutive attempts.
+///
+/// Implemented as a windowed scan over `webhook_deliveries` ordered by
+/// `(merchant_id, created_at DESC)`: the leading run of failed rows per
+/// merchant is counted and merchants whose run length reaches `threshold` are
+/// returned. Index requirement: `(merchant_id, created_at DESC)` on
+/// `webhook_deliveries` keeps the per-merchant scan cheap.
+pub async fn webhook_health(
+    db: &PgPool,
+    threshold: i64,
+) -> Result<Vec<WebhookHealthRow>, sqlx::Error> {
+    sqlx::query_as::<_, WebhookHealthRow>(
+        "WITH ranked AS (
+             SELECT d.merchant_id, d.status, d.created_at,
+                    row_number() OVER (
+                        PARTITION BY d.merchant_id ORDER BY d.created_at DESC, d.id DESC
+                    ) AS rn
+               FROM webhook_deliveries d
+         ),
+         leading AS (
+             SELECT merchant_id,
+                    count(*) FILTER (WHERE status = 'failed') AS consecutive_failures,
+                    max(created_at) FILTER (WHERE status = 'failed') AS last_failure_at
+               FROM ranked
+              WHERE rn <= (
+                  SELECT coalesce(min(r2.rn), 0)
+                    FROM ranked r2
+                   WHERE r2.merchant_id = ranked.merchant_id
+                     AND r2.status <> 'failed'
+              ) - 1
+                 OR NOT EXISTS (
+                     SELECT 1 FROM ranked r3
+                      WHERE r3.merchant_id = ranked.merchant_id
+                        AND r3.status <> 'failed'
+                 )
+              GROUP BY merchant_id
+         )
+         SELECT l.merchant_id, m.name AS merchant_name, m.webhook_url,
+                l.consecutive_failures, l.last_failure_at
+           FROM leading l
+           JOIN merchants m ON m.id = l.merchant_id
+          WHERE l.consecutive_failures >= $1
+          ORDER BY l.consecutive_failures DESC, l.merchant_id",
+    )
+    .bind(threshold)
+    .fetch_all(db)
+    .await
 }

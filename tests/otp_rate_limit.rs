@@ -328,6 +328,172 @@ async fn resend_after_cooldown_succeeds_and_resets_attempt_counter() {
     assert!(json["token"].as_str().is_some());
 }
 
+// ---------------------------------------------------------------------------
+// #1486 — explicit coverage for each `upsert_challenge` branch.
+//
+// `upsert_challenge` dispatches to one of three paths:
+//   1. existing challenge within cooldown  -> reject (429, no row, no SMS)
+//   2. existing challenge past cooldown    -> refresh in place (same row id)
+//   3. no existing challenge               -> insert a brand-new row
+// The tests below pin each branch down so the proposed split into
+// `refresh_existing_challenge` / `insert_new_challenge` cannot drift.
+// ---------------------------------------------------------------------------
+
+/// Branch 3: no existing challenge -> a fresh row is inserted.
+#[tokio::test]
+async fn upsert_inserts_new_challenge_when_none_exists() {
+    let (app, db) = app_and_db().await;
+    let (body, phone) = fresh_signup("otp_branch_insert");
+
+    let (status, json) = signup(&app, &body).await;
+    assert_eq!(status, StatusCode::OK, "first signup failed: {json}");
+    let challenge_id = json["challenge_id"].as_str().unwrap();
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
+            .bind(&phone)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "a fresh signup must insert exactly one challenge");
+
+    let (attempts, consumed, expired): (i32, bool, bool) = sqlx::query_as(
+        "SELECT attempts, consumed_at IS NOT NULL, expires_at <= now() \
+         FROM otp_challenges WHERE id = $1::uuid",
+    )
+    .bind(challenge_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(attempts, 0, "a new challenge starts with zero attempts");
+    assert!(!consumed, "a new challenge is not consumed");
+    assert!(!expired, "a new challenge is not expired");
+
+    // The inserted challenge is usable end to end.
+    let (status, json) = verify(&app, challenge_id, &last_code(&phone)).await;
+    assert_eq!(status, StatusCode::OK, "fresh code should verify: {json}");
+}
+
+/// Branch 1: existing challenge within cooldown -> rejected, nothing changes.
+#[tokio::test]
+async fn upsert_rejects_existing_challenge_within_cooldown() {
+    let (app, db) = app_and_db().await;
+    let (body, phone) = fresh_signup("otp_branch_cooldown");
+
+    let (status, first) = signup(&app, &body).await;
+    assert_eq!(status, StatusCode::OK, "first signup failed: {first}");
+    let challenge_id = first["challenge_id"].as_str().unwrap().to_string();
+    let first_code = last_code(&phone);
+
+    // Snapshot the row so we can prove the rejected resend left it untouched.
+    let before: (String, String, String) = sqlx::query_as(
+        "SELECT code_hash, last_sent_at::text, expires_at::text \
+         FROM otp_challenges WHERE id = $1::uuid",
+    )
+    .bind(&challenge_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    let (status, second) = signup(&app, &body).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{second}");
+    assert_eq!(second["code"], "TOO_MANY_REQUESTS");
+
+    let after: (String, String, String) = sqlx::query_as(
+        "SELECT code_hash, last_sent_at::text, expires_at::text \
+         FROM otp_challenges WHERE id = $1::uuid",
+    )
+    .bind(&challenge_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        before, after,
+        "a cooldown rejection must not touch the existing challenge"
+    );
+    assert_eq!(
+        last_code(&phone),
+        first_code,
+        "a cooldown rejection must not send a new SMS"
+    );
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
+            .bind(&phone)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "a cooldown rejection must not insert a new row");
+}
+
+/// Branch 2: existing challenge past cooldown -> refreshed in place.
+#[tokio::test]
+async fn upsert_refreshes_existing_challenge_past_cooldown() {
+    let (app, db) = app_and_db().await;
+    let (body, phone) = fresh_signup("otp_branch_refresh");
+
+    let (status, first) = signup(&app, &body).await;
+    assert_eq!(status, StatusCode::OK, "first signup failed: {first}");
+    let challenge_id = first["challenge_id"].as_str().unwrap().to_string();
+    let first_code = last_code(&phone);
+
+    let before: (String, String) = sqlx::query_as(
+        "SELECT code_hash, expires_at::text FROM otp_challenges WHERE id = $1::uuid",
+    )
+    .bind(&challenge_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Fast-forward past the 60s cooldown.
+    sqlx::query("UPDATE otp_challenges SET last_sent_at = now() - interval '61 seconds' WHERE id = $1::uuid")
+        .bind(&challenge_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (status, second) = signup(&app, &body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "resend after cooldown should succeed: {second}"
+    );
+    assert_eq!(
+        second["challenge_id"].as_str().unwrap(),
+        challenge_id,
+        "a refresh must reuse the existing row id"
+    );
+
+    let after: (String, String) = sqlx::query_as(
+        "SELECT code_hash, expires_at::text FROM otp_challenges WHERE id = $1::uuid",
+    )
+    .bind(&challenge_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_ne!(
+        before.0, after.0,
+        "a refresh must rotate the stored code hash"
+    );
+    assert_ne!(
+        before.1, after.1,
+        "a refresh must extend the expiry"
+    );
+    assert_ne!(
+        last_code(&phone),
+        first_code,
+        "a refresh must send a new SMS"
+    );
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM otp_challenges WHERE phone_number = $1")
+            .bind(&phone)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "a refresh must not insert a second row");
+}
+
 #[tokio::test]
 async fn consumed_challenge_cannot_be_reused() {
     let (app, db) = app_and_db().await;

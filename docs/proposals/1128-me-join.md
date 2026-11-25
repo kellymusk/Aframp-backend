@@ -113,3 +113,25 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/aframp \
 On a sample of hundreds of users (each with one merchant) the JOIN typically
 cuts wall-clock roughly in half versus two sequential queries over the same
 pool, because it removes one network RTT per `/me` call.
+
+## Current state (follow-up to #1493)
+
+`GET /me` already returns the wallet information needed for merchant
+onboarding, so no additional join is required:
+
+- `wallet` — the merchant's Stellar wallet address (or `null` when no wallet
+  exists yet).
+- `balances` — the wallet's asset balances.
+
+Both are assembled in `src/api/me.rs` from a single LEFT JOIN, alongside the
+user profile and merchant record, so a client can render the onboarding screen
+(deposit address + profile) from one call instead of `GET /me` + `GET /wallet`.
+This satisfies #1493's requirement to expose `wallet_address` as part of the
+merchant profile.
+
+Remaining work for #1493:
+
+- Add a test in `tests/me_join.rs` asserting the joined response includes the
+  wallet address when a wallet exists (and `null` when it does not).
+- Document the joined `/me` response — including `wallet` and `balances` — in
+  `API.md`.

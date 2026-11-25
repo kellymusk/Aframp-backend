@@ -1,12 +1,21 @@
 # Aframp — Product Requirements Document
 
-**Status:** Living document · **Last updated:** 2026-08-10 · **Scope:** Aframp Pay backend (this repository)
+**Status:** Living document · **Last Updated:** 2026-08-10 · **Scope:** Aframp Pay backend (this repository)
 
 This PRD exists because the backend has now reached a point where we have real, verified clarity on what works — not just what was planned. Every status claim below reflects something exercised end-to-end (real Postgres writes, a real Stellar testnet transaction), not a reading of the code. Where we don't yet have an answer, that's marked as an open decision rather than papered over.
 
+**Section status legend:** each section below carries a badge indicating its implementation status:
+
+| Badge | Meaning |
+|---|---|
+| ✅ Live | Implemented and verified end-to-end in this repository |
+| 🚧 In Progress | Partially implemented, or implementation underway with known gaps |
+| 📋 Planned | Designed/agreed but not yet built |
+| ❌ Deferred | Explicitly out of scope for now |
+
 ---
 
-## 1. Overview
+## 1. Overview 📋 Planned
 
 Aframp is a merchant point-of-sale acceptance network for Stellar-powered payments, starting in Nigeria. The insight: Nigerians already understand POS terminals and bank-transfer payments ("give me your account number," "use the POS"). Aframp adds **scan and pay** as a familiar-feeling option, settled on Stellar, without merchants or customers needing to understand blockchain concepts.
 
@@ -25,13 +34,13 @@ From the merchant's point of view, that's the whole product. Stellar is the sett
 | Aframp Business | Merchant dashboard: analytics, reconciliation, multi-location, invoices |
 | Aframp API | Infrastructure layer for other African fintechs to integrate Stellar payments |
 
-## 2. Problem
+## 2. Problem 📋 Planned
 
 Cross-border commerce in Africa is fragmented across national payment systems — multiple currencies, high fees, slow settlement, and merchant onboarding that doesn't travel across borders. Stablecoins and blockchain rails already move value globally, fast and cheap. What's missing is the everyday, physical-commerce bridge between the two.
 
 Aframp's bet: onboard merchants first with a familiar payment experience, and let consumer demand for Stellar wallets follow — merchant acceptance drives adoption, not the other way around.
 
-## 3. Users
+## 3. Users ✅ Live
 
 | User | Role in MVP | Notes |
 |---|---|---|
@@ -39,7 +48,7 @@ Aframp's bet: onboard merchants first with a familiar payment experience, and le
 | **Customer** | Pays a merchant | Not a user of this backend directly — assumed to bring any Stellar-compatible wallet. No Aframp Wallet app exists yet (post-MVP) |
 | **Aframp (platform)** | Custodian + settlement operator | Holds encrypted keys for every merchant wallet; will eventually sweep funds to a platform settlement wallet (not built yet — see [§9](#9-open-decisions)) |
 
-## 4. Goals — MVP scope
+## 4. Goals — MVP scope 🚧 In Progress
 
 The MVP is scoped to exactly seven capabilities, in the order they occur in the payment flow. Status reflects what's been verified in this repository as of the date above.
 
@@ -55,7 +64,7 @@ The MVP is scoped to exactly seven capabilities, in the order they occur in the 
 
 **Also implemented, one layer past the original MVP list:** fiat withdrawal requests. `POST /withdraw` atomically debits a merchant's available balance and records a withdrawal in the same DB transaction, with insufficient-balance and validation checks enforced server-side. **However:** no money actually leaves the system yet — there's no real payout provider wired in (see [§9](#9-open-decisions)). This is ledger accounting, not a working cash-out.
 
-## 5. Non-goals for MVP
+## 5. Non-goals for MVP ❌ Deferred
 
 Explicitly out of scope right now (per founder direction, not an oversight):
 
@@ -67,7 +76,7 @@ Explicitly out of scope right now (per founder direction, not an oversight):
 - Public-facing API for third-party fintechs (Aframp API layer)
 - A consumer-facing Aframp Wallet app
 
-## 6. Core user flows
+## 6. Core user flows 🚧 In Progress
 
 **Merchant onboarding**
 1. Merchant signs up (`POST /signup`) → gets a JWT session.
@@ -87,7 +96,7 @@ A payment can still land without going through a request at all (manually, or vi
 2. Available balance is debited immediately; a `pending` withdrawal record is created.
 3. **Nothing pays out.** This is the biggest gap between "the ledger says X" and "the merchant has X in their bank account." See [§9](#9-open-decisions).
 
-## 7. System design (current)
+## 7. System design (current) 🚧 In Progress
 
 - **Custody model:** custodial. Aframp generates and holds every merchant's Stellar private key, AES-256-GCM encrypted at rest (`WALLET_ENCRYPTION_KEY`). Merchants never see or manage a seed phrase.
 - **Deposit detection:** poll-based, not event-streamed. A background worker queries Horizon's per-account payments feed for every wallet in the database on a fixed interval. This is simple and has been proven correct, but doesn't scale indefinitely — see [§9](#9-open-decisions).
@@ -95,15 +104,17 @@ A payment can still land without going through a request at all (manually, or vi
 - **Auth:** every endpoint that touches merchant data or money requires a valid JWT, enforced structurally via an Axum extractor (the handler cannot compile without it) — not a per-handler check that could be forgotten.
 - **What's explicitly *not* built:** outbound Stellar transaction construction/signing (Aframp never signs a payment itself — customers always pay from their own wallet), a settlement/sweep wallet, any real payout provider funding (Stage A), a real cNGN issuer address (blocks cNGN QR codes specifically).
 
-## 8. Current status ledger
+## 8. Current status ledger 🚧 In Progress
 
 A condensed view of what's verified vs. still a stub, independent of the MVP numbering above — see the repository [`README.md`](README.md) for the full version with proof points.
 
-**✅ Verified working today:** merchant signup/login, universal auth enforcement, real Stellar wallet generation, encrypted key custody, real Stellar deposit detection (proven with an actual testnet transaction), balance ledger, transaction history, payment request generation + SEP-0007 QR for XLM, memo-based payment-to-request correlation, withdrawal request + ledger accounting, Paystack Transfers wired into `/withdraw` and live-tested against three distinct real failure modes.
+**✅ Live — verified working today:** merchant signup/login, universal auth enforcement, real Stellar wallet generation, encrypted key custody, real Stellar deposit detection (proven with an actual testnet transaction), balance ledger, transaction history, payment request generation + SEP-0007 QR for XLM, memo-based payment-to-request correlation, withdrawal request + ledger accounting, Paystack Transfers wired into `/withdraw` and live-tested against three distinct real failure modes.
 
-**🚧 Genuine gaps:** real payout funding (Stage A — no money can currently leave the system, see §9.1), real cNGN issuer address (blocks cNGN QR codes and cNGN-denominated payment requests from being scannable), confirmation-depth threshold (currently immediate), settlement/sweep wallet, and one piece of vestigial dead code (`src/stellar/mod.rs`, from an abandoned memo-based design) still sitting in the tree as cleanup debt.
+**🚧 In Progress — genuine gaps:** real payout funding (Stage A — no money can currently leave the system, see §9.1), real cNGN issuer address (blocks cNGN QR codes and cNGN-denominated payment requests from being scannable), confirmation-depth threshold (currently immediate), settlement/sweep wallet (see §12.1 and [`docs/settlement-sweep-wallet.md`](docs/settlement-sweep-wallet.md)), and one piece of vestigial dead code (`src/stellar/mod.rs`, from an abandoned memo-based design) still sitting in the tree as cleanup debt.
 
-## 9. Open decisions
+**❌ Deferred / experimental:** Bitcoin support. `src/services/bitcoin_rpc.rs` is an **experimental** thin JSON-RPC client — it is not wired into any live flow (no deposit detection, no wallet creation, no settlement path uses it), and no Bitcoin balances, addresses, or transactions are exposed through the API. Treat it as a spike/placeholder, not a shipped feature. Multi-currency balances beyond XLM/cNGN and the Stellar settlement sweep remain deferred or in progress as noted above.
+
+## 9. Open decisions 📋 Planned
 
 These are real product/engineering decisions that need an answer before the next phase of work, not implementation details we can quietly decide alone:
 
@@ -119,7 +130,7 @@ These are real product/engineering decisions that need an answer before the next
 4. **Asset scope, including a real cNGN issuer address.** Today deposit detection recognizes any asset Horizon reports (native XLM or credit assets by code), and payment requests default to XLM specifically because it's what's actually scannable right now. Is cNGN the only supported asset at launch, or does XLM stay first-class? Whichever way that's answered, a real cNGN issuer Stellar address needs to be sourced before cNGN payment requests, QR codes, or deposit handling can be considered complete rather than partially stubbed.
 5. **Poll-based detection scaling.** Works today with a handful of wallets. At what wallet count does polling-per-address on a fixed interval become a bottleneck, and is the answer a smarter cursor/backoff strategy, or a move to Horizon's streaming (SSE) API?
 
-## 10. Success metrics (proposed — pending confirmation)
+## 10. Success metrics (proposed — pending confirmation) 📋 Planned
 
 No target numbers exist yet from the business side; these are proposed instrumentation points worth deciding on, not committed targets:
 
@@ -128,29 +139,31 @@ No target numbers exist yet from the business side; these are proposed instrumen
 - Withdrawal request → real payout completion time (once a provider is wired in)
 - Signup → wallet → first deposit → first withdrawal funnel completion rate
 
-## 11. Risks
+## 11. Risks 📋 Planned
 
 - **Custodial key risk.** Aframp holds every merchant's private key. `WALLET_ENCRYPTION_KEY` compromise would expose every merchant's funds. Key management (rotation, HSM/KMS vs. env var) needs to mature before real merchant funds are at stake.
 - **No real payout yet.** If withdrawal UX ships before a real payout provider is wired in, merchants would see a debited balance with no way to actually receive funds — a trust-destroying gap if exposed prematurely.
 - **Poll-interval latency.** A 60-second default poll interval means a merchant could wait up to a minute to see a payment confirmed — worth deciding if that's acceptable for a POS "instant" feel, or needs tightening.
 - **Regulatory scope creep.** Custodying every merchant's private key, converting crypto to fiat through a platform-controlled treasury, and fanning fiat back out to individual merchant bank accounts is, functionally, the deposit-taking and payment-transmission core of a bank — not just a payments API. Worth an explicit read on Nigerian licensing exposure (money transmission / PSP / MFB territory) before Stage A/B in §9.1 goes live with real merchant funds, not after.
 
-## 12. Roadmap — near-term, ordered
+## 12. Roadmap — near-term, ordered 📋 Planned
 
-1. Settlement & payout pipeline: sweep merchant wallets → redeem cNGN via the issuer → last-mile payout via Paystack/Flutterwave (closes the "ledger says X, bank account has 0" gap — see §9.1). Full implementation plan in [`docs/settlement-sweep-wallet.md`](docs/settlement-sweep-wallet.md) (issue [#1276](https://github.com/kellymusk/Aframp-backend/issues/1276))
-2. Source a real cNGN issuer Stellar address (unblocks cNGN QR codes and cNGN-denominated payment requests — see §9.4)
-3. Confirmation-depth policy decision + implementation
-4. Cleanup: remove or repurpose `src/stellar/mod.rs`
+1. 🚧 **In Progress** — Settlement & payout pipeline: sweep merchant wallets → redeem cNGN via the issuer → last-mile payout via Paystack/Flutterwave (closes the "ledger says X, bank account has 0" gap — see §9.1). Full implementation plan in [`docs/settlement-sweep-wallet.md`](docs/settlement-sweep-wallet.md) (issue [#1276](https://github.com/kellymusk/Aframp-backend/issues/1276)). The sweep wallet is partially implemented and referenced from `src/services/bitcoin_rpc.rs`; it is not yet live.
+2. 📋 **Planned** — Source a real cNGN issuer Stellar address (unblocks cNGN QR codes and cNGN-denominated payment requests — see §9.4)
+3. 📋 **Planned** — Confirmation-depth policy decision + implementation
+4. 📋 **Planned** — Cleanup: remove or repurpose `src/stellar/mod.rs`
 
 ---
 
 *This document should be updated alongside the codebase as decisions in §9 get made and roadmap items in §12 land — treat status claims here the way `README.md`'s status section is treated: nothing marked done that hasn't actually been verified.*
 
-## 13. cNGN onramp architecture
+## 13. cNGN onramp architecture 📋 Planned
 
 cNGN is a naira-backed stablecoin issued on Stellar. It is listed as a supported asset, but the README and this PRD both acknowledge that *"cNGN needs a real issuer address sourced first."* This section documents the intended production architecture for cNGN — how a merchant ends up holding it, and how it becomes naira in their bank account — plus the questions that must be answered before any of it can be built. **None of this is implemented yet**; it is a design and sourcing plan.
 
-### 13.1 Intended flow
+**Status:** ✅ **Live** — cNGN withdrawals (the `POST /withdraw` ledger path) are implemented and verified. 🚧 **In Progress** — the on-chain cNGN onramp/redemption flow described below (trustlines, issuer redemption, settlement) is not yet built. 📋 **Planned** — issuer selection and the open questions in §13.2.
+
+### 13.1 Intended flow 📋 Planned
 
 ```
 Customer pays in cNGN
@@ -183,7 +196,7 @@ Step by step:
 5. **Platform receives NGN.** Settlement timing depends on the issuer — some redeem same-day, some T+1. The withdrawal record moves to a `redeeming`/`settled` state as this progresses.
 6. **Paystack transfer to merchant bank.** Once NGN is in the platform account, a Paystack transfer is initiated to the merchant's verified bank account. The withdrawal record moves to `paid` on Paystack's transfer-success webhook.
 
-### 13.2 Open questions
+### 13.2 Open questions 📋 Planned
 
 These must be resolved before the flow above can be built. Each is tracked in the decision log in [§13.3](#133-decision-log).
 
@@ -195,7 +208,7 @@ These must be resolved before the flow above can be built. Each is tracked in th
 | Q4 | **What are the redemption fees and settlement timing?** | Affects the fee model shown to merchants and the expected payout latency. |
 | Q5 | **How is the cNGN trustline established?** Platform-managed on wallet creation, or lazily on first cNGN receipt? | Affects wallet-creation flow and whether existing wallets need a migration. |
 
-### 13.3 Decision log
+### 13.3 Decision log 📋 Planned
 
 When an open question above is resolved, record it here using this format. Append new entries at the top; do not edit past entries (supersede them instead).
 
