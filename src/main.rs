@@ -93,6 +93,10 @@ async fn main() {
         rates_cache: Arc::new(Mutex::new(None)),
     };
 
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
     let app = Router::new()
         .route("/rates", get(get_rates))
         .with_state(state);
