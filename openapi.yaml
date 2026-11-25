@@ -621,6 +621,17 @@ paths:
           required: false
           description: Include cancelled (archived) requests. Default false.
           schema: { type: boolean, default: false }
+        - name: asset
+          in: query
+          required: false
+          description: >
+            Only requests for the given asset (e.g. `XLM`, `cNGN`).
+            Case-sensitive; stored verbatim on the payment request row.
+            An unrecognised value returns an empty list rather than a `400` —
+            the set of valid assets is open-ended.
+          schema:
+            type: string
+            example: cNGN
       responses:
         '200':
           description: Payment requests, newest first

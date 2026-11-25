@@ -612,6 +612,7 @@ Query:
 - `?limit=` (default 50, clamped 1–200)
 - `?cursor=` opaque keyset cursor from a previous page
 - `?include_cancelled=true` to include soft-deleted requests (default: excluded)
+- `?asset=` only requests for the given asset (e.g. `XLM`, `cNGN`). Case-sensitive, stored verbatim. An unrecognised value returns an empty list rather than a `400` — the asset space is open-ended.
 
 `200` → `{ "data": [ ... ], "next_cursor": "..." | null }`.
 
