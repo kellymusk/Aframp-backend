@@ -363,6 +363,7 @@ pub fn router(state: AppState) -> axum::Router {
         // Outermost layer: every response, including errors and preflights,
         // carries the security headers.
         .layer(security_headers_layer(state.is_production))
+        .layer(axum::middleware::from_fn(middleware::inject_request_id))
 }
 
 #[cfg(test)]

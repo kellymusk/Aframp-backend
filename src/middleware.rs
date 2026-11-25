@@ -149,6 +149,70 @@ pub async fn hsts(
     next: Next,
 ) -> Response {
     hsts.run(request, next).await
+/// Injects the `X-Request-ID` for this request into the JSON body of every
+/// error response, so a merchant receiving e.g. a 500 can quote the ID in a
+/// support ticket without knowing to look at the response headers.
+///
+/// The middleware reads `x-request-id` from the **request** headers (placed
+/// there by `SetRequestIdLayer` before this middleware runs), then — for any
+/// response whose status is 4xx or 5xx — deserialises the body, adds the
+/// `request_id` field, and re-serialises. Responses that are not JSON, have
+/// no body, or whose body is not a valid JSON object are passed through
+/// unchanged so non-error routes are never affected.
+pub async fn inject_request_id(req: Request, next: Next) -> Response {
+    // Capture the ID from the request before we consume it.
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
+    let response = next.run(req).await;
+
+    // Only rewrite error responses.
+    if !response.status().is_client_error() && !response.status().is_server_error() {
+        return response;
+    }
+
+    // Only rewrite JSON bodies.
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("application/json"))
+        .unwrap_or(false);
+    if !is_json {
+        return response;
+    }
+
+    let Some(id) = request_id else {
+        return response;
+    };
+
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return Response::from_parts(parts, axum::body::Body::empty());
+    };
+
+    // Deserialise, inject, re-serialise.
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "request_id".to_string(),
+            serde_json::Value::String(id),
+        );
+    }
+    let Ok(new_bytes) = serde_json::to_vec(&value) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+
+    // Update Content-Length to match the new (longer) body.
+    if let Ok(len) = HeaderValue::from_str(&new_bytes.len().to_string()) {
+        parts.headers.insert(header::CONTENT_LENGTH, len);
+    }
+    Response::from_parts(parts, axum::body::Body::from(new_bytes))
 }
 
 /// Adds a `Retry-After` header to 423/429 responses whose JSON body carries
@@ -194,12 +258,40 @@ mod tests {
         "ok"
     }
 
+    async fn error_handler() -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "error": "something went wrong",
+                "code": "INVALID_PARAMETERS"
+            })),
+        )
+    }
+
+    async fn internal_error_handler() -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "error": "internal server error",
+                "code": "INTERNAL_ERROR"
+            })),
+        )
+    }
+
     fn app() -> Router {
         Router::new()
             .route("/post", post(handler))
             .route("/put", put(handler))
             .route("/get", get(handler))
             .layer(axum::middleware::from_fn(require_json_content_type))
+    }
+
+    fn inject_app() -> Router {
+        Router::new()
+            .route("/ok", get(handler))
+            .route("/error", get(error_handler))
+            .route("/internal", get(internal_error_handler))
+            .layer(axum::middleware::from_fn(inject_request_id))
     }
 
     /// Builds a request, setting `Content-Length` whenever a body is present
@@ -297,6 +389,35 @@ mod tests {
                 .get(header::STRICT_TRANSPORT_SECURITY)
                 .and_then(|v| v.to_str().ok()),
             Some(HSTS_VALUE)
+    // ── inject_request_id tests ───────────────────────────────────────────────
+
+    async fn send_inject(
+        app: &Router,
+        uri: &str,
+        request_id: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(id) = request_id {
+            builder = builder.header("x-request-id", id);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 4096).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn error_response_includes_request_id_from_header() {
+        let app = inject_app();
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        let (status, body) = send_inject(&app, "/error", Some(id)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["request_id"].as_str(),
+            Some(id),
+            "request_id must be injected into error body: {body}"
         );
     }
 
@@ -340,6 +461,44 @@ mod tests {
                 .get(header::STRICT_TRANSPORT_SECURITY)
                 .and_then(|v| v.to_str().ok()),
             Some("max-age=60")
+    async fn error_body_retains_existing_fields() {
+        let app = inject_app();
+        let (status, body) = send_inject(&app, "/error", Some("any-id")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"].as_str(), Some("something went wrong"));
+        assert_eq!(body["code"].as_str(), Some("INVALID_PARAMETERS"));
+    }
+
+    #[tokio::test]
+    async fn internal_error_response_includes_request_id() {
+        let app = inject_app();
+        let id = "deadbeef-dead-beef-dead-beefdeadbeef";
+        let (status, body) = send_inject(&app, "/internal", Some(id)).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["request_id"].as_str(), Some(id));
+    }
+
+    #[tokio::test]
+    async fn success_response_does_not_include_request_id() {
+        let app = inject_app();
+        let (status, body) = send_inject(&app, "/ok", Some("some-id")).await;
+        assert_eq!(status, StatusCode::OK);
+        // The success body is a plain string "ok", not JSON with request_id.
+        assert!(
+            body.get("request_id").is_none(),
+            "success body must not have request_id injected: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_x_request_id_header_leaves_body_unchanged() {
+        let app = inject_app();
+        let (status, body) = send_inject(&app, "/error", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // No ID on the request → middleware skips injection.
+        assert!(
+            body.get("request_id").is_none(),
+            "without x-request-id header, body must not be rewritten: {body}"
         );
     }
 }
