@@ -36,7 +36,8 @@ if let Some(addr) = config.metrics_addr {
 | `http_requests_total{method,route,status}` | counter | middleware layer (use `MatchedPath`, never the raw URI) |
 | `http_request_duration_seconds{method,route}` | histogram | same layer |
 | `deposit_poll_wallets` | gauge | worker loop, wallets polled this cycle |
-| `deposit_poll_duration_seconds` | histogram | worker loop, cycle duration |
+| `aframp_deposit_poll_duration_ms` | histogram | worker loop, elapsed time for one poll cycle |
+| `aframp_deposits_processed_total` | counter | worker loop, newly recorded deposits successfully processed |
 | `auth_requests_total{endpoint,outcome}` | counter | signup / login / verify-otp / refresh |
 | `otp_challenges_total{event="created"\|"verified"}` | counter | OTP service |
 | `withdrawals_total{outcome="success"\|"failed"}` | counter | withdrawals service |
@@ -44,7 +45,22 @@ if let Some(addr) = config.metrics_addr {
 
 Labels never include user, merchant or wallet ids (unbounded cardinality and PII).
 
+### Deposit worker metric semantics
+
+- Observe `aframp_deposit_poll_duration_ms` once after every poll attempt,
+  including failed attempts. It measures the `poll_once` work only and excludes
+  the interval sleep. The unit is milliseconds.
+- Increment `aframp_deposits_processed_total` once for each newly recorded
+  deposit successfully processed. Do not increment it for duplicate deposits,
+  unknown-wallet operations, or failed processing attempts. It has no labels.
+
 ## Tests
 
 With `APP_METRICS_ADDR` unset, `GET /metrics` on the public router is `404`.
 With a recorder installed, a login increments `auth_requests_total`.
+
+The maintainer implementation must inject or install a mock metrics recorder
+in a worker test, run a poll cycle with a mock listener and detected deposit,
+then assert that the duration histogram has an observation and
+`aframp_deposits_processed_total` increments. Include a failed poll case to
+verify that duration is still observed when polling returns an error.
